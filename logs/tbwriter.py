@@ -43,35 +43,42 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.train_config = train_config
         self.resume_from_checkpoint = (train_config.start_epoch > 0)
         self.hyper_params = dict()
+        self.hparams_domain_discrete = dict()  # TODO hparam domain discrete
         # General and dataset hparams
         self.hyper_params['batchsz'] = self.train_config.minibatch_size
         self.hyper_params['kfold'] = self.train_config.current_k_fold
+        self.hparams_domain_discrete['kfold'] = list(range(self.train_config.k_folds))
         self.hyper_params['wdecay'] = self.train_config.weight_decay
-        self.hyper_params['fcdrop'] = self.train_config.fc_dropout
+        self.hyper_params['FCdrop'] = self.train_config.fc_dropout
         self.hyper_params['synth'] = self.model_config.synth
         self.hyper_params['syntargs'] = self.model_config.synth_args_str
         self.hyper_params['nmidi'] = '{}{}'.format(len(self.model_config.midi_notes),
                                                    ("stack" if model_config.stack_spectrograms else "inde"))
-        self.hyper_params['catmodel'] = self.model_config.synth_vst_params_learned_as_categorical
-        self.hyper_params['normloss'] = self.train_config.normalize_losses
+        self.hyper_params['catcontmodel'] = self.model_config.synth_vst_params_learned_as_categorical
+        self.hyper_params['normalizeloss'] = self.train_config.normalize_losses
         # Latent space hparams
         self.hyper_params['z_dim'] = self.model_config.dim_z
-        # self.hyper_params['latloss'] = self.train_config.latent_loss
-        self.hyper_params['controls'] = self.model_config.synth_params_count
-        # Synth controls regression - not logged anymore (see model_config.synth_vst_params_learned_as_categorical)
+        self.hyper_params['latloss'] = self.train_config.latent_loss
+        self.hyper_params['ncontrols'] = self.model_config.synth_params_count
         # self.hyper_params['contloss'] = self.model_config.controls_losses
-        self.hyper_params['regsoftm'] = self.model_config.params_reg_softmax
-        self.hyper_params['regcatlo'] = 'BinCE' if self.train_config.params_cat_bceloss else 'CatCE'
-        self.hyper_params['regarch'] = self.model_config.params_regression_architecture
-        self.hyper_params['latfarch'] = self.model_config.latent_flow_arch
+        self.hyper_params['regr_arch'] = self.model_config.params_regression_architecture
+        self.hyper_params['latfl_arch'] = self.model_config.latent_flow_arch
+        self.hyper_params['latfl_in_regul'] = self.train_config.latent_flow_input_regularization
+        # Synth controls regression
+        self.hyper_params['regr_outsoftm'] = self.model_config.params_reg_softmax
+        self.hyper_params['regr_catloss'] = 'BinCE' if self.train_config.params_cat_bceloss else 'CatCE'
         # Auto-Encoder hparams
-        self.hyper_params['encarch'] = self.model_config.encoder_architecture
+        self.hyper_params['enc_arch'] = self.model_config.encoder_architecture
         # self.hyper_params['recloss'] = self.train_config.ae_reconstruction_loss
-        self.hyper_params['mels'] = self.model_config.mel_bins
-        self.hyper_params['mindB'] = self.model_config.spectrogram_min_dB
-        self.hyper_params['melfmin'] = self.model_config.mel_f_limits[0]
-        self.hyper_params['melfmax'] = self.model_config.mel_f_limits[1]
-        # TODO hparam domain discrete
+        self.hyper_params['specmindB'] = self.model_config.spectrogram_min_dB
+        self.hyper_params['mel_nbins'] = self.model_config.mel_bins
+        self.hyper_params['mel_fmin'] = self.model_config.mel_f_limits[0]
+        self.hyper_params['mel_fmax'] = self.model_config.mel_f_limits[1]
+        # Easily improved tensorboards hparams logging: convert bools to strings
+        for k, v in self.hyper_params.items():
+            if isinstance(v, bool):
+                self.hyper_params[k] = str(v)
+                self.hparams_domain_discrete[k] = ['True', 'False']
 
     def init_hparams_and_metrics(self, metrics):
         """ Hparams and Metric initialization. Will pass if training resumes from saved checkpoint.
@@ -98,5 +105,5 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
                     metrics_dict[k] = 0  # TODO appropriate default metric value?
             else:
                 metrics_dict[k] = metric
-        self.add_hparams(self.hyper_params, metrics_dict, hparam_domain_discrete=None)
+        self.add_hparams(self.hyper_params, metrics_dict, hparam_domain_discrete=self.hparams_domain_discrete)
 

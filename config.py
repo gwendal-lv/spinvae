@@ -39,7 +39,7 @@ model.mel_f_limits = (0, 11050)  # min/max Mel-spectrogram frequencies TODO impl
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
 model.midi_notes = ((60, 85), )  # Reference note: C4 , intensity 85/127
 # model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
-model.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
+model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_deepest_features_mix = False  # if True, feats mixed in the deepest 1x1 conv, else in the deepest 4x4
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
 # dataset size is artificially increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
@@ -111,13 +111,13 @@ train.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
 train.weight_decay = 1e-4  # Dynamic weight decay?
 train.fc_dropout = 0.3
 train.reg_fc_dropout = 0.4
-train.latent_input_dropout = 0.0
+train.latent_input_dropout = 0.0  # Should always remains zero... intended for tests (not tensorboard-logged)
 train.latent_flow_bn_between_layers = False  # True prevents flow reversibility during training
 # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
-train.latent_flow_input_regularization = 'bn'  # 'bn' (on encoder output) or 'dkl' (on q_Z0 gaussian flow input)
+train.latent_flow_input_regularization = 'BN'  # 'BN' (on encoder output) or 'Dkl' (on q_Z0 gaussian flow input)
 # (beta<1, normalize=True) corresponds to (beta>>1, normalize=False) in the beta-VAE formulation (ICLR 2017)
 train.beta = 0.2  # latent loss factor - use much lower value (e-2) to get closer the ELBO
-train.beta_start_value = train.beta / 10.0  # Should not be zero (risk of a very unstable training)
+train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very unstable training)
 # Epochs of warmup increase from start_value to beta
 train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). 16k samples dataset: set to 40
 train.beta_cycle_epochs = -1  # beta cyclic annealing (https://arxiv.org/abs/1903.10145). -1 deactivates TODO do

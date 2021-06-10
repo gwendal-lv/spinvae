@@ -121,19 +121,23 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric,
                                     plot_mu=True, plot_sigma=False, figsize=None):
     """ Uses boxplots to represent the distribution of the mu and/or sigma parameters of
     latent gaussian distributions. """
-    if plot_sigma or not plot_mu:
-        raise NotImplementedError("todo...")
     z_mu = latent_metric.get_z('mu')
     if figsize is None:
-        figsize = (__param_width * z_mu.shape[1], 3)
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
-    sns.boxplot(data=z_mu, ax=ax, fliersize=0.3, linewidth=0.5)
-    ax.set(xlabel='z', ylabel='$q_{\phi}(z_0|x) : \mu$')
-    for tick in ax.get_xticklabels():
-        tick.set_rotation(90)
-        tick.set_fontsize(8)
+        figsize = (__param_width * z_mu.shape[1], 8)
+    fig, axes = plt.subplots(3, 1, figsize=figsize)
+    sns.boxplot(data=z_mu, ax=axes[0], fliersize=0.3, linewidth=0.5)
+    axes[0].set(ylabel='$q_{\phi}(z_0|x) : \mu_0$')
+    sns.boxplot(data=latent_metric.get_z('sigma'), ax=axes[1], fliersize=0.3, linewidth=0.5)
+    axes[1].set(ylabel='$q_{\phi}(z_0|x) : \sigma_0$')
+    axes[1].set_yscale('log')
+    sns.boxplot(data=latent_metric.get_z('zK'), ax=axes[2], fliersize=0.3, linewidth=0.5)
+    axes[2].set(xlabel='z index', ylabel='$z_K$ samples')
+    for ax in axes:
+        for tick in ax.get_xticklabels():
+            tick.set_rotation(90)
+            tick.set_fontsize(8)
     fig.tight_layout()
-    return fig, ax
+    return fig, axes
 
 
 def plot_spearman_correlation(latent_metric: logs.metrics.LatentMetric):
@@ -141,13 +145,13 @@ def plot_spearman_correlation(latent_metric: logs.metrics.LatentMetric):
     and returns fig, axes """
     # http://jkimmel.net/disentangling_a_latent_space/ : Uncorrelated (independent) latent variables are necessary
     # but not sufficient to ensure disentanglement...
-    corr = latent_metric.get_spearman_corr()
+    corr = latent_metric.get_spearman_corr('zK')
     fig, axes = plt.subplots(1, 2, figsize=(8, 4))
     im = axes[0].matshow(corr, cmap='viridis', vmin=-1.0, vmax=1.0)
     clb = fig.colorbar(im, ax=axes[0], orientation='vertical')
-    axes[0].set_xlabel('Spearman corr')
+    axes[0].set_xlabel('zK Spearman corr')
     # 0.0 on diagonal - to get a better view on variations (2nd plot)
-    corr = latent_metric.get_spearman_corr_zerodiag()
+    corr = latent_metric.get_spearman_corr_zerodiag('zK')
     max_v = np.abs(corr).max()
     im = axes[1].matshow(corr, cmap='viridis', vmin=-max_v, vmax=max_v)
     clb = fig.colorbar(im, ax=axes[1], orientation='vertical')

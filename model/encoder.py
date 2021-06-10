@@ -44,9 +44,11 @@ class SpectrogramEncoder(nn.Module):
         self.spectrogram_channels = input_tensor_size[1]
         self.architecture = architecture
         self.deepest_features_mix = deepest_features_mix
-        # 2048 if single-ch, 1024 if multi-channel 4x4 mixer (to compensate for the large number of added params)
-        self.mixer_1x1conv_ch = 1024 if (self.spectrogram_channels > 1) else 2048
+        self.mixer_1x1conv_ch = 1024
         self.fc_dropout = fc_dropout
+
+        # TODO construction séquentielle directement dans cette classe ? (sinon c'est insupportablement chiant à gérer)
+        #   avec une boucle qui parcourt les numéros de couche, qui ajoute dans la partie séquentielle ou pas
         # - - - - - 1) Main CNN encoder (applied once per input spectrogram channel) - - - - -
         # stacked spectrograms: don't add the final 1x1 conv layer, or the 2 last conv layers (1x1 and 4x4)
         self.single_ch_cnn = SpectrogramCNN(self.architecture, last_layers_to_remove=(1 if self.deepest_features_mix

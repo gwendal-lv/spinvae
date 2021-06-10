@@ -29,7 +29,7 @@ class SpectrogramDecoder(nn.Module):
         self.dim_z = dim_z  # Latent-vector size
         self.architecture = architecture
         self.cnn_input_shape = None  # shape not including batch size
-        self.mixer_1x1conv_ch = 2048
+        self.mixer_1x1conv_ch = 1024
         self.last_4x4conv_ch = (512 if not force_bigger_network else 1800)
         self.fc_dropout = fc_dropout
 
@@ -329,6 +329,9 @@ class SpectrogramCNN(nn.Module):
         x_hat_raw = self.dec_nn(x_spectrogram)
         # Crop if necessary - TODO disable this during development (to know the actual convolutions output size)
         # TODO does this actually prevent autograd tracer warnings?
+
+        # TODO manually crop (depending on spectrogram size) to prevent autograd warnings?
+
         x_hat_H, x_hat_W = int(x_hat_raw.shape[2]), int(x_hat_raw.shape[3])  # 1st dim: number of lines
         if (x_hat_H, x_hat_W) != (self.output_tensor_size[2], self.output_tensor_size[3]):
             left_margin = (x_hat_W - self.output_tensor_size[3]) // 2

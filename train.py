@@ -25,7 +25,7 @@ import model.build
 import model.flows
 import logs.logger
 import logs.metrics
-from logs.metrics import SimpleMetric, EpochMetric, LatentMetric
+from logs.metrics import SimpleMetric, EpochMetric, LatentMetric, LatentCorrMetric
 import data.dataset
 import data.build
 import utils.profile
@@ -129,6 +129,10 @@ def train_config():
 
 
     # ========== Scalars, metrics, images and audio to be tracked in Tensorboard ==========
+    # Special 'super-metrics', used by 1D scalars or metrics to retrieve stored data. Not directly logged
+    super_metrics = {'LatentMetric/Train': LatentMetric(config.model.dim_z, sub_datasets_lengths['train']),
+                     'LatentMetric/Valid': LatentMetric(config.model.dim_z, sub_datasets_lengths['validation'])}
+    # 1D scalars with a .get() method. All of these will be automatically added to Tensorboard
     scalars = {  # Reconstruction loss (variable scale) + monitoring metrics comparable across all models
                'ReconsLoss/Backprop/Train': EpochMetric(), 'ReconsLoss/Backprop/Valid': EpochMetric(),
                'ReconsLoss/MSE/Train': EpochMetric(), 'ReconsLoss/MSE/Valid': EpochMetric(),
@@ -140,8 +144,10 @@ def train_config():
                # Latent-space and VAE losses
                'LatLoss/Train': EpochMetric(), 'LatLoss/Valid': EpochMetric(),
                'VAELoss/Train': SimpleMetric(), 'VAELoss/Valid': SimpleMetric(),
-               'LatCorr/Train': LatentMetric(config.model.dim_z, sub_datasets_lengths['train']),
-               'LatCorr/Valid': LatentMetric(config.model.dim_z, sub_datasets_lengths['validation']),
+               'LatCorr/z0/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'z0'),
+               'LatCorr/z0/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'z0'),
+               'LatCorr/zK/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'zK'),
+               'LatCorr/zK/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'zK'),
                # Other misc. metrics
                'Sched/LR': SimpleMetric(config.train.initial_learning_rate),
                'Sched/LRwarmup': LinearDynamicParam(config.train.lr_warmup_start_factor, 1.0,
@@ -153,7 +159,8 @@ def train_config():
     # Validation metrics have a '_' suffix to be different from scalars (tensorboard mixes them)
     metrics = {'ReconsLoss/MSE/Valid_': logs.metrics.BufferedMetric(),
                'LatLoss/Valid_': logs.metrics.BufferedMetric(),
-               'LatCorr/Valid_': logs.metrics.BufferedMetric(),
+               'LatCorr/z0/Valid_': logs.metrics.BufferedMetric(),
+               'LatCorr/zK/Valid_': logs.metrics.BufferedMetric(),
                'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
                'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
                'epochs': config.train.start_epoch}
@@ -187,6 +194,8 @@ def train_config():
     # ========== Model training epochs ==========
     for epoch in range(config.train.start_epoch, config.train.n_epochs):
         # = = = = = Re-init of epoch metrics and useful scalars (warmup ramps, ...) = = = = =
+        for _, s in super_metrics.items():
+            s.on_new_epoch()
         for _, s in scalars.items():
             s.on_new_epoch()
         should_plot = (epoch % config.train.plot_period == 0)
@@ -208,7 +217,7 @@ def train_config():
                 optimizer.zero_grad()
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-                scalars['LatCorr/Train'].append(z_0_mu_logvar, z_0_sampled)  # TODO store also z_K_sampled
+                super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                 # Synth parameters regression. Flow-based: we do not care about v_out for backprop, but
                 #     need it for monitoring (so we don't ask for the log abs det jacobian return)
                 if isinstance(controls_criterion, model.loss.FlowParamsLoss):
@@ -266,7 +275,7 @@ def train_config():
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)
-                scalars['LatCorr/Valid'].append(z_0_mu_logvar, z_0_sampled)  # TODO add z_K
+                super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                 recons_loss = reconstruction_criterion(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
                 lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
@@ -303,10 +312,10 @@ def train_config():
         for k, s in scalars.items():  # All available scalars are written to tensorboard
             logger.tensorboard.add_scalar(k, s.get(), epoch)
         if should_plot or early_stop:
-            fig, _ = utils.figures.plot_latent_distributions_stats(latent_metric=scalars['LatCorr/Valid'])
-            logger.tensorboard.add_figure('LatentMu', fig, epoch)
-            fig, _ = utils.figures.plot_spearman_correlation(latent_metric=scalars['LatCorr/Valid'])
-            logger.tensorboard.add_figure('LatentEntanglement', fig, epoch)
+            fig, _ = utils.figures.plot_latent_distributions_stats(latent_metric=super_metrics['LatentMetric/Valid'])
+            logger.tensorboard.add_figure('LatentStats', fig, epoch)
+            fig, _ = utils.figures.plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])
+            logger.tensorboard.add_figure('LatentRhoCorr', fig, epoch)
             if v_error.size(0) > 0:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(),
                                                                dataset.preset_indexes_helper)
@@ -314,7 +323,8 @@ def train_config():
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
         metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
-        metrics['LatCorr/Valid_'].append(scalars['LatCorr/Valid'].get())
+        metrics['LatCorr/z0/Valid_'].append(scalars['LatCorr/z0/Valid'].get())
+        metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
         metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
         metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
         logger.tensorboard.update_metrics(metrics)
