@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from typing import Tuple
 
 from model import layer
 
@@ -21,9 +22,9 @@ class SpectrogramDecoder(nn.Module):
         """
         super().__init__()
         # TODO test bigger output spectrogram - with final centered crop
-        self.output_tensor_size = output_tensor_size
+        self.output_tensor_size = output_tensor_size  # type: tuple[int, int, int, int]
         # Encoder input size is desired output size for this decoder (crop if too big? not necessary at the moment)
-        self.spectrogram_input_size = (self.output_tensor_size[2], self.output_tensor_size[3])
+        self.spectrogram_input_size = (self.output_tensor_size[2], self.output_tensor_size[3])  # type: tuple[int, int]
         self.spectrogram_channels = output_tensor_size[1]
         self.dim_z = dim_z  # Latent-vector size
         self.architecture = architecture
@@ -32,8 +33,9 @@ class SpectrogramDecoder(nn.Module):
         self.last_4x4conv_ch = (512 if not force_bigger_network else 1800)
         self.fc_dropout = fc_dropout
 
-        if 'speccnn8l1' not in self.architecture:
-            raise NotImplementedError("Only speccnn8l1 is currently available"
+        if 'speccnn8l1' not in self.architecture and 'speccnn9l1' not in self.architecture \
+                and 'rescnn' not in self.architecture:
+            raise NotImplementedError("Only speccnn8l1, speccnn9l1 and rescnn are currently available "
                                       "(stacked multi-note spectograms compatibility)")
 
         # - - - - - 1) MLP output size must to correspond to encoder's MLP input size - - - -
@@ -54,17 +56,19 @@ class SpectrogramDecoder(nn.Module):
             self.mlp = nn.Sequential(nn.Linear(self.dim_z, 1024), nn.ReLU(),  # TODO dropout
                                      nn.Linear(1024, 1024), nn.ReLU(),
                                      nn.Linear(1024, int(np.prod(self.cnn_input_shape))))  # TODO add last ReLU?
-        elif 'speccnn8l1' in self.architecture:
+        elif 'speccnn8l1' in self.architecture or 'rescnn' in self.architecture or 'speccnn9l1' in self.architecture:
             if self.spectrogram_input_size == (257, 347):
                 if self.architecture == 'speccnn8l1_3':
                     self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 3)
                 else:
                     self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 4)
-                # No ReLU (encoder-symmetry) (and leads to very bad generalization, but don't know why)
-                self.mlp = nn.Sequential(nn.Linear(self.dim_z, int(np.prod(self.cnn_input_shape))),
-                                         nn.Dropout(self.fc_dropout))
+            elif self.spectrogram_input_size == (513, 347):
+                self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 3)
             else:
-                assert NotImplementedError()
+                raise NotImplementedError()
+            # No ReLU (encoder-symmetry) (and leads to very bad generalization, but don't know why)
+            self.mlp = nn.Sequential(nn.Linear(self.dim_z, int(np.prod(self.cnn_input_shape))),
+                                     nn.Dropout(self.fc_dropout))  # TODO try remove this dropout?
         else:
             raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
 
@@ -75,9 +79,9 @@ class SpectrogramDecoder(nn.Module):
                                                   activation=nn.LeakyReLU(0.1), name_prefix='dec1')
 
         # - - - - - 3) Main CNN decoder (applied once per spectrogram channel) - - - - -
-        single_spec_size = list(self.spectrogram_input_size)
-        single_spec_size[1] = 1
-        self.single_ch_cnn = SpectrogramCNN(self.architecture, single_spec_size, append_1x1_conv=False,
+        single_spec_output_size = list(self.output_tensor_size)
+        single_spec_output_size[1] = 1  # Single-channel output
+        self.single_ch_cnn = SpectrogramCNN(self.architecture, tuple(single_spec_output_size), append_1x1_conv=False,
                                             force_bigger_network=force_bigger_network)
 
     def forward(self, z_sampled):
@@ -95,15 +99,16 @@ class SpectrogramDecoder(nn.Module):
 class SpectrogramCNN(nn.Module):
     """ A decoder CNN network for spectrogram output """
 
-    def __init__(self, architecture, spectrogram_input_size, output_activation=nn.Hardtanh(),
+    def __init__(self, architecture, output_tensor_size: Tuple[int, int, int, int], output_activation=nn.Hardtanh(),
                  append_1x1_conv=True, force_bigger_network=False):
         """ Defines a decoder given the specified architecture. """
         super().__init__()
         self.architecture = architecture
-        if not append_1x1_conv:
-            assert self.architecture == 'speccnn8l1_bn'  # Only this arch is fully-supported at the moment
-        self.spectrogram_input_size = spectrogram_input_size
-        assert self.spectrogram_input_size[1] == 1  # This decoder is single-channel output
+        if not append_1x1_conv:   # Only these archs are fully-supported at the moment
+            assert self.architecture == 'speccnn8l1_bn' or self.architecture == 'speccnn9l1' \
+                   or self.architecture == 'rescnn'
+        self.output_tensor_size = output_tensor_size
+        assert self.output_tensor_size[1] == 1  # This decoder is single-channel output
 
         if self.architecture == 'wavenet_baseline':  # https://arxiv.org/abs/1704.01279
             ''' Symmetric layer output sizes (compared to the encoder).
@@ -178,10 +183,10 @@ class SpectrogramCNN(nn.Module):
             ''' This decoder seems as GPU-heavy as wavenet_baseline?? '''
             n_lay = 64  # 128/2 for paper's comparisons consistency. Could be larger
             k7 = [7, 7]  # Kernel of size 7
-            if spectrogram_input_size == (513, 433):
+            if self.output_tensor_size == (513, 433):
                 pads = [3, 3, 3, 3, 2]  # FIXME
                 out_pads = None
-            elif spectrogram_input_size == (257, 347):  # 7.7 GB (RAM), 6.0 GMultAdd (batch 256) (inc. linear layers)
+            elif self.output_tensor_size == (257, 347):  # 7.7 GB (RAM), 6.0 GMultAdd (batch 256) (inc. linear layers)
                 pads = [3, 3, 3, 3, 2]
                 out_pads = [0, [1, 0], [0, 1], [1, 0]]  # No output padding on last layer
             self.dec_nn = nn.Sequential(layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[0], out_pads[0], [2, 2],
@@ -267,8 +272,69 @@ class SpectrogramCNN(nn.Module):
                                         output_activation
                                         )
 
+        elif self.architecture == 'speccnn9l1':  # 9.1 GB (RAM) ; 2.9 GMultAdd  (batch 256)
+            # TODO description and implementation
+            act = nn.LeakyReLU
+            act_p = 0.1  # Activation param
+            self.dec_nn = nn.Sequential(layer.TConv2D((512 if not force_bigger_network else 1800),
+                                                      256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                      activation=act(act_p), name_prefix='dec2'),
+                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                      activation=act(act_p), name_prefix='dec3'),
+                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                      activation=act(act_p), name_prefix='dec4'),
+                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                      activation=act(act_p), name_prefix='dec5'),
+                                        layer.TConv2D(128, 96, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                      activation=act(act_p), name_prefix='dec6'),
+                                        layer.TConv2D(96, 48, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                      activation=act(act_p), name_prefix='dec7'),
+                                        layer.TConv2D(48, 24, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                      activation=act(act_p), name_prefix='dec8'),
+                                        nn.ConvTranspose2d(24, 1, (5, 5), (2, 2), (2, 1)),
+                                        output_activation
+                                        )
+            if append_1x1_conv:  # 1x1 "un-mixing" conv inserted as first conv layer
+                assert False  # FIXME 1024ch should not be constant
+                self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
+                                                          activation=act(act_p), name_prefix='dec1'),
+                                            self.dec_nn)
+
+        elif self.architecture == 'rescnn':  # XXX GB (RAM) ; XXX GMultAdd  (batch 256)
+            # TODO description and implementation
+            act = nn.LeakyReLU
+            act_p = 0.1  # Activation param
+            self.dec_nn = nn.Sequential(layer.TConv2D((512 if not force_bigger_network else 1800),
+                                                      256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                      activation=act(act_p), name_prefix='dec2'),
+                                        layer.ResTConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                         activation=act(act_p), name_prefix='dec34'),
+                                        layer.DenseTConv2D(256, 128, 32, 96, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                           activation=act(act_p), name_prefix='dec56'),
+                                        layer.DenseTConv2D(96, 48, 8, 32, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                           activation=act(act_p), name_prefix='dec78'),
+                                        nn.ConvTranspose2d(32, 1, (5, 5), (2, 2), (2, 1)),
+                                        output_activation
+                                        )
+            if append_1x1_conv:  # 1x1 "un-mixing" conv inserted as first conv layer
+                assert False  # FIXME 1024ch should not be constant
+                self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
+                                                          activation=act(act_p), name_prefix='dec1'),
+                                            self.dec_nn)
+
         else:
             raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
 
     def forward(self, x_spectrogram):
-        return self.dec_nn(x_spectrogram)
+        x_hat_raw = self.dec_nn(x_spectrogram)
+        # Crop if necessary - TODO disable this during development (to know the actual convolutions output size)
+        # TODO does this actually prevent autograd tracer warnings?
+        x_hat_H, x_hat_W = int(x_hat_raw.shape[2]), int(x_hat_raw.shape[3])  # 1st dim: number of lines
+        if (x_hat_H, x_hat_W) != (self.output_tensor_size[2], self.output_tensor_size[3]):
+            left_margin = (x_hat_W - self.output_tensor_size[3]) // 2
+            top_margin = (x_hat_H - self.output_tensor_size[2]) // 2
+            assert top_margin >= 0 and left_margin >= 0
+            return x_hat_raw[:, :, top_margin:top_margin+self.output_tensor_size[2],
+                             left_margin:left_margin+self.output_tensor_size[3]]
+        else:
+            return x_hat_raw

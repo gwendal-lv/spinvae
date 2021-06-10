@@ -16,13 +16,15 @@ def available_architectures():
             'speccnn8l1',  # Custom 8-layer CNN + 1 linear very light architecture
             'speccnn8l1_bn'  # Same base config, different BN usage (no BN on first/last layers)
             'speccnn8l1_2',  # MUCH more channels per layer.... but no significant perf improvement
-            'speccnn8l1_3'  # speccnn8l1_bn with Bigger conv kernels
+            'speccnn8l1_3',  # speccnn8l1_bn with Bigger conv kernels
+            'speccnn9l1',  # For bigger input spectrograms, with more channels on first layers
+            'rescnn'
             ]
 
 
 class SpectrogramEncoder(nn.Module):
     """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu and logs(var) values"""
-    def __init__(self, architecture, dim_z, input_tensor_size, fc_dropout, output_bn=False,
+    def __init__(self, architecture, dim_z, input_tensor_size, fc_dropout, output_bn=False, output_dropout_p=0.0,
                  deepest_features_mix=True, force_bigger_network=False):
         """
 
@@ -50,7 +52,9 @@ class SpectrogramEncoder(nn.Module):
         self.single_ch_cnn = SpectrogramCNN(self.architecture, last_layers_to_remove=(1 if self.deepest_features_mix
                                                                                       else 2))
         # - - - - - 2) Features mixer - - - - -
-        assert self.architecture == 'speccnn8l1_bn'  # Only this arch is fully-supported at the moment
+        # Only these archs are fully-supported at the moment
+        assert self.architecture == 'speccnn8l1_bn' or self.architecture == 'speccnn9l1' \
+               or self.architecture == 'rescnn'
         self.features_mixer_cnn = nn.Sequential()
         if self.deepest_features_mix:
             self.features_mixer_cnn = layer.Conv2D(512*self.spectrogram_channels, self.mixer_1x1conv_ch,
@@ -78,13 +82,16 @@ class SpectrogramEncoder(nn.Module):
         cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
         # No activation - outputs are latent mu/logvar
         if 'wavenet_baseline' in self.architecture\
-                or 'speccnn8l1' in self.architecture:  # (not an MLP...) much is done in the CNN
+                or 'speccnn8l1' in self.architecture or 'speccnn9l1' in self.architecture\
+                or 'rescnn' in self.architecture:  # (not an MLP...) much is done in the CNN
             # TODO batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
             #    add corresponding ctor argument (build with bn=True if using flow-based latent space)
             # TODO remove this dropout?
             self.mlp = nn.Sequential(nn.Dropout(self.fc_dropout), nn.Linear(cnn_out_items, 2 * self.dim_z))
             if output_bn:
                 self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(2 * self.dim_z))
+            if output_dropout_p > 0.0:
+                self.mlp.add_module('lat_in_drop', nn.Dropout(output_dropout_p))
         elif self.architecture == 'flow_synth':
             self.mlp = nn.Sequential(nn.Linear(cnn_out_items, 1024), nn.ReLU(),  # TODO dropouts
                                      nn.Linear(1024, 1024), nn.ReLU(),
@@ -122,8 +129,9 @@ class SpectrogramCNN(nn.Module):
         """
         super().__init__()
         self.architecture = architecture
-        if last_layers_to_remove > 0:
-            assert self.architecture == 'speccnn8l1_bn'  # Only this arch is fully-supported at the moment
+        if last_layers_to_remove > 0:  # Only these archs are fully-supported at the moment
+            assert self.architecture == 'speccnn8l1_bn' or self.architecture == 'speccnn9l1' \
+                   or self.architecture == 'rescnn'
 
         if self.architecture == 'wavenet_baseline'\
            or self.architecture == 'wavenet_baseline_lighter':  # this encoder is quite light already
@@ -300,6 +308,54 @@ class SpectrogramCNN(nn.Module):
                                         layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
                                                      activation=act(act_p), name_prefix='enc8'),
                                         )
+
+        elif self.architecture == 'speccnn9l1':  # 6.5 GB (RAM) ; 0.8 GMultAdd  (batch 256)
+            # TODO doc
+            act = nn.LeakyReLU
+            act_p = 0.1  # Activation param
+            self.enc_nn = nn.Sequential(layer.Conv2D(1, 24, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
+                                                     activation=act(act_p), name_prefix='enc1'),
+                                        layer.Conv2D(24, 48, [4, 4], [2, 2], 2, [1, 1],
+                                                     activation=act(act_p), name_prefix='enc2'),
+                                        layer.Conv2D(48, 96, [4, 4], [2, 2], 2, [1, 1],
+                                                     activation=act(act_p), name_prefix='enc3'),
+                                        layer.Conv2D(96, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                     activation=act(act_p), name_prefix='enc4'),
+                                        layer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                     activation=act(act_p), name_prefix='enc5'),
+                                        layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                     activation=act(act_p), name_prefix='enc6'),
+                                        layer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                     activation=act(act_p), name_prefix='enc7')
+                                        )
+            if last_layers_to_remove <= 1:
+                self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                               activation=act(act_p), name_prefix='enc8'))
+            if last_layers_to_remove == 0:
+                self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
+                                                               activation=act(act_p), name_prefix='enc9'))
+
+        # TODO try reduce channels from all skip-connection layers (or the model overfits++), dense only (no add res)
+        elif self.architecture == 'rescnn':  # 6.9 GB (RAM) ; 0.85 GMultAdd  (batch 256)
+            # TODO doc
+            act = nn.LeakyReLU
+            act_p = 0.1  # Activation param
+            self.enc_nn = nn.Sequential(layer.Conv2D(1, 32, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
+                                                     activation=act(act_p), name_prefix='enc1'),
+                                        layer.DenseConv2D(32, 48, 96, [4, 4], [2, 2], 2, [1, 1],
+                                                          activation=act(act_p), name_prefix='enc23'),
+                                        layer.DenseConv2D(96, 128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                          activation=act(act_p), name_prefix='enc45'),
+                                        layer.ResConv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                        activation=act(act_p), name_prefix='enc67'),
+                                        )
+            if last_layers_to_remove <= 1:
+                self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                               activation=act(act_p), name_prefix='enc8'))
+            if last_layers_to_remove == 0:
+                self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
+                                                               activation=act(act_p), name_prefix='enc9'))
+
         else:
             raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
 

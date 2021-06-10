@@ -75,7 +75,7 @@ class FlowVAE(nn.Module):
     """
 
     def __init__(self, encoder, dim_z, decoder, normalize_latent_loss: bool, flow_arch: str,
-                 concat_midi_to_z0=False):
+                 concat_midi_to_z0=False, flows_internal_dropout_p=0.0, flow_bn_between_layers=False):
         """
 
         :param encoder:  CNN-based encoder, output might be smaller than dim_z (if concat MIDI pitch/vel)
@@ -115,14 +115,19 @@ class FlowVAE(nn.Module):
                                                                       hidden_features=self.flow_hidden_features))
             self.flow_transform = CompositeTransform(transforms)
         elif self.flow_arch.lower() == 'realnvp':
-            flow = SimpleRealNVP(features=self.dim_z, hidden_features=self.flow_hidden_features,
-                                 num_layers=self.flow_layers_count,
-                                 num_blocks_per_layer=2,  # MAAF layers default count
-                                 batch_norm_within_layers=True,
-                                 batch_norm_between_layers=False  # True would prevent reversibility during train
-                                 )
-            # Dirty quick trick, we want the tranform only, not the base distribution that we want to model ourselves...
-            self.flow_transform = flow._transform
+            # TODO use a custom RealNVP....
+            if flow_bn_between_layers:
+                raise NotImplementedError()
+            else:  # Deprecated option (for compatiblity with older models)
+                flow = SimpleRealNVP(features=self.dim_z, hidden_features=self.flow_hidden_features,
+                                     num_layers=self.flow_layers_count,
+                                     num_blocks_per_layer=2,  # MAAF layers default count
+                                     batch_norm_within_layers=True,
+                                     dropout_probability=flows_internal_dropout_p,
+                                     batch_norm_between_layers=False  # True prevents train reversibility
+                                     )
+                # Dirty quick trick, we want the tranform only, not the base distrib that we want to model ourselves...
+                self.flow_transform = flow._transform
         else:
             raise NotImplementedError("Unavailable flow '{}'".format(self.flow_arch))
 

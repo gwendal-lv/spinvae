@@ -17,8 +17,8 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = "FlVAE2"
-model.run_name = '00_debug'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "Refactoring"
+model.run_name = '00_reference'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 model.encoder_architecture = 'speccnn8l1_bn'
@@ -30,25 +30,26 @@ model.note_duration = (3.0, 1.0)
 model.sampling_rate = 22050
 model.stft_args = (1024, 256)  # fft size and hop size
 model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
+# Possible spectrogram sizes:
+#   (513, 433): audio 5.0s, fft size 1024, fft hop 256
+#   (257, 347): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
+#   (513, 347): audio 4.0s, fft size 1024 (no mel), fft hop 256
+model.spectrogram_size = (257, 347)  # see data/dataset.py to retrieve this from audio/stft params
 model.mel_f_limits = (0, 11050)  # min/max Mel-spectrogram frequencies TODO implement
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
 model.midi_notes = ((60, 85), )  # Reference note: C4 , intensity 85/127
 # model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
-model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
+model.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_deepest_features_mix = False  # if True, feats mixed in the deepest 1x1 conv, else in the deepest 4x4
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
 # dataset size is artificially increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
 model.increased_dataset_size = None  # See update_dynamic_config_params()
 model.spectrogram_min_dB = -120.0
-# Possible spectrogram sizes:
-#   (513, 433): audio 5.0s, fft size 1024, fft hop 256
-#   (257, 347): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
-model.spectrogram_size = (257, 347)  # see data/dataset.py to retrieve this from audio/stft params
 model.input_tensor_size = None  # see update_dynamic_config_params()
 # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concatenated to the latent vector
 model.concat_midi_to_z = None  # See update_dynamic_config_params()
 # Latent space dimension  *************** When using a Flow regressor, this dim is automatically set ******************
-model.dim_z = 256  # Including possibly concatenated midi pitch and velocity
+model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
 # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
 #    - set to None to disable latent space flow transforms
@@ -77,7 +78,7 @@ model.logs_root_dir = "saved"  # Path from this directory
 
 train = _Config()
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 160
+train.minibatch_size = 32
 train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
@@ -86,10 +87,10 @@ train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will 
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.save_period = 50  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
-train.plot_period = 20  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
-train.latent_loss = 'Dkl'  # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
-# When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
-train.latent_flow_input_regularization = 'bn'  # 'bn' (on encoder output) or 'dkl' (on q_Z0 gaussian flow input)
+# TODO after refactoring: reduce plot frequency to 1 plot / 20 epochs
+train.plot_period = 1  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
+# Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
+train.latent_loss = 'Dkl'  # TODO implement checks: no Dkl loss for a flow-based latent transform, etc....
 train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
 train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
 # Losses normalization allow to get losses in the same order of magnitude, but does not optimize the true ELBO.
@@ -102,7 +103,7 @@ train.normalize_losses = True  # Normalize all losses over the vector-dimension 
 train.optimizer = 'Adam'
 # Maximal learning rate (reached after warmup, then reduced on plateaus)
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
-train.initial_learning_rate = 2e-4  # e-9 LR with e+4 loss does not allow any train (vanishing grad?)
+train.initial_learning_rate = 3e-5  # e-9 LR with e+4 loss does not allow any train (vanishing grad?)
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677)
 train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
 train.lr_warmup_start_factor = 0.1
@@ -110,9 +111,13 @@ train.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
 train.weight_decay = 1e-4  # Dynamic weight decay?
 train.fc_dropout = 0.3
 train.reg_fc_dropout = 0.4
+train.latent_input_dropout = 0.0
+train.latent_flow_bn_between_layers = False  # True prevents flow reversibility during training
+# When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
+train.latent_flow_input_regularization = 'bn'  # 'bn' (on encoder output) or 'dkl' (on q_Z0 gaussian flow input)
 # (beta<1, normalize=True) corresponds to (beta>>1, normalize=False) in the beta-VAE formulation (ICLR 2017)
 train.beta = 0.2  # latent loss factor - use much lower value (e-2) to get closer the ELBO
-train.beta_start_value = 0.1  # Should not be zero (risk of a very unstable training)
+train.beta_start_value = train.beta / 10.0  # Should not be zero (risk of a very unstable training)
 # Epochs of warmup increase from start_value to beta
 train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). 16k samples dataset: set to 40
 train.beta_cycle_epochs = -1  # beta cyclic annealing (https://arxiv.org/abs/1903.10145). -1 deactivates TODO do

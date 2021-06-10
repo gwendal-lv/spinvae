@@ -336,9 +336,9 @@ if __name__ == "__main__":
     import config  # Dirty path trick to import config.py from project root dir
 
     # ============== DATA RE-GENERATION - FROM config.py ==================
-    regenerate_wav = True  # multi-notes: a few minutes on a powerful CPU (20+ cores) - else: much longer
+    regenerate_wav = False  # multi-notes: a few minutes on a powerful CPU (20+ cores) - else: much longer
     # WARNING: when computing stats, please make sure that *all* midi notes are available
-    regenerate_spectrograms_stats = True  # approx 3 min - 30e3 preset, single MIDI note (16mins for 16 MIDI notes)
+    regenerate_spectrograms_stats = False  # 30e3 presets, 6 MIDI notes: 5minutes on 24 cores
     if regenerate_spectrograms_stats:
         assert len(config.model.midi_notes) > 1  # all MIDI notes (6?) must be used to compute stats
 
