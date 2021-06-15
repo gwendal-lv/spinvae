@@ -49,7 +49,7 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['kfold'] = self.train_config.current_k_fold
         self.hparams_domain_discrete['kfold'] = list(range(self.train_config.k_folds))
         self.hyper_params['wdecay'] = self.train_config.weight_decay
-        self.hyper_params['FCdrop'] = self.train_config.fc_dropout
+        self.hyper_params['VAE_FCdrop'] = self.train_config.fc_dropout
         self.hyper_params['synth'] = self.model_config.synth
         self.hyper_params['syntargs'] = self.model_config.synth_args_str
         self.hyper_params['nmidi'] = '{}{}'.format(len(self.model_config.midi_notes),
@@ -61,10 +61,11 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['latloss'] = self.train_config.latent_loss
         self.hyper_params['ncontrols'] = self.model_config.synth_params_count
         # self.hyper_params['contloss'] = self.model_config.controls_losses
-        self.hyper_params['regr_arch'] = self.model_config.params_regression_architecture
         self.hyper_params['latfl_arch'] = self.model_config.latent_flow_arch
         self.hyper_params['latfl_in_regul'] = self.train_config.latent_flow_input_regularization
         # Synth controls regression
+        self.hyper_params['regr_arch'] = self.model_config.params_regression_architecture
+        self.hyper_params['regr_FCdrop'] = self.train_config.reg_fc_dropout
         self.hyper_params['regr_outsoftm'] = self.model_config.params_reg_softmax
         self.hyper_params['regr_catloss'] = 'BinCE' if self.train_config.params_cat_bceloss else 'CatCE'
         # Auto-Encoder hparams

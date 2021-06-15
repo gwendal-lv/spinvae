@@ -17,11 +17,11 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = "Refactoring"
-model.run_name = '00_reference'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "BiggerNets"
+model.run_name = 'dummy_tests'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-model.encoder_architecture = 'speccnn8l1_bn'
+model.encoder_architecture = 'speccnn8l1'
 # Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'flow_realnvp_6l300'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
@@ -40,7 +40,7 @@ model.mel_f_limits = (0, 11050)  # min/max Mel-spectrogram frequencies TODO impl
 model.midi_notes = ((60, 85), )  # Reference note: C4 , intensity 85/127
 # model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
 model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
-model.stack_specs_deepest_features_mix = False  # if True, feats mixed in the deepest 1x1 conv, else in the deepest 4x4
+model.stack_specs_features_mix_level = -2  # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
 # dataset size is artificially increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
 model.increased_dataset_size = None  # See update_dynamic_config_params()
@@ -52,7 +52,7 @@ model.concat_midi_to_z = None  # See update_dynamic_config_params()
 model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
 # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
-#    - set to None to disable latent space flow transforms
+#    - set to None to disable latent space flow transforms  # TODO properly reactivate
 model.latent_flow_arch = 'realnvp_6l300'
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
@@ -88,7 +88,7 @@ train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will 
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.save_period = 50  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
 # TODO after refactoring: reduce plot frequency to 1 plot / 20 epochs
-train.plot_period = 1  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
+train.plot_period = 20  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
 # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
 train.latent_loss = 'Dkl'  # TODO implement checks: no Dkl loss for a flow-based latent transform, etc....
 train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
@@ -103,7 +103,7 @@ train.normalize_losses = True  # Normalize all losses over the vector-dimension 
 train.optimizer = 'Adam'
 # Maximal learning rate (reached after warmup, then reduced on plateaus)
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
-train.initial_learning_rate = 3e-5  # e-9 LR with e+4 loss does not allow any train (vanishing grad?)
+train.initial_learning_rate = 7e-5  # e-9 LR with e+4 loss does not allow any train (vanishing grad?)
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677)
 train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
 train.lr_warmup_start_factor = 0.1
@@ -114,6 +114,7 @@ train.reg_fc_dropout = 0.4
 train.latent_input_dropout = 0.0  # Should always remains zero... intended for tests (not tensorboard-logged)
 train.latent_flow_bn_between_layers = False  # True prevents flow reversibility during training
 # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
+# TODO latent input batch-norm is a very strong constraint for the network, maybe remove it when using MMD-VAE regul.
 train.latent_flow_input_regularization = 'BN'  # 'BN' (on encoder output) or 'Dkl' (on q_Z0 gaussian flow input)
 # (beta<1, normalize=True) corresponds to (beta>>1, normalize=False) in the beta-VAE formulation (ICLR 2017)
 train.beta = 0.2  # latent loss factor - use much lower value (e-2) to get closer the ELBO

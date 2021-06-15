@@ -19,14 +19,14 @@ def build_encoder_and_decoder_models(model_config, train_config):
     # Encoder and decoder with the same architecture
     enc_z_length = (model_config.dim_z - 2 if model_config.concat_midi_to_z else model_config.dim_z)
 
-    print("FORCE BIGGER ENC/DEC NETWORKS = {}".format(force_bigger_network))  # TODO remove
+    # print("FORCE BIGGER ENC/DEC NETWORKS = {}".format(force_bigger_network))  # TODO remove
     print("MIDI NOTES = {}".format(model_config.midi_notes))  # TODO remove
     encoder_model = \
         encoder.SpectrogramEncoder(model_config.encoder_architecture, enc_z_length,
                                    model_config.input_tensor_size, train_config.fc_dropout,
                                    output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
                                    output_dropout_p=train_config.latent_input_dropout,
-                                   deepest_features_mix=model_config.stack_specs_deepest_features_mix,
+                                   deep_features_mix_level=model_config.stack_specs_features_mix_level,
                                    force_bigger_network=force_bigger_network)
     decoder_model = decoder.SpectrogramDecoder(model_config.encoder_architecture, model_config.dim_z,
                                                model_config.input_tensor_size, train_config.fc_dropout,

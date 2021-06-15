@@ -83,7 +83,7 @@ class FlowVAE(nn.Module):
         :param decoder:
         :param normalize_latent_loss:
         :param flow_arch: Full string-description of the flow, e.g. 'realnvp_4l200' (flow type, number of flows,
-            hidden features count, ...)
+            hidden features count, and batch-norm options '_BNbetween' and '_BNinternal' ...)
         :param concat_midi_to_z0: If True, encoder output mu and log(var) vectors must be smaller than dim_z, for
             this model to append MIDI pitch and velocity (see corresponding mu and log(var) in forward() implementation)
         # TODO add more flow params (hidden neural networks config: BN, layers, ...)

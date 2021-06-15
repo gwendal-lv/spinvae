@@ -90,7 +90,8 @@ class LatentMetric:
         self.dim_z = dim_z
         self.dataset_len = dataset_len
         if self.dim_z < 0 or self.dataset_len < 0:
-            print("[LatentMetric] Warning: not initialized with dim_z and dataset_len - no memory pre-allocation (slow)")
+            raise AssertionError("[LatentMetric] Warning: not initialized with dim_z and dataset_len"
+                                 "- no memory pre-allocation (slow)")
         self.on_new_epoch()
 
     def on_new_epoch(self):

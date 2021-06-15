@@ -214,20 +214,21 @@ def train_config():
                 with profiler.record_function("DATA_LOAD") if is_profiled else contextlib.nullcontext():
                     sample = next(dataloader_iter)
                     x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
-                optimizer.zero_grad()
-                ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
-                z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-                super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
-                # Synth parameters regression. Flow-based: we do not care about v_out for backprop, but
-                #     need it for monitoring (so we don't ask for the log abs det jacobian return)
-                if isinstance(controls_criterion, model.loss.FlowParamsLoss):
-                    with torch.no_grad():
-                        reg_model_parallel.eval()  # FIXME sub-optimal, for monitoring only...
+                with profiler.record_function("FORWARD") if is_profiled else contextlib.nullcontext():
+                    optimizer.zero_grad()
+                    ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
+                    z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
+                    # Synth parameters regression. Flow-based: we do not care about v_out for backprop, but
+                    #     need it for monitoring (so we don't ask for the log abs det jacobian return)
+                    if isinstance(controls_criterion, model.loss.FlowParamsLoss):
+                        with torch.no_grad():
+                            reg_model_parallel.eval()  # FIXME sub-optimal, for monitoring only...
+                            v_out = reg_model_parallel(z_K_sampled)
+                            reg_model_parallel.train()
+                    else:
                         v_out = reg_model_parallel(z_K_sampled)
-                        reg_model_parallel.train()
-                else:
-                    v_out = reg_model_parallel(z_K_sampled)
-                with profiler.record_function("BACKPROP") if is_profiled else contextlib.nullcontext():
+                with profiler.record_function("LOSSES") if is_profiled else contextlib.nullcontext():
+                    super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                     recons_loss = reconstruction_criterion(x_out, x_in)
                     scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
                     # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
@@ -252,12 +253,13 @@ def train_config():
                         cont_loss = controls_criterion(z_0_mu_logvar, v_in)
                     scalars['Controls/BackpropLoss/Train'].append(cont_loss)
                     utils.exception.check_nan_values(epoch, recons_loss, lat_loss, flow_input_loss, cont_loss)
+                with profiler.record_function("BACKPROP") if is_profiled else contextlib.nullcontext():
                     (recons_loss + lat_loss + flow_input_loss + cont_loss).backward()  # Actual backpropagation is here
                 with profiler.record_function("OPTIM_STEP") if is_profiled else contextlib.nullcontext():
                     optimizer.step()  # Internal params. update; before scheduler step
                 logger.on_minibatch_finished(i)
                 # For full-trace profiling: we need to stop after a few mini-batches
-                if config.train.profiler_full_trace and i == 2:
+                if config.train.profiler_full_trace and i == 1:
                     break
         if prof is not None:
             logger.save_profiler_results(prof, config.train.profiler_full_trace)

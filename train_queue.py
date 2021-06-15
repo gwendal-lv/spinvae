@@ -38,14 +38,15 @@ train_all_k_folds = False  # TODO reset to True
 
 # ===================================== Bigger ResCNN models ======================================================
 # Run 1
-model_config_mods.append({'name': 'FlVAE4',
-                          'run_name': '45b_cnn9l1_lat_flow_bn_between',
-                          'latent_flow_arch': 'realnvp_8l500'
-                          })
+model_config_mods.append({'run_name': '01_ref_6stack_batch32',
+                          'stack_spectrograms': True, 'midi_notes': ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))})
 train_config_mods.append({'main_cuda_device_idx': 1,
-                          'initial_learning_rate': 7e-5,
-                          'beta': 0.2, 'beta_start_value': 0.02, 'beta_warmup_epochs': 50,
-                          'latent_input_dropout': 0.15})
+                          'initial_learning_rate': 7e-5, 'minibatch_size': 32})
+# Run 2
+model_config_mods.append({'run_name': '01_ref_6stack_batch160',
+                          'stack_spectrograms': True, 'midi_notes': ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))})
+train_config_mods.append({'main_cuda_device_idx': 1,
+                          'initial_learning_rate': 2e-4, 'minibatch_size': 160})
 
 
 

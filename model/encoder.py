@@ -5,75 +5,98 @@ import torch.nn as nn
 from model import layer
 
 
-def available_architectures():
-    # TODO try a resnet CNN
-    return ['wavenet_baseline',  # Ultra-heavy decoder (unusable)
-            # Lighter decoder (fewer feature maps on last dec layers)
-            # Remains quite heavy: >1.3 seconds to process a minibatch of 32 samples
-            'wavenet_baseline_lighter',
-            'wavenet_baseline_shallow',  # 8 layers instead of 10 - brutally reduced feature maps count
-            'flow_synth',
-            'speccnn8l1',  # Custom 8-layer CNN + 1 linear very light architecture
-            'speccnn8l1_bn'  # Same base config, different BN usage (no BN on first/last layers)
-            'speccnn8l1_2',  # MUCH more channels per layer.... but no significant perf improvement
-            'speccnn8l1_3',  # speccnn8l1_bn with Bigger conv kernels
-            'speccnn9l1',  # For bigger input spectrograms, with more channels on first layers
-            'rescnn'
-            ]
+def parse_architecture(full_architecture: str):
+    """ Parses an argument used to describe the encoder and decoder architectures (e.g. speccnn8l1_larger_res) """
+    # Decompose architecture to retrieve number of cnn and fc layer, options, ...
+    arch_args = full_architecture.split('_')
+    base_arch_name = arch_args[0]  # type: str
+    del arch_args[0]
+    assert base_arch_name.startswith('speccnn')  # Constrained arch at the moment
+    layers_args = [int(s) for s in base_arch_name.replace('speccnn', '').split('l')]
+    num_cnn_layers = layers_args[0]
+    num_fc_layers = layers_args[1]
+    # Check arch args
+    for arch_arg in arch_args:
+        if arch_arg == 'larger':
+            raise NotImplementedError("_larger encoder argument not implemented.")
+        elif arch_arg == 'res':
+            raise NotImplementedError("Res-connections encoder argument (_res) not implemented.")
+        elif arch_arg == 'att':
+            raise NotImplementedError("Self-attention encoder argument (_att) not implemented.")
+        else:
+            raise ValueError("Unvalid encoder argument '{}' from architecture '{}'".format(arch_arg, full_architecture))
+    return base_arch_name, num_cnn_layers, num_fc_layers, arch_args
 
 
 class SpectrogramEncoder(nn.Module):
     """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu and logs(var) values"""
     def __init__(self, architecture, dim_z, input_tensor_size, fc_dropout, output_bn=False, output_dropout_p=0.0,
-                 deepest_features_mix=True, force_bigger_network=False):
+                 deep_features_mix_level=-1, force_bigger_network=False):
         """
 
-        :param architecture:
+        :param architecture: String describing the type of network, number of CNN and FC layers, with options
+            (see parse_architecture(...) method)
         :param dim_z:
         :param input_tensor_size:
         :param fc_dropout:
         :param output_bn:
-        :param deepest_features_mix: (applies to multi-channel spectrograms only) If True, features mixing will be
-            done on the 1x1 deepest conv layer. If False, mixing will be done before the deepest conv layer (see
-            details in implementation)
+        :param deep_features_mix_level: (applies to multi-channel spectrograms only) negative int, -1 corresponds
+            to the last conv layer (usually 1x1 kernel), -2 to the conv layer before, etc.
         :param force_bigger_network: Optional, to impose a higher number of channels for the last 4x4 (should be
-            used for fair comparisons between single/multi-specs encoder)
+            used only for fair comparisons between single/multi-specs encoder)
         """
         super().__init__()
         self.dim_z = dim_z  # Latent-vector size (2*dim_z encoded values - mu and logs sigma 2)
         self.spectrogram_channels = input_tensor_size[1]
-        self.architecture = architecture
-        self.deepest_features_mix = deepest_features_mix
-        self.mixer_1x1conv_ch = 1024
+        self.full_architecture = architecture
+        self.deep_feat_mix_level = deep_features_mix_level
         self.fc_dropout = fc_dropout
+        assert force_bigger_network is False  # deactivated after refactoring
+        self.base_arch_name, self.num_cnn_layers, self.num_fc_layers, self.arch_args \
+            = parse_architecture(self.full_architecture)
 
-        # TODO construction séquentielle directement dans cette classe ? (sinon c'est insupportablement chiant à gérer)
-        #   avec une boucle qui parcourt les numéros de couche, qui ajoute dans la partie séquentielle ou pas
         # - - - - - 1) Main CNN encoder (applied once per input spectrogram channel) - - - - -
-        # stacked spectrograms: don't add the final 1x1 conv layer, or the 2 last conv layers (1x1 and 4x4)
-        self.single_ch_cnn = SpectrogramCNN(self.architecture, last_layers_to_remove=(1 if self.deepest_features_mix
-                                                                                      else 2))
-        # - - - - - 2) Features mixer - - - - -
-        # Only these archs are fully-supported at the moment
-        assert self.architecture == 'speccnn8l1_bn' or self.architecture == 'speccnn9l1' \
-               or self.architecture == 'rescnn'
+        # - - - - - - - - - - and 2) Features mixer - - - - - - - - - -
+        self.single_ch_cnn = nn.Sequential()
         self.features_mixer_cnn = nn.Sequential()
-        if self.deepest_features_mix:
-            self.features_mixer_cnn = layer.Conv2D(512*self.spectrogram_channels, self.mixer_1x1conv_ch,
-                                                   [1, 1], [1, 1], 0, [1, 1],
-                                                   activation=nn.LeakyReLU(0.1), name_prefix='enc8', batch_norm=None)
-        else:  # mixing conv layer: deepest-1 (4x4 kernel)
-            if not force_bigger_network:  # Default: auto-managed number of layers
-                n_4x4_ch = 512 if self.spectrogram_channels == 1 else 768
-            else:
-                n_4x4_ch = 1800  # Forced number of layers, for some very specific experiments only
-            self.features_mixer_cnn \
-                = nn.Sequential(layer.Conv2D(256*self.spectrogram_channels, n_4x4_ch, [4, 4], [2, 2], 2, [1, 1],
-                                             activation=nn.LeakyReLU(0.1), name_prefix='enc7'),
-                                layer.Conv2D(n_4x4_ch, self.mixer_1x1conv_ch,
-                                             [1, 1], [1, 1], 0, [1, 1],
-                                             activation=nn.LeakyReLU(0.1), name_prefix='enc8', batch_norm=None)
-                                )
+        if self.base_arch_name == 'speccnn8l1':
+            ''' Where to use BN? 'ESRGAN' generator does not use BN in the first and last conv layers.
+            DCGAN: no BN on discriminator in out generator out.
+            Our experiments seem to show: more stable latent loss with no BN before the FC that regresses mu/logvar,
+            consistent training runs 
+            TODO try BN before act (see DCGAN arch)
+            '''
+            for i in range(0, self.num_cnn_layers):  # for all 4x4 conv layers
+                # base number of channels: 1, 8, 16, ... 512, 1024
+                in_ch = 2**(i+2) if i > 0 else 1
+                out_ch = 2**(i+3)
+                if self.spectrogram_channels > 1:
+                    # Does this layer receive the stacked feature maps? (much larger input, 50% larger output)
+                    if i == (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
+                        in_ch = in_ch * self.spectrogram_channels
+                        out_ch = out_ch * 3 // 2
+                    # Is this layer the one that is after the stacking layer? (50% larger input)
+                    elif i == (self.num_cnn_layers + self.deep_feat_mix_level + 1):  # negative mix level
+                        in_ch = in_ch * 3 // 2
+                # TODO allow _large option and set a max threshold (e.g. 2048? 3000+?)
+                # Kernel size, stride and padding depend on the layer number
+                if i == 0:
+                    kernel_size, stride, padding = [5, 5], [2, 2], 2
+                elif 1 <= i <= 6:
+                    kernel_size, stride, padding = [4, 4], [2, 2], 2
+                else:  # i == 7
+                    kernel_size, stride, padding = [1, 1], [1, 1], 0
+                # Build layer and append to the appropriate sequence module
+                act = nn.LeakyReLU(0.1)  # New instance for each layer (maybe unnecessary?)
+                name = 'enc{}'.format(i)
+                # No BN on first and last layers
+                conv_layer = layer.Conv2D(in_ch, out_ch, kernel_size, stride, padding, act=act, name_prefix=name,
+                                          bn=(None if (0 < i < (self.num_cnn_layers-1)) else 'after'))
+                if i < (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
+                    self.single_ch_cnn.add_module(name, conv_layer)
+                else:
+                    self.features_mixer_cnn.add_module(name, conv_layer)
+
         # - - - - - 3) MLP for extracting properly-sized latent vector - - - - -
         # Automatic CNN output tensor size inference
         with torch.no_grad():
@@ -82,24 +105,23 @@ class SpectrogramEncoder(nn.Module):
             dummy_spectrogram = torch.zeros(single_element_input_tensor_size)
             self.cnn_out_size = self._forward_cnns(dummy_spectrogram).size()
         cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
-        # No activation - outputs are latent mu/logvar
-        if 'wavenet_baseline' in self.architecture\
-                or 'speccnn8l1' in self.architecture or 'speccnn9l1' in self.architecture\
-                or 'rescnn' in self.architecture:  # (not an MLP...) much is done in the CNN
-            # TODO batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
-            #    add corresponding ctor argument (build with bn=True if using flow-based latent space)
-            # TODO remove this dropout?
-            self.mlp = nn.Sequential(nn.Dropout(self.fc_dropout), nn.Linear(cnn_out_items, 2 * self.dim_z))
-            if output_bn:
-                self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(2 * self.dim_z))
-            if output_dropout_p > 0.0:
-                self.mlp.add_module('lat_in_drop', nn.Dropout(output_dropout_p))
-        elif self.architecture == 'flow_synth':
-            self.mlp = nn.Sequential(nn.Linear(cnn_out_items, 1024), nn.ReLU(),  # TODO dropouts
-                                     nn.Linear(1024, 1024), nn.ReLU(),
-                                     nn.Linear(1024, 2 * self.dim_z))
-        else:
-            raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
+        # Number of linear layers as configured in the arch arg (e.g. speccnn8l1 -> 1 FC layer).
+        # Default: no final batch-norm (maybe added after this for loop). Always 1024 hidden units
+        self.mlp = nn.Sequential()
+        for i in range(self.num_fc_layers):
+            if self.fc_dropout > 0.0:
+                self.mlp.add_module("encdrop{}".format(i), nn.Dropout(self.fc_dropout))
+            in_units = cnn_out_items if (i == 0) else 1024
+            out_units = 1024 if (i < (self.num_fc_layers - 1)) else 2 * self.dim_z
+            self.mlp.add_module("encfc{}".format(i), nn.Linear(in_units, out_units))
+            if i < (self.num_fc_layers - 1):  # No final activation - outputs are latent mu/logvar
+                self.mlp.add_module("act{}".format(i), nn.ReLU())
+        # Batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
+        # Dropout to help prevent VAE posterior collapse --> should be zero
+        if output_bn:
+            self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(2 * self.dim_z))
+        if output_dropout_p > 0.0:
+            self.mlp.add_module('lat_in_drop', nn.Dropout(output_dropout_p))
 
     def _forward_cnns(self, x_spectrograms):
         # apply main cnn multiple times
@@ -130,6 +152,7 @@ class SpectrogramCNN(nn.Module):
             the owner of this pure-CNN module).
         """
         super().__init__()
+        assert False  # Obsolete class - code to be removed
         self.architecture = architecture
         if last_layers_to_remove > 0:  # Only these archs are fully-supported at the moment
             assert self.architecture == 'speccnn8l1_bn' or self.architecture == 'speccnn9l1' \
@@ -148,45 +171,45 @@ class SpectrogramCNN(nn.Module):
              Issue: when using the paper's FFT size and hop, layers 8 and 9 seem less useful. The image size
               at this depth is < kernel size (much of the 4x4 kernel convolves with zeros) '''
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 128, [5,5], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc1'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc1'),
                                         layer.Conv2D(128, 128, [4,4], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc2'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc2'),
                                         layer.Conv2D(128, 128, [4,4], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc3'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc3'),
                                         layer.Conv2D(128, 256, [4,4], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc4'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc4'),
                                         layer.Conv2D(256, 256, [4,4], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc5'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc5'),
                                         layer.Conv2D(256, 256, [4,4], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc6'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc6'),
                                         layer.Conv2D(256, 512, [4,4], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc7'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc7'),
                                         layer.Conv2D(512, 512, [4,4], [2,2], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc8'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc8'),
                                         layer.Conv2D(512, 512, [4,4], [2,1], 2, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc9'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc9'),
                                         layer.Conv2D(512, 1024, [1,1], [1,1], 0, [1,1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc10'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc10'),
                                         )
 
         elif self.architecture == 'wavenet_baseline_shallow':
             """ Inspired from wavenet_baseline, minus the two last layer, with less channels """
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc1'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc1'),
                                         layer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc2'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc2'),
                                         layer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc3'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc3'),
                                         layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc4'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc4'),
                                         layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc5'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc5'),
                                         layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc6'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc6'),
                                         layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc7'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc7'),
                                         layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1],
-                                                     activation=nn.LeakyReLU(0.1), name_prefix='enc8'),
+                                                     act=nn.LeakyReLU(0.1), name_prefix='enc8'),
                                         )
 
         elif self.architecture == 'flow_synth':
@@ -203,38 +226,37 @@ class SpectrogramCNN(nn.Module):
             mostly on zero-padded values. We should either stride-conv or 2^l dilate, but not both '''
             n_lay = 64  # 128/2 for paper's comparisons consistency. Could be larger
             self.enc_nn = nn.Sequential(layer.Conv2D(1, n_lay, [7,7], [2,2], 3, [1,1],
-                                                     activation=nn.ELU(), name_prefix='enc1'),
+                                                     act=nn.ELU(), name_prefix='enc1'),
                                         layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     activation=nn.ELU(), name_prefix='enc2'),
+                                                     act=nn.ELU(), name_prefix='enc2'),
                                         layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     activation=nn.ELU(), name_prefix='enc3'),
+                                                     act=nn.ELU(), name_prefix='enc3'),
                                         layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     activation=nn.ELU(), name_prefix='enc4'),
+                                                     act=nn.ELU(), name_prefix='enc4'),
                                         layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     activation=nn.ELU(), name_prefix='enc5'))
+                                                     act=nn.ELU(), name_prefix='enc5'))
 
         elif self.architecture == 'speccnn8l1':  # 1.7 GB (RAM) ; 0.12 GMultAdd  (batch 256)
             ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes drastically reduced.
-            Where to use BN?
-            'Super-Resolution GAN' generator does not use BN in the first and last conv layers.'''
+            Where to use BN? 'Super-Resolution GAN' generator does not use BN in the first and last conv layers.'''
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc1'),
+                                                     act=act(act_p), name_prefix='enc1'),
                                         layer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc2'),
+                                                     act=act(act_p), name_prefix='enc2'),
                                         layer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc3'),
+                                                     act=act(act_p), name_prefix='enc3'),
                                         layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc4'),
+                                                     act=act(act_p), name_prefix='enc4'),
                                         layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc5'),
+                                                     act=act(act_p), name_prefix='enc5'),
                                         layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc6'),
+                                                     act=act(act_p), name_prefix='enc6'),
                                         layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc7'),
+                                                     act=act(act_p), name_prefix='enc7'),
                                         layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc8'),
+                                                     act=act(act_p), name_prefix='enc8'),
                                         )
 
 
@@ -243,50 +265,50 @@ class SpectrogramCNN(nn.Module):
         elif self.architecture == 'speccnn8l1_bn':  # 1.7 GB (RAM) ; 0.12 GMultAdd  (batch 256)
             ''' Where to use BN? 'ESRGAN' generator does not use BN in the first and last conv layers.
             DCGAN: no BN on discriminator in out generator out.
-            Our experiments show: much more stable latent loss with no BNbefore the FC that regresses mu/logvar,
+            Our experiments seem to show: more stable latent loss with no BN before the FC that regresses mu/logvar,
             consistent training runs 
             TODO try BN before act (see DCGAN arch)
             '''
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     activation=act(act_p), name_prefix='enc1'),
+                                                     act=act(act_p), name_prefix='enc1'),
                                         layer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc2'),
+                                                     act=act(act_p), name_prefix='enc2'),
                                         layer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc3'),
+                                                     act=act(act_p), name_prefix='enc3'),
                                         layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc4'),
+                                                     act=act(act_p), name_prefix='enc4'),
                                         layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc5'),
+                                                     act=act(act_p), name_prefix='enc5'),
                                         layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc6')
+                                                     act=act(act_p), name_prefix='enc6')
                                         )
             if last_layers_to_remove <= 1:
                 self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                               activation=act(act_p), name_prefix='enc7'))
+                                                               act=act(act_p), name_prefix='enc7'))
             if last_layers_to_remove == 0:
                 self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                               activation=act(act_p), name_prefix='enc8'))
+                                                               act=act(act_p), name_prefix='enc8'))
         elif self.architecture == 'speccnn8l1_2':  # 5.8 GB (RAM) ; 0.65 GMultAdd  (batch 256)
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 32, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     activation=act(act_p), name_prefix='enc1'),
+                                                     act=act(act_p), name_prefix='enc1'),
                                         layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc2'),
+                                                     act=act(act_p), name_prefix='enc2'),
                                         layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc3'),
+                                                     act=act(act_p), name_prefix='enc3'),
                                         layer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc4'),
+                                                     act=act(act_p), name_prefix='enc4'),
                                         layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc5'),
+                                                     act=act(act_p), name_prefix='enc5'),
                                         layer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc6'),
+                                                     act=act(act_p), name_prefix='enc6'),
                                         layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc7'),
+                                                     act=act(act_p), name_prefix='enc7'),
                                         layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                     activation=act(act_p), name_prefix='enc8'),
+                                                     act=act(act_p), name_prefix='enc8'),
                                         )
         elif self.architecture == 'speccnn8l1_3':  # XXX GB (RAM) ; XXX GMultAdd  (batch 256)
             ''' speeccnn8l1_bn with bigger conv kernels '''
@@ -294,21 +316,21 @@ class SpectrogramCNN(nn.Module):
             act_p = 0.1  # Activation param
             ker = [5, 5]  # TODO try bigger 1st ker?
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     activation=act(act_p), name_prefix='enc1'),
+                                                     act=act(act_p), name_prefix='enc1'),
                                         layer.Conv2D(8, 16, ker, [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc2'),
+                                                     act=act(act_p), name_prefix='enc2'),
                                         layer.Conv2D(16, 32, ker, [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc3'),
+                                                     act=act(act_p), name_prefix='enc3'),
                                         layer.Conv2D(32, 64, ker, [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc4'),
+                                                     act=act(act_p), name_prefix='enc4'),
                                         layer.Conv2D(64, 128, ker, [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc5'),
+                                                     act=act(act_p), name_prefix='enc5'),
                                         layer.Conv2D(128, 256, ker, [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc6'),
+                                                     act=act(act_p), name_prefix='enc6'),
                                         layer.Conv2D(256, 512, ker, [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc7'),
+                                                     act=act(act_p), name_prefix='enc7'),
                                         layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                     activation=act(act_p), name_prefix='enc8'),
+                                                     act=act(act_p), name_prefix='enc8'),
                                         )
 
         elif self.architecture == 'speccnn9l1':  # 6.5 GB (RAM) ; 0.8 GMultAdd  (batch 256)
@@ -316,26 +338,26 @@ class SpectrogramCNN(nn.Module):
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 24, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     activation=act(act_p), name_prefix='enc1'),
+                                                     act=act(act_p), name_prefix='enc1'),
                                         layer.Conv2D(24, 48, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc2'),
+                                                     act=act(act_p), name_prefix='enc2'),
                                         layer.Conv2D(48, 96, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc3'),
+                                                     act=act(act_p), name_prefix='enc3'),
                                         layer.Conv2D(96, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc4'),
+                                                     act=act(act_p), name_prefix='enc4'),
                                         layer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc5'),
+                                                     act=act(act_p), name_prefix='enc5'),
                                         layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc6'),
+                                                     act=act(act_p), name_prefix='enc6'),
                                         layer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     activation=act(act_p), name_prefix='enc7')
+                                                     act=act(act_p), name_prefix='enc7')
                                         )
             if last_layers_to_remove <= 1:
                 self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                               activation=act(act_p), name_prefix='enc8'))
+                                                               act=act(act_p), name_prefix='enc8'))
             if last_layers_to_remove == 0:
                 self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                               activation=act(act_p), name_prefix='enc9'))
+                                                               act=act(act_p), name_prefix='enc9'))
 
         # TODO try reduce channels from all skip-connection layers (or the model overfits++), dense only (no add res)
         elif self.architecture == 'rescnn':  # 6.9 GB (RAM) ; 0.85 GMultAdd  (batch 256)
@@ -343,7 +365,7 @@ class SpectrogramCNN(nn.Module):
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
             self.enc_nn = nn.Sequential(layer.Conv2D(1, 32, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     activation=act(act_p), name_prefix='enc1'),
+                                                     act=act(act_p), name_prefix='enc1'),
                                         layer.DenseConv2D(32, 48, 96, [4, 4], [2, 2], 2, [1, 1],
                                                           activation=act(act_p), name_prefix='enc23'),
                                         layer.DenseConv2D(96, 128, 256, [4, 4], [2, 2], 2, [1, 1],
@@ -353,10 +375,10 @@ class SpectrogramCNN(nn.Module):
                                         )
             if last_layers_to_remove <= 1:
                 self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                               activation=act(act_p), name_prefix='enc8'))
+                                                               act=act(act_p), name_prefix='enc8'))
             if last_layers_to_remove == 0:
                 self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                               activation=act(act_p), name_prefix='enc9'))
+                                                               act=act(act_p), name_prefix='enc9'))
 
         else:
             raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
@@ -367,15 +389,16 @@ class SpectrogramCNN(nn.Module):
 
 if __name__ == "__main__":
 
-    enc = SpectrogramEncoder('wavenet_baseline_reduced')
-    print(enc)
+    import torchinfo
+    input_size = [32, 1, 257, 347]
+    enc = SpectrogramEncoder('speccnn8l1', 610, input_size, 0.1)
+    _ = torchinfo.summary(enc, input_size=input_size)
 
     if False:
         # Test: does the dataloader get stuck here as well? Or only in jupyter notebooks?
         # YEP lots of multiprocessing issues with PyTorch DataLoaders....
         # (even pickle could be an issue... )
         from data import dataset
-        import torchinfo
         dexed_dataset = dataset.DexedDataset()
 
         enc = SpectrogramCNN(architecture='wavenet_baseline')
