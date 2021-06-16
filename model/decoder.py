@@ -81,7 +81,8 @@ class SpectrogramDecoder(nn.Module):
                 else:  # last layer
                     output_padding = (0, 0)
                 name = 'dec{}'.format(i)
-                l = layer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, name_prefix=name)
+                l = layer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, name_prefix=name,
+                                  bn=('after' if (0 <= i < (self.num_cnn_layers-1)) else None))
                 self.single_ch_cnn.add_module(name, l)
         # Final activation, for all architectures
         self.single_ch_cnn.add_module('decact', nn.Hardtanh())

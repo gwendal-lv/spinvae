@@ -91,7 +91,7 @@ class SpectrogramEncoder(nn.Module):
                 name = 'enc{}'.format(i)
                 # No BN on first and last layers
                 conv_layer = layer.Conv2D(in_ch, out_ch, kernel_size, stride, padding, act=act, name_prefix=name,
-                                          bn=(None if (0 < i < (self.num_cnn_layers-1)) else 'after'))
+                                          bn=('after' if (0 < i < (self.num_cnn_layers-1)) else None))
                 if i < (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
                     self.single_ch_cnn.add_module(name, conv_layer)
                 else:

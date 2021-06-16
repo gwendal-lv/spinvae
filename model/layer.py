@@ -29,19 +29,19 @@ class Conv2D(nn.Sequential):
 class TConv2D(nn.Sequential):
     """ A basic Transposed conv layer with activation and batch-norm """
     def __init__(self, in_ch, out_ch, kernel_size, stride, padding, output_padding=0, dilation=1,
-                 padding_mode='zeros', act=nn.ReLU(), name_prefix='', batch_norm='after'):
+                 padding_mode='zeros', act=nn.ReLU(), name_prefix='', bn='after'):
         """
 
-        :param batch_norm: 'after' activation, 'before' activation, or None
+        :param bn: 'after' activation, 'before' activation, or None
         """
         super().__init__()
         self.add_module(name_prefix + 'tconv', nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride,
                                                                   padding, output_padding,
                                                                   dilation=dilation, padding_mode=padding_mode))
-        if batch_norm == 'before':
+        if bn == 'before':
             self.add_module(name_prefix + 'bn', nn.BatchNorm2d(out_ch))
         self.add_module(name_prefix + 'act', act)
-        if batch_norm == 'after':
+        if bn == 'after':
             self.add_module(name_prefix + 'bn', nn.BatchNorm2d(out_ch))
 
 

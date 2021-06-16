@@ -7,6 +7,11 @@
           <mappings>
             <mapping deploy="/home/gwendal/Jupyter/nn-synth-interp" local="$PROJECT_DIR$" web="/" />
           </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/docs" />
+            <excludedPath local="true" path="$PROJECT_DIR$/figures" />
+            <excludedPath local="true" path="$PROJECT_DIR$/data/external_audio" />
+          </excludedPaths>
         </serverdata>
       </paths>
     </serverData>
