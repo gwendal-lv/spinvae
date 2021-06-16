@@ -13,6 +13,7 @@ from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 
 import model.loss
+import model.flows
 from utils.probability import gaussian_log_probability, standard_gaussian_log_probability
 
 
@@ -75,7 +76,7 @@ class FlowVAE(nn.Module):
     """
 
     def __init__(self, encoder, dim_z, decoder, normalize_latent_loss: bool, flow_arch: str,
-                 concat_midi_to_z0=False, flows_internal_dropout_p=0.0, flow_bn_between_layers=False):
+                 concat_midi_to_z0=False, flows_internal_dropout_p=0.0):
         """
 
         :param encoder:  CNN-based encoder, output might be smaller than dim_z (if concat MIDI pitch/vel)
@@ -86,7 +87,6 @@ class FlowVAE(nn.Module):
             hidden features count, and batch-norm options '_BNbetween' and '_BNinternal' ...)
         :param concat_midi_to_z0: If True, encoder output mu and log(var) vectors must be smaller than dim_z, for
             this model to append MIDI pitch and velocity (see corresponding mu and log(var) in forward() implementation)
-        # TODO add more flow params (hidden neural networks config: BN, layers, ...)
         """
         super().__init__()
         # No size checks performed. Encoder and decoder must have been properly designed
@@ -97,39 +97,27 @@ class FlowVAE(nn.Module):
         self.is_profiled = False
         self.normalize_latent_loss = normalize_latent_loss
         # Latent flow setup
-        flow_args = flow_arch.split('_')
-        if len(flow_args) < 2:
-            raise AssertionError("flow_arch argument must contains at least a flow type and layers description, "
-                                 "e.g. 'realnvp_4l200'")
-        elif len(flow_args) > 2:
-            raise NotImplementedError("Optional flow arch argument not supported yet")
-        self.flow_arch = flow_args[0]
-        flow_layers_args = flow_args[1].split('l')
-        self.flow_layers_count = int(flow_layers_args[0])
-        self.flow_hidden_features = int(flow_layers_args[1])
-        if self.flow_arch.lower() == 'maf':
+        self.flow_type, self.flow_num_layers, self.flow_num_hidden_units_per_layer, self.flow_bn_between_layers, \
+            self.flow_bn_inside_layers, self.flow_output_bn = model.flows.parse_flow_args(flow_arch)
+        # TODO finir ça proprement
+        if self.flow_type.lower() == 'maf':
             transforms = []
             for _ in range(self.flow_layers_count):
                 transforms.append(ReversePermutation(features=self.dim_z))
-                transforms.append(MaskedAffineAutoregressiveTransform(features=self.dim_z,
-                                                                      hidden_features=self.flow_hidden_features))
+                # TODO add all options
+                transforms.append(MaskedAffineAutoregressiveTransform(
+                    features=self.dim_z, hidden_features=self.flow_num_hidden_units_per_layer))
             self.flow_transform = CompositeTransform(transforms)
-        elif self.flow_arch.lower() == 'realnvp':
-            # TODO use a custom RealNVP....
-            if flow_bn_between_layers:
-                raise NotImplementedError()
-            else:  # Deprecated option (for compatiblity with older models)
-                flow = SimpleRealNVP(features=self.dim_z, hidden_features=self.flow_hidden_features,
-                                     num_layers=self.flow_layers_count,
-                                     num_blocks_per_layer=2,  # MAAF layers default count
-                                     batch_norm_within_layers=True,
-                                     dropout_probability=flows_internal_dropout_p,
-                                     batch_norm_between_layers=False  # True prevents train reversibility
-                                     )
-                # Dirty quick trick, we want the tranform only, not the base distrib that we want to model ourselves...
-                self.flow_transform = flow._transform
+        elif self.flow_type.lower() == 'realnvp':
+            # TODO use a custom RealNVP instance....
+            # BN between flow layers prevents reversibility during training
+            self.flow_transform = model.flows.CustomRealNVP(
+                features=self.dim_z, hidden_features=self.flow_num_hidden_units_per_layer,
+                num_layers=self.flow_num_layers, dropout_probability=flows_internal_dropout_p,
+                bn_within_layers=self.flow_bn_inside_layers, bn_between_layers=self.flow_bn_between_layers,
+                output_bn=self.flow_output_bn)
         else:
-            raise NotImplementedError("Unavailable flow '{}'".format(self.flow_arch))
+            raise NotImplementedError("Unavailable flow '{}'".format(self.flow_type))
 
     @property
     def flow_forward_function(self):

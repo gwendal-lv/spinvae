@@ -14,6 +14,7 @@ from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 
 from data.preset import PresetIndexesHelper
+import model.flows
 from model.flows import CustomRealNVP, InverseFlow
 
 
@@ -111,7 +112,7 @@ class FlowRegression(nn.Module):
             (e.g. '16l200_bn' adds batch norm). See implementation for more details.  TODO implement suffix options
         :param dim_z: Size of a z_K latent vector, which is also the output size for this invertible normalizing flow.
         :param idx_helper:
-        :param dropout_p:  TODO implement dropout (in all but the last flow layers)
+        :param dropout_p:
         :param fast_forward_flow: If True, the flow transform will be built such that it is fast (and memory-efficient)
             in the forward direction (else, it will be fast in the inverse direction). Moreover, if batch-norm is used
             between layers, the flow can be trained only its 'fast' direction (which can be forward or inverse
@@ -121,31 +122,20 @@ class FlowRegression(nn.Module):
         self.dim_z = dim_z
         self.idx_helper = idx_helper
         self._fast_forward_flow = fast_forward_flow
-        arch_args = architecture.split('_')
-        if len(arch_args) < 2:
-            raise AssertionError("Unvalid architecture string argument '{}' does not contain enough information"
-                                 .format(architecture))
-        elif len(arch_args) == 2:  # No opt args (default)
-            self.flow_type = arch_args[0]
-            self.num_flow_layers, self.num_flow_hidden_features = arch_args[1].split('l')
-            self.num_flow_layers = int(self.num_flow_layers)
-            self.num_flow_hidden_features = int(self.num_flow_hidden_features)
-            # Default: full BN usage
-            self.bn_between_flows = True
-            self.bn_within_flows = True
-        else:
-            raise NotImplementedError("Arch suffix arguments not implemented yet (too many arch args given in '{}')"
-                                      .format(architecture))
+        self.flow_type, self.num_flow_layers, self.num_flow_hidden_features, _, _, _ = \
+            model.flows.parse_flow_args(architecture, authorize_options=False)
+        # Default: BN usage everywhere but between the 2 last layers
+        self.bn_between_flows = True
+        self.bn_within_flows = True
+        self.bn_output = False
+
         # Multi-layer flow definition
         if self.flow_type.lower() == 'realnvp' or self.flow_type.lower() == 'rnvp':
             # RealNVP - custom (without useless gaussian base distribution) and no BN on last layers
-            self._forward_flow_transform = CustomRealNVP(self.dim_z, self.num_flow_hidden_features,
-                                                         self.num_flow_layers,
-                                                         num_blocks_per_layer=2,  # MAF default
-                                                         batch_norm_between_layers=self.bn_between_flows,
-                                                         batch_norm_within_layers=self.bn_within_flows,
-                                                         dropout_probability=dropout_p
-                                                         )
+            self._forward_flow_transform = CustomRealNVP(
+                self.dim_z, self.num_flow_hidden_features, self.num_flow_layers, dropout_probability=dropout_p,
+                bn_between_layers=self.bn_between_flows, bn_within_layers=self.bn_within_flows,
+                output_bn=self.bn_output)
         elif self.flow_type.lower() == 'maf':
             transforms = []
             for l in range(self.num_flow_layers):
@@ -157,11 +147,13 @@ class FlowRegression(nn.Module):
                                                                       use_batch_norm=False,  # TODO (l < num_layers-2),
                                                                       dropout_probability=0.5  # TODO as param
                                                                       ))
-            # The inversed maf flow should never (cannot...) be used during training:
+            self._forward_flow_transform = CompositeTransform(transforms)  # Fast forward  # TODO rename
+            # The inversed MAF flow should never (cannot...) be used during training:
             #   - much slower than forward (in nflows implementation)
             #   - very unstable
             #   - needs ** huge ** amounts of GPU RAM
-            self._forward_flow_transform = CompositeTransform(transforms)  # Fast forward  # TODO rename
+        else:
+            raise ValueError("Undefined flow type '{}'".format(self.flow_type))
 
         self.activation_layer = PresetActivation(self.idx_helper, cat_softmax_activation=cat_softmax_activation)
 

@@ -48,6 +48,8 @@ def build_ae_model(model_config, train_config):
     # Backward compatibility - recently added config args
     # Then build the full AE model
     if model_config.latent_flow_arch is None:
+        # No additional input regularization is allowed for basic VAE (ELBO Dkl regularization term only)
+        assert train_config.latent_flow_input_regularization == 'None'
         ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
                                 train_config.latent_loss)
     else:

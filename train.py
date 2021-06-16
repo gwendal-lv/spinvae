@@ -125,7 +125,8 @@ def train_config():
     controls_accuracy_criterion = model.loss.CategoricalParamsAccuracy(dataset.preset_indexes_helper,
                                                                        reduce=True, percentage_output=True)
     # Stabilizing loss for flow-based latent space
-    flow_input_dkl = model.loss.GaussianDkl(normalize=config.train.normalize_losses)
+    if config.train.latent_flow_input_regularization.lower() == 'dkl':
+        flow_input_dkl = model.loss.GaussianDkl(normalize=config.train.normalize_losses)
 
 
     # ========== Scalars, metrics, images and audio to be tracked in Tensorboard ==========
@@ -245,8 +246,8 @@ def train_config():
                     flow_input_loss = torch.tensor([0.0], device=lat_loss.device)
                     if extended_ae_model.is_flow_based_latent_space and\
                             (config.train.latent_flow_input_regularization.lower() == 'dkl'):
-                        flow_input_loss = 0.1 * config.train.beta * flow_input_dkl(z_0_mu_logvar[:, 0, :],
-                                                                                   z_0_mu_logvar[:, 1, :])
+                        flow_input_loss = 0.1 * config.train.beta *\
+                                          flow_input_dkl(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
                     if config.model.forward_controls_loss:  # unused params might be modified by this criterion
                         cont_loss = controls_criterion(v_out, v_in)
                     else:

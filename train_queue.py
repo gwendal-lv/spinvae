@@ -37,16 +37,35 @@ train_all_k_folds = False  # TODO reset to True
 
 
 # ===================================== Bigger ResCNN models ======================================================
-# Run 1
-model_config_mods.append({'run_name': '01_ref_6stack_batch32',
-                          'stack_spectrograms': True, 'midi_notes': ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))})
-train_config_mods.append({'main_cuda_device_idx': 1,
-                          'initial_learning_rate': 7e-5, 'minibatch_size': 32})
-# Run 2
-model_config_mods.append({'run_name': '01_ref_6stack_batch160',
-                          'stack_spectrograms': True, 'midi_notes': ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))})
-train_config_mods.append({'main_cuda_device_idx': 1,
-                          'initial_learning_rate': 2e-4, 'minibatch_size': 160})
+# TODO tests à faire :
+#    - 1) ref, batch 160, 1 midi note (pour aller + vite...). latent BN : pas sur output
+#    - 2) output latent BN
+#    - 3) output latent BN, réduire dropout
+#    - 4) output latent BN, zero dropout
+# Run
+model_config_mods.append({'run_name': '00_ref_batch160_1midi',
+                          'latent_flow_arch': 'realnvp_6l300_BNinternal_BNbetween'
+                          })
+train_config_mods.append({'fc_dropout': 0.3, 'reg_fc_dropout': 0.4
+                          })
+# Run
+model_config_mods.append({'run_name': '01_latent_outputBN',
+                          'latent_flow_arch': 'realnvp_6l300_BNinternal_BNbetween_BNoutput'
+                          })
+train_config_mods.append({'fc_dropout': 0.3, 'reg_fc_dropout': 0.4
+                          })
+# Run
+model_config_mods.append({'run_name': '02_latent_outputBN_lessdropout',
+                          'latent_flow_arch': 'realnvp_6l300_BNinternal_BNbetween_BNoutput'
+                          })
+train_config_mods.append({'fc_dropout': 0.1, 'reg_fc_dropout': 0.2
+                          })
+# Run
+model_config_mods.append({'run_name': '03_latent_outputBN_zerodropout',
+                          'latent_flow_arch': 'realnvp_6l300_BNinternal_BNbetween_BNoutput'
+                          })
+train_config_mods.append({'fc_dropout': 0.0, 'reg_fc_dropout': 0.0
+                          })
 
 
 

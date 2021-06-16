@@ -17,8 +17,8 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = "BiggerNets"
-model.run_name = 'dummy_tests'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "PosteriorCollapse"
+model.run_name = '10_ref_no_flow_input_regul'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 model.encoder_architecture = 'speccnn8l1'
@@ -53,7 +53,9 @@ model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
 # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
 #    - set to None to disable latent space flow transforms  # TODO properly reactivate
-model.latent_flow_arch = 'realnvp_6l300'
+#    - options: _BNinternal (batch norm between hidden MLPs, to compute transform coefficients),
+#               _BNbetween (between flow layers), _BNoutput (BN on the last two layers, or not)
+model.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
 model.forward_controls_loss = True  # Must be true for non-invertible MLP regression
@@ -78,7 +80,7 @@ model.logs_root_dir = "saved"  # Path from this directory
 
 train = _Config()
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 32
+train.minibatch_size = 160
 train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
@@ -88,8 +90,9 @@ train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will 
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.save_period = 50  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
 # TODO after refactoring: reduce plot frequency to 1 plot / 20 epochs
-train.plot_period = 20  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
+train.plot_period = 1   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
 # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
+# FIXME 'logprob' loss with flow-VAE
 train.latent_loss = 'Dkl'  # TODO implement checks: no Dkl loss for a flow-based latent transform, etc....
 train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
 train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
@@ -103,19 +106,18 @@ train.normalize_losses = True  # Normalize all losses over the vector-dimension 
 train.optimizer = 'Adam'
 # Maximal learning rate (reached after warmup, then reduced on plateaus)
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
-train.initial_learning_rate = 7e-5  # e-9 LR with e+4 loss does not allow any train (vanishing grad?)
+train.initial_learning_rate = 2e-4  # 7e-5  # e-9 LR with e+4 loss does not allow any train (vanishing grad?)
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677)
 train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
 train.lr_warmup_start_factor = 0.1
 train.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
-train.weight_decay = 1e-4  # Dynamic weight decay?
+train.weight_decay = 1e-4
 train.fc_dropout = 0.3
 train.reg_fc_dropout = 0.4
 train.latent_input_dropout = 0.0  # Should always remains zero... intended for tests (not tensorboard-logged)
-train.latent_flow_bn_between_layers = False  # True prevents flow reversibility during training
 # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
 # TODO latent input batch-norm is a very strong constraint for the network, maybe remove it when using MMD-VAE regul.
-train.latent_flow_input_regularization = 'BN'  # 'BN' (on encoder output) or 'Dkl' (on q_Z0 gaussian flow input)
+train.latent_flow_input_regularization = 'None'  # 'BN'  # 'BN' (on encoder output), 'Dkl' (on q_Z0 gaussian flow input) or 'None'
 # (beta<1, normalize=True) corresponds to (beta>>1, normalize=False) in the beta-VAE formulation (ICLR 2017)
 train.beta = 0.2  # latent loss factor - use much lower value (e-2) to get closer the ELBO
 train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very unstable training)
