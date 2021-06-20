@@ -320,9 +320,10 @@ def train_config():
             fig, _ = utils.figures.plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])
             logger.tensorboard.add_figure('LatentRhoCorr', fig, epoch)
             if v_error.size(0) > 0:  # u_error might be empty on early_stop
-                fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(),
-                                                               dataset.preset_indexes_helper)
+                fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(), dataset.preset_indexes_helper)
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
+            logger.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
+            logger.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
         metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
@@ -331,6 +332,7 @@ def train_config():
         metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
         metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
         logger.tensorboard.update_metrics(metrics)
+
 
         # = = = = = Model+optimizer(+scheduler) save - ready for next epoch = = = = =
         if (epoch > 0 and epoch % config.train.save_period == 0)\

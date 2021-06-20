@@ -18,7 +18,7 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 model = _Config()
 model.name = "PosteriorCollapse"
-model.run_name = '10_ref_no_flow_input_regul'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'dummy_tests'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 model.encoder_architecture = 'speccnn8l1'
@@ -90,7 +90,7 @@ train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will 
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.save_period = 50  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
 # TODO after refactoring: reduce plot frequency to 1 plot / 20 epochs
-train.plot_period = 1   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
+train.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
 # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
 # FIXME 'logprob' loss with flow-VAE
 train.latent_loss = 'Dkl'  # TODO implement checks: no Dkl loss for a flow-based latent transform, etc....

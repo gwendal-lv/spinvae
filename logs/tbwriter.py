@@ -1,9 +1,13 @@
 
+import numpy as np
+
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.tensorboard.summary import hparams
 
-from .metrics import BufferedMetric
+from .metrics import BufferedMetric, LatentMetric
+
+import utils.stat
 
 
 class CorrectedSummaryWriter(SummaryWriter):
@@ -107,4 +111,22 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
             else:
                 metrics_dict[k] = metric
         self.add_hparams(self.hyper_params, metrics_dict, hparam_domain_discrete=self.hparams_domain_discrete)
+
+    def add_latent_histograms(self, latent_metric: LatentMetric, dataset_type: str, global_step: int, bins='fd'):
+        """
+        Adds histograms related to z0 and zK samples to Tensorboard.
+
+        :param dataset_type: 'Train', 'Valid', ...
+        """
+        z0 = latent_metric.get_z('z0').flatten()
+        zK = latent_metric.get_z('zK').flatten()
+        self.add_histogram("z0/{}".format(dataset_type), z0, global_step=global_step, bins=bins)
+        self.add_histogram("zK/{}".format(dataset_type), zK, global_step=global_step, bins=bins)
+        # also add no-outlier histograms
+        z0_limits = utils.stat.get_outliers_bounds(z0)
+        zK_limits = utils.stat.get_outliers_bounds(zK)
+        z0 = z0[(z0_limits[0] <= z0) & (z0 <= z0_limits[1])]
+        zK = zK[(zK_limits[0] <= zK) & (zK <= zK_limits[1])]
+        self.add_histogram("z0/{}_nooutlier".format(dataset_type), z0, global_step=global_step, bins=bins)
+        self.add_histogram("zK/{}_nooutlier".format(dataset_type), zK, global_step=global_step, bins=bins)
 

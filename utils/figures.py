@@ -16,6 +16,8 @@ import logs.metrics
 from data.abstractbasedataset import PresetDataset
 from data.preset import PresetIndexesHelper
 
+import utils.stat
+
 
 # Display parameters for scatter/box/error plots
 __param_width = 0.12
@@ -117,22 +119,43 @@ def plot_spectrograms(specs_GT, specs_recons=None,
     return fig, axes
 
 
-def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric,
-                                    plot_mu=True, plot_sigma=False, figsize=None):
+def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, figsize=None):
     """ Uses boxplots to represent the distribution of the mu and/or sigma parameters of
-    latent gaussian distributions. """
-    z_mu = latent_metric.get_z('mu')
+    latent gaussian distributions. Also plots a general histogram of all samples"""
+    metrics_names = ['mu', 'sigma', 'zK']
+    data = dict()
+    # - - - stats on all metrics - - -
+    metrics_flat = dict()
+    outlier_limits = dict()  # measured lower and upper outliers bounds
+    for k in metrics_names:
+        data[k] = latent_metric.get_z(k)
+        if k == 'sigma':  # log10 applied to sigma
+            data[k] = np.log10(data[k])
+        metrics_flat[k] = data[k].flatten()
+        outlier_limits[k] = utils.stat.get_outliers_bounds(metrics_flat[k])
+    # - - - box plots (general and per component) - - -
+    general_plots_eq_num_items = 10  # equivalent number of "small component boxplots", to properly divide fig width
     if figsize is None:
-        figsize = (__param_width * z_mu.shape[1], 8)
-    fig, axes = plt.subplots(3, 1, figsize=figsize)
-    sns.boxplot(data=z_mu, ax=axes[0], fliersize=0.3, linewidth=0.5)
-    axes[0].set(ylabel='$q_{\phi}(z_0|x) : \mu_0$')
-    sns.boxplot(data=latent_metric.get_z('sigma'), ax=axes[1], fliersize=0.3, linewidth=0.5)
-    axes[1].set(ylabel='$q_{\phi}(z_0|x) : \sigma_0$')
-    axes[1].set_yscale('log')
-    sns.boxplot(data=latent_metric.get_z('zK'), ax=axes[2], fliersize=0.3, linewidth=0.5)
-    axes[2].set(xlabel='z index', ylabel='$z_K$ samples')
-    for ax in axes:
+        figsize = (__param_width * (data['mu'].shape[1] + 8 + general_plots_eq_num_items), 8)
+    fig, axes = plt.subplots(3, 2, figsize=figsize, sharex='col',
+                             gridspec_kw={'width_ratios': [general_plots_eq_num_items, data['mu'].shape[1] + 8]})
+    flierprops = dict(marker='.', markerfacecolor='k', markersize=0.5, markeredgecolor='none')
+    for i, k in enumerate(metrics_names):
+        axes[i][0].boxplot(x=metrics_flat[k], vert=True, sym='.k', flierprops=flierprops)
+        sns.boxplot(data=data[k], ax=axes[i][1], fliersize=0.3, linewidth=0.5)
+    # - - - axes labels, limits and ticks - - -
+    axes[2][0].set_xticks((1.0, ))
+    axes[2][0].set_xticklabels(('all', ))
+    # mu0 and sigma0: unknown distributions, limit detailed per-component display to exclude outliers
+    # zK (supposed to be approx. Standard Gaussian): limit display to +/- 4 std (-4std: cumulative distributions < e-4)
+    axes[0][1].set(ylabel='$q_{\phi}(z_0|x) : \mu_0$', ylim=outlier_limits['mu'])
+    axes[1][1].set(ylabel='$q_{\phi}(z_0|x) : \log_{10}(\sigma_0)$', ylim=outlier_limits['sigma'])
+    axes[2][1].set(xlabel='z index', ylabel='$z_K$ samples', ylim=[-4.0, 4.0])
+    # TODO Target 25 and 75 percentiles as horizontal lines (+/- 0.6745 for standard normal distributions)
+    axes[2][1].hlines([-0.6745, 0.0, 0.6745], -0.5, data['mu'].shape[1]-0.5, colors='grey', linewidth=0.5)
+    #     And target outliers limits (Q1/Q3 +/- 1.5 IQR) as dotted lines
+    # Small ticks for right subplots only (component indexes)
+    for ax in [axes[0][1], axes[1][1], axes[2][1]]:
         for tick in ax.get_xticklabels():
             tick.set_rotation(90)
             tick.set_fontsize(8)
@@ -275,8 +298,7 @@ def plot_synth_learnable_preset(learnable_preset, idx_helper: PresetIndexesHelpe
 
 
 def plot_synth_preset_error(param_batch_errors, idx_helper: PresetIndexesHelper,
-                            mae_y_limit=0.59, boxplots_y_limits=(-1.1, 1.1),
-                            figsize=None):
+                            mae_y_limit=0.59, boxplots_y_limits=(-1.1, 1.1), figsize=None):
     """ Uses boxplots to show the error between inferred (out) and GT (in) preset parameters.
 
     :param mae_y_limit: Constant y-axis upper display limit (to help visualize improvements during training).
@@ -336,4 +358,5 @@ def plot_synth_preset_error(param_batch_errors, idx_helper: PresetIndexesHelper,
                              transform=axes[row].get_xaxis_transform(), colors='C9', linewidth=1.0)
     fig.tight_layout()
     return fig, axes
+
 
