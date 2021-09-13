@@ -58,7 +58,7 @@ model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
 model.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
-model.forward_controls_loss = True  # Must be true for non-invertible MLP regression
+model.forward_controls_loss = True  # Must be true for non-invertible MLP regression (False is now deprecated)
 
 model.synth = 'dexed'
 # Dexed-specific auto rename: '*' in 'al*_op*_lab*' will be replaced by the actual algorithms, operators and labels
@@ -80,7 +80,7 @@ model.logs_root_dir = "saved"  # Path from this directory
 
 train = _Config()
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 160
+train.minibatch_size = 160  # 160
 train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5

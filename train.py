@@ -114,10 +114,8 @@ def train_config():
                                                         cat_softmax=(not config.model.params_reg_softmax
                                                                      and not config.train.params_cat_bceloss),
                                                         cat_softmax_t=config.train.params_cat_softmax_temperature)
-    else:  # Inverse-flow-based loss
-        controls_criterion = model.loss.FlowParamsLoss(dataset.preset_indexes_helper,
-                                                       extended_ae_model.ae_model.flow_inverse_function,
-                                                       extended_ae_model.reg_model.flow_inverse_function)
+    else:
+        raise ValueError("Backward-computed synth params regression loss: deprecated")
 
     # Monitoring losses always remain the same
     controls_num_eval_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
@@ -219,15 +217,7 @@ def train_config():
                     optimizer.zero_grad()
                     ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                     z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-                    # Synth parameters regression. Flow-based: we do not care about v_out for backprop, but
-                    #     need it for monitoring (so we don't ask for the log abs det jacobian return)
-                    if isinstance(controls_criterion, model.loss.FlowParamsLoss):
-                        with torch.no_grad():
-                            reg_model_parallel.eval()  # FIXME sub-optimal, for monitoring only...
-                            v_out = reg_model_parallel(z_K_sampled)
-                            reg_model_parallel.train()
-                    else:
-                        v_out = reg_model_parallel(z_K_sampled)
+                    v_out = reg_model_parallel(z_K_sampled)
                 with profiler.record_function("LOSSES") if is_profiled else contextlib.nullcontext():
                     super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                     recons_loss = reconstruction_criterion(x_out, x_in)
@@ -238,8 +228,7 @@ def train_config():
                     lat_loss *= scalars['Sched/beta'].get(epoch)
                     # Monitoring losses
                     with torch.no_grad():
-                        scalars['ReconsLoss/MSE/Train'].append(recons_loss if config.train.normalize_losses
-                                                               else F.mse_loss(x_out, x_in, reduction='mean'))
+                        scalars['ReconsLoss/MSE/Train'].append(recons_loss)
                         scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
                         scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
                     # Flow training stabilization loss?
@@ -285,8 +274,7 @@ def train_config():
                 scalars['LatLoss/Valid'].append(lat_loss)
                 # lat_loss *= scalars['Sched/beta'].get(epoch)  # Warmup factor: useless for monitoring
                 # Monitoring losses
-                scalars['ReconsLoss/MSE/Valid'].append(recons_loss if config.train.normalize_losses
-                                                       else F.mse_loss(x_out, x_in, reduction='mean'))
+                scalars['ReconsLoss/MSE/Valid'].append(recons_loss)
                 scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
                 scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
                 if config.model.forward_controls_loss:  # unused params might be modified by this criterion

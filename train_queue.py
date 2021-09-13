@@ -42,6 +42,7 @@ train_all_k_folds = False  # TODO reset to True
 #    - 2) output latent BN
 #    - 3) output latent BN, réduire dropout
 #    - 4) output latent BN, zero dropout
+"""
 # Run
 model_config_mods.append({'run_name': '00_ref_batch160_1midi',
                           'latent_flow_arch': 'realnvp_6l300_BNinternal_BNbetween'
@@ -66,6 +67,14 @@ model_config_mods.append({'run_name': '03_latent_outputBN_zerodropout',
                           })
 train_config_mods.append({'fc_dropout': 0.0, 'reg_fc_dropout': 0.0
                           })
+"""
+# Run
+model_config_mods.append({'run_name': '05_ref_zerodropout',
+                          'latent_flow_arch': 'realnvp_6l300_BNinternal_BNbetween'
+                          })
+train_config_mods.append({'fc_dropout': 0.0, 'reg_fc_dropout': 0.0
+                          })
+# TODO prochain test : maximum mean discrepancy
 
 
 

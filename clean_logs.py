@@ -25,8 +25,8 @@ if __name__ == "__main__":
         model_config = _Config
         model_config.logs_root_dir = "saved"
         # = = = = = Insert here model and run to be erased = = = = =
-        model_config.name = 'BiggerNets'
-        model_config.run_name = '00_ref_6stack_batch160'
+        model_config.name = 'PosteriorCollapse'
+        model_config.run_name = '05_ref_zerodropout'
         # = = = = = Insert here model and run to be erased = = = = =
 
 
