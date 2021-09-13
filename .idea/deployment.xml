@@ -14,6 +14,18 @@
           </excludedPaths>
         </serverdata>
       </paths>
+      <paths name="gwendal@grospyter.irisib.be:6400 key (1)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/gwendal/Jupyter/nn-synth-interp" local="$PROJECT_DIR$" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/docs" />
+            <excludedPath local="true" path="$PROJECT_DIR$/figures" />
+            <excludedPath local="true" path="$PROJECT_DIR$/data/external_audio" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
     </serverData>
     <option name="myAutoUpload" value="ALWAYS" />
   </component>
