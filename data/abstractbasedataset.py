@@ -22,23 +22,23 @@ from data.preset import PresetsParams, PresetIndexesHelper
 #torchaudio.set_audio_backend("sox_io")
 
 
-# TODO audio dataset abstract base class? see audiodataset.py
-#     Dataset that reads a folder of natural/acoustic/other sounds (out-of-domain),
-#     __getitem__ would return spectrograms
-#     PresetDataset could inherit from such a class
-
-
-class PresetDataset(torch.utils.data.Dataset, ABC):
+class AudioDataset(torch.utils.data.Dataset, ABC):
     def __init__(self, note_duration,
-                 n_fft, fft_hop,  # ftt 1024 hop=512: spectrogram is approx. the size of 5.0s@22.05kHz audio
+                 n_fft, fft_hop, Fs,  # ftt 1024 hop=512: spectrogram is approx. the size of 5.0s@22.05kHz audio
                  midi_notes=((60, 100),),
                  multichannel_stacked_spectrograms=False,
                  n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
-                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
-                 learn_mod_wheel_params=False
+                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max'
                  ):
         """
-        Abstract Base Class for any synthesizer presets dataset.
+        Abstract Base Class for any dataset of audio samples (from a synth of from an acoustic instrument).
+        A preset UID corresponds to a unique synth preset or acoustic instrument recording.
+
+        This abstract class provides itself a few functionalities:
+            - single or stacked spectrograms
+            - spectrograms generation from wav files
+            - computes statistics on spectrogram, for normalization
+
         :param note_duration: Tuple: MIDI Note (on_duration, off_duration) in seconds
         :param n_fft: Width of the FFT window for spectrogram computation
         :param fft_hop: STFT hop length (in samples)
@@ -47,19 +47,18 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         :param multichannel_stacked_spectrograms: If True, this dataset will multi-layer spectrograms
             (1 layer = 1 midi pitch and velocity). If False, the dataset length will be multiplied by the number
             of midi notes.
-        :param n_mel_bins: Number of frequency bins for the Mel-spectrogram. If -1, the normal STFT will be used
+        :param n_mel_bins: Number of frequency bins for the Mel-spectrogram. If -1, the usual STFT will be used
         :param mel_fmin: TODO implement
         :param mel_fmax: TODO implement
         :param normalize_audio:  If True, audio from RenderMan will be normalized
         :param spectrogram_min_dB:  Noise-floor threshold value for log-scale spectrograms
         :param spectrogram_normalization: 'min_max' to get output spectrogram values in [-1, 1], or 'mean_std'
             to get zero-mean unit-variance output spectrograms. None to disable normalization.
-        :param learn_mod_wheel_params: Indicates whether parameters related to the MIDI modulation wheel should
-            be learned or not.
         """
         self.note_duration = note_duration
         self.n_fft = n_fft
         self.fft_hop = fft_hop
+        self.Fs = Fs
         self.midi_notes = midi_notes
         if len(self.midi_notes) == 1:  # A 1-note dataset cannot handle multi-note stacked spectrograms
             assert not multichannel_stacked_spectrograms  # Check ctor arguments
@@ -68,16 +67,14 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         self.mel_fmin = mel_fmin
         self.mel_fmax = mel_fmax
         self.normalize_audio = normalize_audio
-        self.learn_mod_wheel_params = learn_mod_wheel_params
         # - - - - - Attributes to be set by the child concrete class - - - - -
         self.valid_preset_UIDs = np.zeros((0,))  # UIDs (may be indexes) of valid presets for this dataset
-        self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
         # - - - Spectrogram utility class - - -
         if self.n_mel_bins <= 0:
             self.spectrogram = utils.audio.Spectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB)
-        else:  # TODO do not hardcode Fs?
+        else:
             self.spectrogram = utils.audio.MelSpectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB,
-                                                          self.n_mel_bins, 22050)
+                                                          self.n_mel_bins, self.Fs)
         # spectrogram min/max/mean/std statistics: must be loaded after super() ctor (depend on child class args)
         self.spectrogram_normalization = spectrogram_normalization
         self.spec_stats = None
@@ -89,12 +86,10 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
 
     def __str__(self):
         return "Dataset of {}/{} {} presets. Total items count {}: {} MIDI notes / preset, {} spectrograms.\n" \
-               "{} learnable synth params, {} fixed params.\n" \
                "{} Spectrogram items, size={}, min={:.1f}dB, normalization:{}" \
             .format(self.valid_presets_count, self.total_nb_presets, self.synth_name,
                     len(self), self.midi_notes_per_preset,
                     ('stacked' if self.midi_notes_per_preset > 1 and self._multichannel_stacked_spectrograms else 'independent'),
-                    len(self.learnable_params_idx), self.total_nb_params - len(self.learnable_params_idx),
                     ("Linear" if self.n_mel_bins <= 0 else "Mel"), self.get_spectrogram_tensor_size(),
                     self.spectrogram.min_dB, self.spectrogram_normalization)
 
@@ -105,17 +100,11 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             return self.valid_presets_count * self.midi_notes_per_preset
 
     def __getitem__(self, i):
-        """ Returns a tuple containing a 2D scaled dB spectrograms tensor
-        (1st dim: MIDI note, 2nd dim: freq; 2rd dim: time),
-        a 1D tensor of parameter values in [0;1],
-        and a 1d tensor with remaining int info (preset UID, midi note, vel).
-
-        If this dataset generates audio directly from the synth, only 1 dataloader is allowed.
-        A 30000 presets dataset require approx. 7 minutes to be generated on 1 CPU. """
-        # TODO on-the-fly audio generation. We should try:
-        #  - Use shell command to run a dedicated script. The script writes AUDIO_SAMPLE_TEMP_ID.wav
-        #  - wait for the file to be generated on disk (or for the command to notify... something)
-        #  - read and delete this .wav file
+        """ Returns a tuple containing :
+                - a 2D scaled dB spectrograms tensor (1st dim: MIDI note, 2nd dim: freq; 2rd dim: time),
+                - a 1d tensor with remaining int info (preset UID, midi note, vel).
+                - a 1d tensor of labels (0, 1 values)
+        """
         # If several notes available but single-spectrogram output: we have to convert i into a UID and a note index
         if self.midi_notes_per_preset > 1 and not self._multichannel_stacked_spectrograms:
             preset_index = i // self.midi_notes_per_preset
@@ -125,7 +114,6 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             midi_note_indexes = range(self.midi_notes_per_preset)
         # Load params and a list of spectrograms (1-element list is fine). 1 spectrogram per MIDI
         preset_UID = self.valid_preset_UIDs[preset_index]
-        preset_params = self.get_full_preset_params(preset_UID)
         spectrograms = list()
         for midi_note_idx in midi_note_indexes:
             midi_pitch, midi_velocity = self.midi_notes[midi_note_idx]
@@ -133,7 +121,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             # Spectrogram, or Mel-Spectrogram if requested (see self.spectrogram ctor arguments)
             spectrogram = self.spectrogram(x_wav)
             if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
-                spectrogram = -1.0 + (spectrogram - self.spec_stats['min'])\
+                spectrogram = -1.0 + (spectrogram - self.spec_stats['min']) \
                               / ((self.spec_stats['max'] - self.spec_stats['min']) / 2.0)
             elif self.spectrogram_normalization == 'mean_std':
                 spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
@@ -145,8 +133,8 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             ref_midi_pitch, ref_midi_velocity = self.midi_notes[midi_note_indexes[0]]
         else:
             ref_midi_pitch, ref_midi_velocity = self.midi_notes[0]
+
         return torch.stack(spectrograms), \
-            torch.squeeze(preset_params.get_learnable(), 0), \
             torch.tensor([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=torch.int32), \
             self.get_labels_tensor(preset_UID)
 
@@ -193,85 +181,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
          different MIDI notes. """
         return self._multichannel_stacked_spectrograms
 
-    @abstractmethod
-    def get_full_preset_params(self, preset_UID) -> PresetsParams:
-        """ Returns a PresetsParams instance (see preset.py) of 1 preset for the requested preset_UID """
-        pass
-
-    @property
-    def preset_param_names(self):
-        """ Returns a List which contains the name of all parameters of presets (free and constrained). """
-        return ['unnamed_param_{}'.format(i) for i in range(self.total_nb_params)]
-
-    def get_preset_param_cardinality(self, idx, learnable_representation=True):
-        """ Returns the cardinality i.e. the number of possible different values of all parameters.
-        A -1 cardinal indicates a continuous parameter.
-        :param idx: The full-preset (VSTi representation) index
-        :param learnable_representation: Some parameters can have a reduced cardinality for learning
-        (and their learnable representation is scaled consequently). """
-        return -1  # Default: continuous params only
-
-    def get_preset_param_quantized_steps(self, idx, learnable_representation=True):
-        """ Returns a numpy array of possible quantized values of a discrete parameter. Quantized values correspond
-        to floating-point VSTi control values. Returns None if idx refers to a continuous parameter. """
-        card = self.get_preset_param_cardinality(idx, learnable_representation)
-        if card == -1:
-            return None
-        elif card == 1:  # Constrained one-value parameter
-            return np.asarray([0.5])
-        elif card >= 2:
-            return np.linspace(0.0, 1.0, endpoint=True, num=card)
-        else:
-            raise ValueError("Invalid parameter cardinality {}".format(card))
-
-    @property
-    def learnable_params_count(self):
-        """ Number of learnable VSTi controls. """
-        return len(self.learnable_params_idx)
-
-    @property
-    def learnable_params_tensor_length(self):
-        """ Length of a learnable parameters tensor (contains single-element numerical values and one-hot encoded
-        categorical params). """
-        _, params, _, _ = self.__getitem__(0)
-        return params.shape[0]
-
-    @property
-    def vst_param_learnable_model(self):
-        """ List of models for full-preset (VSTi-compatible) parameters. Possible values are None for non-learnable
-        parameters, 'num' for numerical data (continuous or discrete) and 'cat' for categorical data. """
-        return ['num' for _ in range(self.total_nb_params)]  # Default: 'num' only
-
-    @property
-    def numerical_vst_params(self):
-        """ List of indexes of numerical parameters (whatever their discrete number of values) in the VSTi.
-        E.g. a 8-step volume param is numerical, while a LFO shape param is not (it is categorical). The
-        learnable model can be different from the VSTi model. """
-        return [i for i in range(self.total_nb_params)]  # Default: numerical only
-
-    @property
-    def categorical_vst_params(self):
-        """ List of indexes of categorical parameters in the VSTi. The learnable model can be different
-        from the VSTi model."""
-        return []  # Default: no categorical params
-
-    @property
-    def params_default_values(self):
-        """ Dict of default values of VSTi parameters. Not all indexes are keys of this dict (many params do not
-        have a default value). """
-        return {}
-
-    @property
-    @abstractmethod
-    def total_nb_params(self):
-        """ Total count of constrained and free VST parameters of a preset. """
-        pass
-
-    @property
-    def preset_indexes_helper(self):
-        """ Returns the data.preset.PresetIndexesHelper instance which helps convert full/learnable presets
-        from this dataset. """
-        return PresetIndexesHelper(nb_params=self.total_nb_params)  # Default: identity
+    # ================================== Labels =================================
 
     def get_labels_tensor(self, preset_UID):
         """ Returns a tensor of torch.int8 zeros and ones - each value is 1 if the preset is tagged with the
@@ -291,14 +201,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
     def labels_count(self):
         return len(self.available_labels_name)
 
-    @abstractmethod
-    def _render_audio(self, preset_params: Sequence, midi_note: int, midi_velocity: int):
-        """ Renders audio on-the-fly and returns the computed audio waveform and sampling rate.
-
-        :param preset_params: List of preset VST parameters, constrained (constraints from this class ctor
-            args must have been applied before passing preset_params).
-        """
-        pass
+    # ================================== WAV files and spectrograms =================================
 
     @abstractmethod
     def get_wav_file(self, preset_UID, midi_note, midi_velocity):
@@ -323,8 +226,8 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
 
     def get_spectrogram_tensor_size(self):
         """ Returns the size of the first tensor (2D image) returned by this dataset. """
-        dummy_spectrogram, _, _, _ = self.__getitem__(0)
-        return dummy_spectrogram.size()
+        item = self.__getitem__(0)
+        return item[0].size()
 
     @staticmethod
     def _get_spectrogram_stats_folder():
@@ -413,3 +316,133 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
                 for midi_pitch, midi_vel in self.midi_notes:
                     workers_args[worker_idx].append((preset_UID, midi_pitch, midi_vel))
         return workers_args
+
+
+
+class PresetDataset(AudioDataset):
+    def __init__(self, note_duration,
+                 n_fft, fft_hop, Fs,
+                 midi_notes=((60, 100),),
+                 multichannel_stacked_spectrograms=False,
+                 n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
+                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
+                 learn_mod_wheel_params=False
+                 ):
+        """
+        Abstract Base Class for any synthesizer presets dataset (audio samples + associated presets).
+
+        :param learn_mod_wheel_params: Indicates whether parameters related to the MIDI modulation wheel should
+            be learned or not.
+        """
+        super().__init__(note_duration, n_fft, fft_hop, Fs, midi_notes, multichannel_stacked_spectrograms,
+                         n_mel_bins, mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization)
+        self.learn_mod_wheel_params = learn_mod_wheel_params
+        # - - - - - Attributes to be set by the child concrete class - - - - -
+        self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
+
+    def __str__(self):
+        return "{}\n{} learnable synth params, {} fixed params." \
+            .format(super().__str__(),
+                    len(self.learnable_params_idx), self.total_nb_params - len(self.learnable_params_idx))
+
+    def __getitem__(self, i):
+        # TODO on-the-fly audio generation. We should try:
+        #  - Use shell command to run a dedicated script. The script writes AUDIO_SAMPLE_TEMP_ID.wav
+        #  - wait for the file to be generated on disk (or for the command to notify... something)
+        #  - read and delete this .wav file
+        spectrograms, notes_and_UID, labels = super().__getitem__(i)
+        preset_UID = notes_and_UID[0].item()
+
+        # TODO preset should be optional (for pre-training using sound and notes only)
+        preset_params = self.get_full_preset_params(preset_UID)
+        return spectrograms, torch.squeeze(preset_params.get_learnable(), 0), notes_and_UID, labels
+
+    @abstractmethod
+    def get_full_preset_params(self, preset_UID) -> PresetsParams:
+        """ Returns a PresetsParams instance (see preset.py) of 1 preset for the requested preset_UID """
+        pass
+
+    @property
+    def preset_param_names(self):
+        """ Returns a List which contains the name of all parameters of presets (free and constrained). """
+        return ['unnamed_param_{}'.format(i) for i in range(self.total_nb_params)]
+
+    def get_preset_param_cardinality(self, idx, learnable_representation=True):
+        """ Returns the cardinality i.e. the number of possible different values of all parameters.
+        A -1 cardinal indicates a continuous parameter.
+        :param idx: The full-preset (VSTi representation) index
+        :param learnable_representation: Some parameters can have a reduced cardinality for learning
+        (and their learnable representation is scaled consequently). """
+        return -1  # Default: continuous params only
+
+    def get_preset_param_quantized_steps(self, idx, learnable_representation=True):
+        """ Returns a numpy array of possible quantized values of a discrete parameter. Quantized values correspond
+        to floating-point VSTi control values. Returns None if idx refers to a continuous parameter. """
+        card = self.get_preset_param_cardinality(idx, learnable_representation)
+        if card == -1:
+            return None
+        elif card == 1:  # Constrained one-value parameter
+            return np.asarray([0.5])
+        elif card >= 2:
+            return np.linspace(0.0, 1.0, endpoint=True, num=card)
+        else:
+            raise ValueError("Invalid parameter cardinality {}".format(card))
+
+    @property
+    def learnable_params_count(self):
+        """ Number of learnable VSTi controls. """
+        return len(self.learnable_params_idx)
+
+    @property
+    def learnable_params_tensor_length(self):
+        """ Length of a learnable parameters tensor (contains single-element numerical values and one-hot encoded
+        categorical params). """
+        _, params, _, _ = self.__getitem__(0)  # future FIXME: corriger ça quand 
+        return params.shape[0]
+
+    @property
+    def vst_param_learnable_model(self):
+        """ List of models for full-preset (VSTi-compatible) parameters. Possible values are None for non-learnable
+        parameters, 'num' for numerical data (continuous or discrete) and 'cat' for categorical data. """
+        return ['num' for _ in range(self.total_nb_params)]  # Default: 'num' only
+
+    @property
+    def numerical_vst_params(self):
+        """ List of indexes of numerical parameters (whatever their discrete number of values) in the VSTi.
+        E.g. a 8-step volume param is numerical, while a LFO shape param is not (it is categorical). The
+        learnable model can be different from the VSTi model. """
+        return [i for i in range(self.total_nb_params)]  # Default: numerical only
+
+    @property
+    def categorical_vst_params(self):
+        """ List of indexes of categorical parameters in the VSTi. The learnable model can be different
+        from the VSTi model."""
+        return []  # Default: no categorical params
+
+    @property
+    def params_default_values(self):
+        """ Dict of default values of VSTi parameters. Not all indexes are keys of this dict (many params do not
+        have a default value). """
+        return {}
+
+    @property
+    @abstractmethod
+    def total_nb_params(self):
+        """ Total count of constrained and free VST parameters of a preset. """
+        pass
+
+    @property
+    def preset_indexes_helper(self):
+        """ Returns the data.preset.PresetIndexesHelper instance which helps convert full/learnable presets
+        from this dataset. """
+        return PresetIndexesHelper(nb_params=self.total_nb_params)  # Default: identity
+
+    @abstractmethod
+    def _render_audio(self, preset_params: Sequence, midi_note: int, midi_velocity: int):
+        """ Renders audio on-the-fly and returns the computed audio waveform and sampling rate.
+
+        :param preset_params: List of preset VST parameters, constrained (constraints from this class ctor
+            args must have been applied before passing preset_params).
+        """
+        pass
+

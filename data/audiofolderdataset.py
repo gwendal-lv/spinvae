@@ -15,7 +15,9 @@ import warnings
 import utils.audio
 
 
-class AudioDataset(torch.utils.data.Dataset):
+# renamed AudioFolderDataset
+# because AudioDataset will be the generic class that transforms .wav files and labels into properly encoded tensors
+class AudioFolderDataset(torch.utils.data.Dataset):
     """
     This class loads all audio files to get min/max stats during construction.
     Thus, it's not adapted to large datasets at the moment.
@@ -165,5 +167,5 @@ class AudioDataset(torch.utils.data.Dataset):
 
 
 if __name__ == "__main__":
-    audio_dataset = AudioDataset(midi_notes=((60, 85), ))
+    audio_dataset = AudioFolderDataset(midi_notes=((60, 85),))
     print(audio_dataset)

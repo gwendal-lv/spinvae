@@ -27,7 +27,7 @@ model.params_regression_architecture = 'flow_realnvp_6l300'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
-model.sampling_rate = 22050
+model.sampling_rate = 22050  # 16000 for NSynth dataset compatibility
 model.stft_args = (1024, 256)  # fft size and hop size
 model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 # Possible spectrogram sizes:

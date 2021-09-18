@@ -26,7 +26,7 @@ from data.preset import DexedPresetsParams, PresetIndexesHelper
 
 
 class DexedDataset(abstractbasedataset.PresetDataset):
-    def __init__(self, note_duration, n_fft, fft_hop,
+    def __init__(self, note_duration, n_fft, fft_hop,  # FIXME add mandatory Fs
                  midi_notes=((60, 100),), multichannel_stacked_spectrograms=False,
                  n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
                  normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
