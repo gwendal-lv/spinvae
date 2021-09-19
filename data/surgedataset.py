@@ -9,6 +9,7 @@ import json
 import copy
 from datetime import datetime
 import os
+from typing import Optional
 
 import numpy as np
 import torchaudio
@@ -22,23 +23,23 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
     def __init__(self, note_duration, n_fft, fft_hop, Fs,
                  midi_notes=((60, 100),), multichannel_stacked_spectrograms=False,
                  n_mel_bins=-1, mel_fmin=0, mel_fmax=8000,
-                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
-                 fx_bypass_level=surge.FxBypassLevel.ALL,
-                 data_storage_path="/media/gwendal/Data/Datasets/Surge"):
+                 normalize_audio=False, spectrogram_min_dB=-120.0,
+                 spectrogram_normalization: Optional[str] = 'min_max',
+                 data_storage_path="/media/gwendal/Data/Datasets/Surge",
+                 fx_bypass_level=surge.FxBypassLevel.ALL):
         """
         Class for rendering an audio dataset for the Surge synth. Can be used by a PyTorch DataLoader.
 
         Please refer to abstractbasedataset.AudioDataset for documentation about constructor arguments.
 
         :param fx_bypass_level: Describes how much Surge FX should be bypassed.
-        :param data_storage_path: The absolute folder to store the generated datasets.
         """
         super().__init__(note_duration, n_fft, fft_hop, Fs, midi_notes, multichannel_stacked_spectrograms, n_mel_bins,
-                         mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization)
+                         mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization,
+                         data_storage_path)
         self._synth = surge.Surge(reduced_Fs=Fs, midi_note_duration_s=note_duration[0],
                                   render_duration_s=note_duration[0]+note_duration[1],
-                                  fx_bypass_level=fx_bypass_level)
-        self.data_storage_path = pathlib.Path(data_storage_path)
+                                  fx_bypass_level=fx_bypass_level)  # FIXME
         # All available presets are considered valid
         self.valid_preset_UIDs = [self._synth.get_patch_info(idx)['UID'] for idx in range(self._synth.n_patches)]
 
@@ -61,6 +62,7 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
         return self.data_storage_path.joinpath("Audio").joinpath(file_name)
 
     def generate_wav_files(self):
+        # FIXME also generate variations of notes
         t_start = datetime.now()
         self.data_storage_path.joinpath("Audio").mkdir(parents=False, exist_ok=True)
         # 1) retrieve data for the .json file and for audio rendering

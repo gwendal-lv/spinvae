@@ -3,7 +3,7 @@
 import os
 import pathlib
 from abc import ABC, abstractmethod  # Abstract Base Class
-from typing import Sequence
+from typing import Sequence, Optional
 
 import pandas as pd
 import json
@@ -28,8 +28,9 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
                  midi_notes=((60, 100),),
                  multichannel_stacked_spectrograms=False,
                  n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
-                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max'
-                 ):
+                 normalize_audio=False, spectrogram_min_dB=-120.0,
+                 spectrogram_normalization: Optional[str] = 'min_max',
+                 data_storage_path: Optional[str] = None):
         """
         Abstract Base Class for any dataset of audio samples (from a synth of from an acoustic instrument).
         A preset UID corresponds to a unique synth preset or acoustic instrument recording.
@@ -54,7 +55,9 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         :param spectrogram_min_dB:  Noise-floor threshold value for log-scale spectrograms
         :param spectrogram_normalization: 'min_max' to get output spectrogram values in [-1, 1], or 'mean_std'
             to get zero-mean unit-variance output spectrograms. None to disable normalization.
+        :param data_storage_path: The absolute folder to store the generated datasets.
         """
+        # TODO implement audio_data_augmentation bool arg
         self.note_duration = note_duration
         self.n_fft = n_fft
         self.fft_hop = fft_hop
@@ -67,6 +70,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         self.mel_fmin = mel_fmin
         self.mel_fmax = mel_fmax
         self.normalize_audio = normalize_audio
+        self._data_storage_path = pathlib.Path(data_storage_path) if data_storage_path is not None else None
         # - - - - - Attributes to be set by the child concrete class - - - - -
         self.valid_preset_UIDs = np.zeros((0,))  # UIDs (may be indexes) of valid presets for this dataset
         # - - - Spectrogram utility class - - -
@@ -115,6 +119,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         # Load params and a list of spectrograms (1-element list is fine). 1 spectrogram per MIDI
         preset_UID = self.valid_preset_UIDs[preset_index]
         spectrograms = list()
+        # TODO load pre-computed spectrograms, using a randomly chosen variation (data augmentation)
         for midi_note_idx in midi_note_indexes:
             midi_pitch, midi_velocity = self.midi_notes[midi_note_idx]
             x_wav, _ = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
@@ -203,6 +208,15 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
 
     # ================================== WAV files and spectrograms =================================
 
+    @property
+    def data_storage_path(self):
+        """ Default storage path (e.g. for pre-rendered spectrograms) is relative to this script's folder.
+        A child class should override this method to separate data from Python code. """
+        if self._data_storage_path is not None:
+            return self._data_storage_path
+        else:
+            return pathlib.Path(__file__).parent.joinpath("{}_data".format(self.synth_name))
+
     @abstractmethod
     def get_wav_file(self, preset_UID, midi_note, midi_velocity):
         pass
@@ -216,12 +230,12 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         """ To be called by the child class, after this parent class construction (because stats file path
         depends on child class constructor arguments). """
         try:
-            f = open(self._get_spectrogram_stats_file(), 'r')
+            f = open(self._spectrogram_stats_file, 'r')
             self.spec_stats = json.load(f)
         except IOError:
             self.spec_stats = None
             self.spectrogram_normalization = None  # Normalization disabled
-            print("[PresetDataset] Cannot open '{}' stats file.".format(self._get_spectrogram_stats_file()))
+            print("[PresetDataset] Cannot open '{}' stats file.".format(self._spectrogram_stats_file))
             print("[PresetDataset] No pre-computed spectrogram stats can be found. No normalization will be performed")
 
     def get_spectrogram_tensor_size(self):
@@ -229,22 +243,28 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         item = self.__getitem__(0)
         return item[0].size()
 
-    @staticmethod
-    def _get_spectrogram_stats_folder():
-        """ Returns the path of a './stats' directory inside this script's directory """
-        return pathlib.Path(__file__).parent.joinpath('stats')
+    @property
+    def _spectrograms_folder(self):
+        return self.data_storage_path.joinpath("Spectrograms")
 
-    def _get_spectrogram_stats_file_stem(self):
+    @property
+    def _spectrogram_stats_folder(self):
+        return self.data_storage_path.joinpath("SpecStats")
+
+    @property
+    def _spectrogram_stats_file_stem(self):
         """ Returns the spectrogram stats file base name (without path, suffix and extension) """
         stem = '{}Dataset_spectrogram_nfft{:04d}hop{:04d}mels'.format(self.synth_name, self.n_fft, self.fft_hop)
         stem += ('None' if self.n_mel_bins <= 0 else '{:04d}'.format(self.n_mel_bins))
         return stem
 
-    def _get_spectrogram_stats_file(self):
-        return self._get_spectrogram_stats_folder().joinpath(self._get_spectrogram_stats_file_stem() + '.json')
+    @property
+    def _spectrogram_stats_file(self):
+        return self._spectrogram_stats_folder.joinpath(self._spectrogram_stats_file_stem + '.json')
 
-    def _get_spectrogram_full_stats_file(self):
-        return self._get_spectrogram_stats_folder().joinpath(self._get_spectrogram_stats_file_stem() + '_full.csv')
+    @property
+    def _spectrogram_full_stats_file(self):
+        return self._spectrogram_stats_folder.joinpath(self._spectrogram_stats_file_stem + '_full.csv')
 
     def denormalize_spectrogram(self, spectrogram):
         if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
@@ -271,15 +291,15 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         full_stats['std'] = np.sqrt(full_stats['var'])
         del full_stats['var']
         # Final output
-        if not os.path.exists(self._get_spectrogram_stats_folder()):
-            os.makedirs(self._get_spectrogram_stats_folder())
+        if not os.path.exists(self._spectrogram_stats_folder):
+            os.makedirs(self._spectrogram_stats_folder)
         full_stats = pd.DataFrame(full_stats)
-        full_stats.to_csv(self._get_spectrogram_full_stats_file())
-        with open(self._get_spectrogram_stats_file(), 'w') as f:
+        full_stats.to_csv(self._spectrogram_full_stats_file)
+        with open(self._spectrogram_stats_file, 'w') as f:
             json.dump(dataset_stats, f)
         delta_t = (datetime.now() - t_start).total_seconds()
         print("Results from {} spectrograms written to {} _full.csv and .json files ({:.1f} minutes total)"
-              .format(len(full_stats), self._get_spectrogram_stats_file_stem(), delta_t/60.0))
+              .format(len(full_stats), self._spectrogram_stats_file_stem, delta_t/60.0))
 
     def _compute_spectrogram_stats_batch(self, worker_args):
         """ Generates and returns a dict of spectrograms stats
@@ -291,7 +311,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
             x_wav, Fs = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
             assert Fs == 22050
             # We use the exact same spectrogram as the dataloader will
-            tensor_spectrogram = self.spectrogram(x_wav)
+            tensor_spectrogram = self.spectrogram(x_wav)  # FIXME load pre-rendered spectrogram
             full_stats['UID'][i] = preset_UID
             full_stats['min'][i] = torch.min(tensor_spectrogram).item()
             full_stats['max'][i] = torch.max(tensor_spectrogram).item()
