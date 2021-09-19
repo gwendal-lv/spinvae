@@ -11,10 +11,12 @@ import sys
 sys.path.append( "/home/gwendal/Jupyter/AudioPlugins/surge_build" )
 import surgepy  # Must be properly built and available from the folder above
 
+import numpy as np
 import pathlib
 import json
 from enum import IntEnum
 import copy
+import warnings
 
 import librosa
 from natsort import natsorted
@@ -127,6 +129,10 @@ class Surge:
             json.dump(patches_list, f)
             print("Patches written to {}".format(Surge.get_patches_json_path()))
 
+    @property
+    def n_patches(self):
+        return len(self._patches_list)
+
     def get_patch_path(self, s, patch_index):
         p = self._patches_list[patch_index]
         base_path = pathlib.Path(s.getFactoryDataPath())  # actually contains factory and 3rd party patches
@@ -135,22 +141,67 @@ class Surge:
         patch_path = base_path.joinpath(p['author']).joinpath(p['instrument_category'])
         return patch_path.joinpath("{}.fxp".format(p['patch_name']))
 
-    @property
-    def n_patches(self):
-        return len(self._patches_list)
-
-    def render_note(self, patch_index, midi_pitch, midi_vel, midi_ch=0):
-        """
-        Creates a new Surge synth instance and renders a note using the given patch.
-
-        :returns: (downsampled L-channel, sampling frequency)
-        """
+    def get_synth_and_patch(self, patch_index):
+        """ Creates a surge synth instance, loads a patch, and returns both """
         s = surgepy.createSurge(self.render_Fs)
         patch_path = self.get_patch_path(s, patch_index)
-        # load preset and set FX Bypass level
+        # load preset and
         s.loadPatch(str(patch_path))
-        s_patch = s.getPatch()
+        return s, s.getPatch()
+
+    @staticmethod
+    def print_param_info(synth_instance, param):
+        print("Current value: {}".format(synth_instance.getParamVal(param)))
+        print("Min: {}".format(synth_instance.getParamMin(param)))
+        print("Max: {}".format(synth_instance.getParamMax(param)))
+        print("Default: {}".format(synth_instance.getParamDef(param)))
+        print("ValType: {}".format(synth_instance.getParamValType(param)))
+        print("Display: {}".format(synth_instance.getParamDisplay(param)))
+
+    @property
+    def nb_variations_per_note(self):
+        """ Returns the number of available variations of a single note audio file (data augmentation). """
+        return 3 * 2 * 3  # 3x start delays, 2x durations, 3x scene A pitch detune
+
+    def _decode_variation_index(self, variation):
+        """
+        Transforms a variation index ( in [0, nb_variations_per_note[ ) into a tuple of int values
+
+        :returns: start_delay_variation (3 vars), duration_variation (2 vars), pitch_variation (3 vars)
+        """
+        if variation >= self.nb_variations_per_note:
+            raise ValueError("The variation index for data augmentation must be < {}"
+                             .format(self.nb_variations_per_note))
+        var0 = variation // 6
+        r = variation - 6 * var0
+        var1 = r // 3
+        r -= 3 * var1
+        return var0, var1, r
+
+    def render_note(self, patch_index, midi_pitch, midi_vel, midi_ch=0, variation=0):
+        """
+        Creates a new Surge synth instance and renders a note using the given patch.
+        :param variation: The index of a given variation for data augmentation. 0 is no variation.
+        :returns: (downsampled L-channel, sampling frequency)
+        """
+        s, s_patch = self.get_synth_and_patch(patch_index)
+        # set FX Bypass level
         s.setParamVal(s_patch['fx_bypass'], int(self.fx_bypass_level))
+
+        start_delay_variation, duration_variation, pitch_variation = self._decode_variation_index(variation)
+        # random variations (data augmentation) using (patch_index+variation) as random seed init
+        rng = np.random.default_rng(seed=patch_index + variation)
+        random_duration_blocks = rng.choice([-1, 1]) * duration_variation
+        if pitch_variation == 0:
+            random_pitch = 0.0
+        else:
+            random_pitch = (0.05 + 0.1 * rng.random()) * (-1.0 if pitch_variation == 2 else 1.0)
+
+        # data augmentation: scene A pitch - small detune
+        original_pitch = s.getParamVal(s_patch['scene'][0]['pitch'])
+        s.setParamVal(s_patch['scene'][0]['pitch'], original_pitch + random_pitch)
+        # print("(scene0pitch): {} ---randomized---> {}".format(original_pitch,
+        #                                                       s.getParamVal(s_patch['scene'][0]['pitch'])))
 
         # Main buffer
         block_size = s.getBlockSize()
@@ -159,8 +210,12 @@ class Surge:
         t_block_s = block_size / self.render_Fs
         # Note on/off blocks
         note_on_block = int(round(self.midi_note_start_s / t_block_s))
-        note_off_block = note_on_block + int(round(self.midi_note_duration_s / t_block_s))
-        assert(note_off_block < n_blocks)
+        note_on_block += start_delay_variation  # Note on delay: +0, +1 or +2 blocks
+        note_off_block = note_on_block + int(round(self.midi_note_duration_s / t_block_s)) + random_duration_blocks
+        if note_off_block >= n_blocks:
+            warnings.warn("Note off time has been limited to the last render block. Please ensure that notes do not"
+                          " end before the last audio rendering block.")
+            note_off_block = n_blocks - 1
 
         # 3-steps audio render
         # surgepy Doc for version 1.9.0.91069f8d
@@ -186,10 +241,15 @@ class Surge:
 
 if __name__ == "__main__":
 
-    Surge.update_patches_list()
+    #Surge.update_patches_list()
 
     surge_synth = Surge()
     print(surge_synth)
+
+    for i in range(surge_synth.nb_variations_per_note):
+        print(surge_synth._decode_variation_index(i))
+
+    surge_synth.render_note(432, 60, 100)
 
     d = surge_synth.dict_description
     pass
