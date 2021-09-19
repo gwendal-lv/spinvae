@@ -27,19 +27,19 @@ model.params_regression_architecture = 'flow_realnvp_6l300'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
-model.sampling_rate = 22050  # 16000 for NSynth dataset compatibility
+model.sampling_rate = 16000  # 16000 for NSynth dataset compatibility
 model.stft_args = (1024, 256)  # fft size and hop size
 model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 # Possible spectrogram sizes:
 #   (513, 433): audio 5.0s, fft size 1024, fft hop 256
 #   (257, 347): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
 #   (513, 347): audio 4.0s, fft size 1024 (no mel), fft hop 256
-model.spectrogram_size = (257, 347)  # see data/dataset.py to retrieve this from audio/stft params
-model.mel_f_limits = (0, 11050)  # min/max Mel-spectrogram frequencies TODO implement
+model.spectrogram_size = (257, 347)  # see data/dataset.py to retrieve this from audio/stft params  FIXME 16kHz
+model.mel_f_limits = (0, 8000)  # min/max Mel-spectrogram frequencies (librosa default 0:Fs/2)
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
-model.midi_notes = ((60, 85), )  # Reference note: C4 , intensity 85/127
-# model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
-model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
+# model.midi_notes = ((60, 85), )  # Reference note: C4 , intensity 85/127
+model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
+model.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_features_mix_level = -2  # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
 # dataset size is artificially increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
@@ -155,7 +155,7 @@ evaluate.epoch = -1  # Trained model to be loaded for post-training evaluation.
 
 def update_dynamic_config_params():
     """
-    Updates dynamic some global attributes of this config.py module.
+    Updates some global attributes of this config.py module.
     This function should be called after any modification of this module's attributes.
     """
 

@@ -11,10 +11,10 @@ import numpy as np
 import torch
 import torch.utils.data
 
-from data.abstractbasedataset import PresetDataset
+from data.abstractbasedataset import AudioDataset
 
 
-def build_subset_samplers(dataset: PresetDataset,
+def build_subset_samplers(dataset: AudioDataset,
                           k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
                           random_seed=0
                           ) -> Dict[str, torch.utils.data.SubsetRandomSampler]:

@@ -14,6 +14,7 @@ import surgepy  # Must be properly built and available from the folder above
 import pathlib
 import json
 from enum import IntEnum
+import copy
 
 import librosa
 from natsort import natsorted
@@ -43,6 +44,7 @@ class Surge:
         :param reduced_Fs: If >= 0, output waveforms will be downsampled after rendering. Useful for compatibility
             with other datasets (e.g. NSynth 16kHz)
         """
+        self.version = surgepy.getVersion()  # for easy serialization
         self.midi_note_start_s = midi_note_start_s
         self.midi_note_duration_s = midi_note_duration_s
         self.render_duration_s = render_duration_s
@@ -64,15 +66,26 @@ class Surge:
 
     def __str__(self):
         return "Surge/surgepy {}. Note start, note duration, render duration = {:.3f}s, {:.1f}s, {:.1f}s @ {}Hz {}"\
-            .format(surgepy.getVersion(), self.midi_note_start_s, self.midi_note_duration_s, self.render_duration_s,
+            .format(self.version, self.midi_note_start_s, self.midi_note_duration_s, self.render_duration_s,
                     self.render_Fs, ("" if self.reduced_Fs <= 0 else "(downsampled to {}Hz)".format(self.reduced_Fs)))
+
+    @property
+    def dict_description(self):
+        """ Returns a serialized description of this instance's main parameters (patches excluded) """
+        d = copy.deepcopy(self.__dict__)
+        del d['_patches_list']
+        return d
 
     @staticmethod
     def get_patches_json_path():
         return pathlib.Path(__file__).parent.joinpath('surge_patches_list.json')
 
     def get_patch_info(self, patch_index):
-        return self._patches_list[patch_index]
+        """ Returns a copy of the dict containing information about a patch. """
+        return copy.deepcopy(self._patches_list[patch_index])
+
+    def get_UID_from_index(self, patch_index):
+        return self._patches_list[patch_index]['UID']
 
     def check_json_patches_list(self):
         pass  # TODO check patches (all UIDs must correspond to a valid folder and subfolder)
@@ -128,7 +141,7 @@ class Surge:
 
     def render_note(self, patch_index, midi_pitch, midi_vel, midi_ch=0):
         """
-        Create a new Surge synth instance and renders a note using the given patch.
+        Creates a new Surge synth instance and renders a note using the given patch.
 
         :returns: (downsampled L-channel, sampling frequency)
         """
@@ -178,3 +191,5 @@ if __name__ == "__main__":
     surge_synth = Surge()
     print(surge_synth)
 
+    d = surge_synth.dict_description
+    pass

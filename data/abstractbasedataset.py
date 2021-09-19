@@ -72,7 +72,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         # - - - Spectrogram utility class - - -
         if self.n_mel_bins <= 0:
             self.spectrogram = utils.audio.Spectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB)
-        else:
+        else:  # FIXME actually implement mel f min/max
             self.spectrogram = utils.audio.MelSpectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB,
                                                           self.n_mel_bins, self.Fs)
         # spectrogram min/max/mean/std statistics: must be loaded after super() ctor (depend on child class args)
