@@ -30,11 +30,13 @@ model.note_duration = (3.0, 1.0)
 model.sampling_rate = 16000  # 16000 for NSynth dataset compatibility
 model.stft_args = (1024, 256)  # fft size and hop size
 model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
-# Possible spectrogram sizes:
+# Spectrogram sizes @ 22.05 kHz:
 #   (513, 433): audio 5.0s, fft size 1024, fft hop 256
 #   (257, 347): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
 #   (513, 347): audio 4.0s, fft size 1024 (no mel), fft hop 256
-model.spectrogram_size = (257, 347)  # see data/dataset.py to retrieve this from audio/stft params  FIXME 16kHz
+# Sizes @ 16 kHz:
+#   (257, 251): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
+model.spectrogram_size = (257, 251)  # see data/dataset.py to retrieve this from audio/stft params
 model.mel_f_limits = (0, 8000)  # min/max Mel-spectrogram frequencies (librosa default 0:Fs/2)
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
 # model.midi_notes = ((60, 85), )  # Reference note: C4 , intensity 85/127

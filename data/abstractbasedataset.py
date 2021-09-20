@@ -129,22 +129,20 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         # Load params and a list of spectrograms (1-element list is fine). 1 spectrogram per MIDI
         preset_UID = self.valid_preset_UIDs[preset_index]
         spectrograms = list()
-        # TODO load pre-computed spectrograms
-        #     - using a randomly chosen variation (data augmentation)
-        #     - possible random noise added to spectrograms?
+        # TODO random noise added to spectrograms?
+        # The same variation is used for all notes
+        variation = self._rng.integers(0, self.nb_variations_per_note) if self._data_augmentation else 0
         for midi_note_idx in midi_note_indexes:
-            midi_pitch, midi_velocity = self.midi_notes[midi_note_idx]
-            x_wav, _ = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
-            # Spectrogram, or Mel-Spectrogram if requested (see self.spectrogram ctor arguments)
-            spectrogram = self.compute_spectrogram(x_wav)  # FIXME load, don't compute
-            spectrograms.append(spectrogram)
+            midi_pitch, midi_vel = self.midi_notes[midi_note_idx]
+            # Spectrogram, or Mel-Spectrogram if requested (see ctor arguments)
+            spectrograms.append(torch.load(self.get_spec_file_path(preset_UID, midi_pitch, midi_vel, variation)))
 
         # Tuple output. Warning: torch.from_numpy does not copy values (torch.tensor(...) ctor does)
-        # FIXME the MIDI pitch and velocity should be a separate tensor, for multi-layer spectrogram
-        #   but this will break compatibility with much code and many notebooks
         if len(midi_note_indexes) == 1:
             ref_midi_pitch, ref_midi_velocity = self.midi_notes[midi_note_indexes[0]]
         else:
+            # FIXME the MIDI pitch and velocity should be a separate tensor, for multi-layer spectrogram
+            #   but this will break compatibility with much code and many notebooks
             ref_midi_pitch, ref_midi_velocity = self.midi_notes[0]
         return torch.stack(spectrograms), \
             torch.tensor([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=torch.int32), \
@@ -271,7 +269,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         try:
             item = self.__getitem__(0)
             return item[0].size()
-        except:  # Dirty catch-all, because __getitem__ might fail until the dataset is fully generated
+        except FileNotFoundError as e:  # __getitem__ might fail until the dataset is fully generated
             return 'Unknown'
 
     @property

@@ -28,6 +28,7 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
                  normalize_audio=False, spectrogram_min_dB=-120.0,
                  spectrogram_normalization: Optional[str] = 'min_max',
                  data_storage_path="/media/gwendal/Data/Datasets/Surge",
+                 random_seed=0, data_augmentation=True,
                  fx_bypass_level=surge.FxBypassLevel.ALL):
         """
         Class for rendering an audio dataset for the Surge synth. Can be used by a PyTorch DataLoader.
@@ -38,7 +39,7 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
         """
         super().__init__(note_duration, n_fft, fft_hop, Fs, midi_notes, multichannel_stacked_spectrograms, n_mel_bins,
                          mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization,
-                         data_storage_path)
+                         data_storage_path, random_seed, data_augmentation)
         self._synth = surge.Surge(reduced_Fs=Fs, midi_note_duration_s=note_duration[0],
                                   render_duration_s=note_duration[0]+note_duration[1],
                                   fx_bypass_level=fx_bypass_level)  # FIXME
