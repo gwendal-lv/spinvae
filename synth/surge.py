@@ -178,12 +178,13 @@ class Surge:
         r -= 3 * var1
         return var0, var1, r
 
-    def render_note(self, patch_index, midi_pitch, midi_vel, midi_ch=0, variation=0):
+    def render_note(self, patch_index, midi_pitch, midi_vel, variation=0):
         """
         Creates a new Surge synth instance and renders a note using the given patch.
         :param variation: The index of a given variation for data augmentation. 0 is no variation.
         :returns: (downsampled L-channel, sampling frequency)
         """
+        midi_ch = 0
         s, s_patch = self.get_synth_and_patch(patch_index)
         # set FX Bypass level
         s.setParamVal(s_patch['fx_bypass'], int(self.fx_bypass_level))
@@ -194,8 +195,8 @@ class Surge:
         random_duration_blocks = rng.choice([-1, 1]) * duration_variation
         if pitch_variation == 0:
             random_pitch = 0.0
-        else:
-            random_pitch = (0.05 + 0.1 * rng.random()) * (-1.0 if pitch_variation == 2 else 1.0)
+        else:  # +/- 3 -> 8 cents detune
+            random_pitch = (0.03 + 0.05 * rng.random()) * (-1.0 if pitch_variation == 2 else 1.0)
 
         # data augmentation: scene A pitch - small detune
         original_pitch = s.getParamVal(s_patch['scene'][0]['pitch'])

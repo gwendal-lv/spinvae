@@ -17,6 +17,7 @@ import librosa.display
 import soundfile as sf
 
 
+# TODO allow complex spectrogram (issue: log-scale for separate real/imag spectrograms)
 class Spectrogram:
     """ Class for dB spectrogram computation from a raw audio waveform.
     The min spectrogram value must be provided.
