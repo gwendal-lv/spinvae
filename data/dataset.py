@@ -16,10 +16,14 @@ DexedDataset = dexeddataset.DexedDataset
 
 
 def model_config_to_dataset_kwargs(model_config):
-    """ Creates a dict that can be unpacked to pass to a PresetDataset class constructor.
+    """ Creates a dict that can be unpacked to pass to an AudioDataset class constructor.
 
     :param model_config: should be the config.model attribute from config.py. """
     return {'note_duration': model_config.note_duration, 'n_fft': model_config.stft_args[0],
-            'fft_hop': model_config.stft_args[1], 'n_mel_bins': model_config.mel_bins,
+            'fft_hop': model_config.stft_args[1], 'Fs': model_config.sampling_rate,
+            'midi_notes': model_config.midi_notes, 'multichannel_stacked_spectrograms': model_config.stack_spectrograms,
+            'n_mel_bins': model_config.mel_bins,
+            'mel_fmin': model_config.mel_f_limits[0], 'mel_fmax': model_config.mel_f_limits[1],
             'spectrogram_min_dB': model_config.spectrogram_min_dB,
-            'midi_notes': model_config.midi_notes, 'multichannel_stacked_spectrograms': model_config.stack_spectrograms}
+            'data_storage_root_path': model_config.data_root_path
+            }

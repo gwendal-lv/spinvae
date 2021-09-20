@@ -27,24 +27,29 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
                  n_mel_bins=-1, mel_fmin=0, mel_fmax=8000,
                  normalize_audio=False, spectrogram_min_dB=-120.0,
                  spectrogram_normalization: Optional[str] = 'min_max',
-                 data_storage_path="/media/gwendal/Data/Datasets/Surge",
+                 data_storage_root_path: Optional[str] = None,
                  random_seed=0, data_augmentation=True,
-                 fx_bypass_level=surge.FxBypassLevel.ALL):
+                 fx_bypass_level=surge.FxBypassLevel.ALL,
+                 check_consistency=True):
         """
         Class for rendering an audio dataset for the Surge synth. Can be used by a PyTorch DataLoader.
 
         Please refer to abstractbasedataset.AudioDataset for documentation about constructor arguments.
 
         :param fx_bypass_level: Describes how much Surge FX should be bypassed.
+        :param check_consistency: Checks if generated data used the same arguments (e.g. same FX disabled, ...)
+            as this constructor
         """
         super().__init__(note_duration, n_fft, fft_hop, Fs, midi_notes, multichannel_stacked_spectrograms, n_mel_bins,
                          mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization,
-                         data_storage_path, random_seed, data_augmentation)
+                         data_storage_root_path, random_seed, data_augmentation)
         self._synth = surge.Surge(reduced_Fs=Fs, midi_note_duration_s=note_duration[0],
                                   render_duration_s=note_duration[0]+note_duration[1],
                                   fx_bypass_level=fx_bypass_level)  # FIXME
         # All available presets are considered valid
         self.valid_preset_UIDs = [self._synth.get_patch_info(idx)['UID'] for idx in range(self._synth.n_patches)]
+        # Final init and checks
+        self._check_consistency()
 
     @property
     def synth_name(self):
@@ -57,6 +62,13 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
     @property
     def nb_variations_per_note(self):
         return self._synth.nb_variations_per_note
+
+    def _check_consistency(self):
+        with open(self._get_patches_info_path(), 'r') as f:
+            d_info = json.load(f)
+            if not self._synth.check_description(d_info['surge']):
+                raise ValueError("Incoherent Surge arguments in {} (current: {}, found: {})"
+                                 .format(self._get_patches_info_path(), self._synth.dict_description, d_info['surge']))
 
     def get_wav_file(self, preset_UID, midi_note, midi_velocity, variation=0):
         file_path = self._get_wav_file_path(preset_UID, midi_note, midi_velocity, variation)

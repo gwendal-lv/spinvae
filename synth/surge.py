@@ -78,6 +78,19 @@ class Surge:
         del d['_patches_list']
         return d
 
+    def check_description(self, d):
+        """ Returns True if data from dict d is coherent with this instance's attributes current values,
+         returns False otherwise. """
+        self_dict = self.dict_description  # partial dict (some values are excluded)
+        for k, v in self_dict.items():
+            if isinstance(v, float):
+                if not np.isclose(v, d[k]):
+                    return False
+            else:
+                if v != d[k]:
+                    return False
+        return True
+
     @staticmethod
     def get_patches_json_path():
         return pathlib.Path(__file__).parent.joinpath('surge_patches_list.json')

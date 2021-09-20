@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import warnings
 from abc import ABC, abstractmethod  # Abstract Base Class
 from typing import Sequence, Optional
 
@@ -30,7 +31,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
                  n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
                  normalize_audio=False, spectrogram_min_dB=-120.0,
                  spectrogram_normalization: Optional[str] = 'min_max',
-                 data_storage_path: Optional[str] = None,
+                 data_storage_root_path: Optional[str] = None,
                  random_seed=0, data_augmentation=True):
         """
         Abstract Base Class for any dataset of audio samples (from a synth of from an acoustic instrument).
@@ -61,9 +62,9 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         :param spectrogram_min_dB:  Noise-floor threshold value for log-scale spectrograms
         :param spectrogram_normalization: 'min_max' to get output spectrogram values in [-1, 1], or 'mean_std'
             to get zero-mean unit-variance output spectrograms. None to disable normalization.
-        :param data_storage_path: The absolute folder to store the generated datasets.
+        :param data_storage_root_path: The absolute folder to store generated datasets. Each dataset will use its
+            own subfolder located inside this folder.
         """
-        # TODO implement audio_data_augmentation bool arg
         self.note_duration = note_duration
         self.n_fft = n_fft
         self.fft_hop = fft_hop
@@ -76,7 +77,9 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         self.mel_fmin = mel_fmin
         self.mel_fmax = mel_fmax
         self.normalize_audio = normalize_audio
-        self._data_storage_path = pathlib.Path(data_storage_path) if data_storage_path is not None else None
+        self._data_storage_root_path = None if data_storage_root_path is None else pathlib.Path(data_storage_root_path)
+        if self._data_storage_root_path is None:
+            warnings.warn("Data will generated and loaded from this script's folder")
         self._data_augmentation = data_augmentation
         self._random_seed = random_seed
         self._rng = np.random.default_rng(seed=self._random_seed)
@@ -222,8 +225,8 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     def data_storage_path(self):
         """ Default storage path (e.g. for pre-rendered spectrograms) is relative to this script's folder.
         A child class should override this method to separate data from Python code. """
-        if self._data_storage_path is not None:
-            return self._data_storage_path
+        if self._data_storage_root_path is not None:
+            return self._data_storage_root_path.joinpath(self.synth_name)
         else:
             return pathlib.Path(__file__).parent.joinpath("{}_data".format(self.synth_name))
 

@@ -25,6 +25,22 @@ model.encoder_architecture = 'speccnn8l1'
 # Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'flow_realnvp_6l300'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
+# If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
+# This option has implications on the regression model itself (the flow will be used in direct or inverse order)
+model.forward_controls_loss = True  # Must be true for non-invertible MLP regression (False is now deprecated)
+
+# If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concatenated to the latent vector
+model.concat_midi_to_z = None  # See update_dynamic_config_params()
+# Latent space dimension  *************** When using a Flow regressor, this dim is automatically set ******************
+model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
+# Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
+#    - base architectures can be realnvp, maf, ...
+#    - set to None to disable latent space flow transforms  # TODO properly reactivate
+#    - options: _BNinternal (batch norm between hidden MLPs, to compute transform coefficients),
+#               _BNbetween (between flow layers), _BNoutput (BN on the last two layers, or not)
+model.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
+
+model.data_root_path = "/media/gwendal/Data/Datasets"
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
 model.sampling_rate = 16000  # 16000 for NSynth dataset compatibility
@@ -48,21 +64,8 @@ model.stack_specs_features_mix_level = -2  # -1 corresponds to the deepest 1x1 c
 model.increased_dataset_size = None  # See update_dynamic_config_params()
 model.spectrogram_min_dB = -120.0
 model.input_tensor_size = None  # see update_dynamic_config_params()
-# If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concatenated to the latent vector
-model.concat_midi_to_z = None  # See update_dynamic_config_params()
-# Latent space dimension  *************** When using a Flow regressor, this dim is automatically set ******************
-model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
-# Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
-#    - base architectures can be realnvp, maf, ...
-#    - set to None to disable latent space flow transforms  # TODO properly reactivate
-#    - options: _BNinternal (batch norm between hidden MLPs, to compute transform coefficients),
-#               _BNbetween (between flow layers), _BNoutput (BN on the last two layers, or not)
-model.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
-# If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
-# This option has implications on the regression model itself (the flow will be used in direct or inverse order)
-model.forward_controls_loss = True  # Must be true for non-invertible MLP regression (False is now deprecated)
 
-model.synth = 'dexed'
+model.synth = 'dexed'  # TODO set to 'all' for pre-training, or 'dexed' for auto synth prog
 # Dexed-specific auto rename: '*' in 'al*_op*_lab*' will be replaced by the actual algorithms, operators and labels
 model.synth_args_str = 'al*_op*_lab*'  # Auto-generated string (see end of script)
 model.synth_params_count = -1  # Will be set automatically - see data.build.get_full_and_split_datasets

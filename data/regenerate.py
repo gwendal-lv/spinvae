@@ -11,6 +11,7 @@ import warnings
 from datetime import datetime
 
 from data.surgedataset import SurgeDataset
+from data import dataset
 
 
 
@@ -41,19 +42,13 @@ def gen_surge_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
             raise AssertionError("All MIDI notes (6?) must be used to compute spectrograms and stats")
 
     # No label restriction, etc...
-    surge_dataset = SurgeDataset(note_duration=config.model.note_duration,
-                                 midi_notes=config.model.midi_notes,
-                                 multichannel_stacked_spectrograms=config.model.stack_spectrograms,
-                                 n_fft=config.model.stft_args[0], fft_hop=config.model.stft_args[1],
-                                 n_mel_bins=config.model.mel_bins, Fs=config.model.sampling_rate,
-                                 spectrogram_min_dB=config.model.spectrogram_min_dB,
-                                 data_augmentation=True)
+    surge_dataset = SurgeDataset(** dataset.model_config_to_dataset_kwargs(config.model),
+                                 data_augmentation=True,
+                                 check_consistency=(not regenerate_wav) and (not regenerate_spectrograms))
 
-    if regenerate_wav:
-        # WRITE ALL WAV FILES (approx. ??? Go)
+    if regenerate_wav:  # WRITE ALL WAV FILES
         surge_dataset.generate_wav_files()
-    if regenerate_spectrograms:
-        # whole-dataset spectrograms and stats (for proper normalization)
+    if regenerate_spectrograms:  # whole-dataset spectrograms and stats (for proper normalization)
         surge_dataset.compute_and_store_spectrograms_and_stats()
 
     if not regenerate_wav and not regenerate_spectrograms:  # Test : read the entire dataset
