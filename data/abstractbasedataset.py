@@ -304,7 +304,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         try:
             item = self.__getitem__(0)
             return item[0].size()
-        except FileNotFoundError as e:  # __getitem__ might fail until the dataset is fully generated
+        except (FileNotFoundError, IndexError):  # __getitem__ might fail until the dataset is fully generated
             return 'Unknown'
 
     @property

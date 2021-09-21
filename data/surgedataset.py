@@ -55,7 +55,8 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
             self.valid_preset_UIDs.remove(UID)
 
         # Final init and checks
-        self._check_consistency()
+        if check_consistency:
+            self._check_consistency()
 
     @property
     def synth_name(self):
@@ -169,9 +170,4 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
                 idx, pitch, vel, var, audio = tuple(render)
                 soundfile.write(self._get_wav_file_path(self._synth.get_UID_from_index(idx), pitch, vel, var),
                                 data=audio, samplerate=Fs)
-
-
-if __name__ == "__main__":
-    pass
-
 
