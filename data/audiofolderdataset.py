@@ -17,6 +17,9 @@ import utils.audio
 
 # renamed AudioFolderDataset
 # because AudioDataset will be the generic class that transforms .wav files and labels into properly encoded tensors
+import utils.torchspectrograms
+
+
 class AudioFolderDataset(torch.utils.data.Dataset):
     """
     This class loads all audio files to get min/max stats during construction.
@@ -121,7 +124,7 @@ class AudioFolderDataset(torch.utils.data.Dataset):
         self._spectrograms = list()  # type: List[torch.Tensor]
         if n_mel_bins < 0:
             raise NotImplementedError("TODO implement STFT ctor arg")
-        spectrogram = utils.audio.MelSpectrogram(n_fft, fft_hop, spectrogram_min_dB, n_mel_bins, self._sr)
+        spectrogram = utils.torchspectrograms.MelSpectrogram(n_fft, fft_hop, spectrogram_min_dB, n_mel_bins, self._sr)
         for i, _ in enumerate(self._audio_names):
             tensor_specs = [spectrogram(a) for a in self._audio_wav[i]]
             self._spectrograms.append(torch.stack(tensor_specs))
