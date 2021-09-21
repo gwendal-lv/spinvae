@@ -6,10 +6,12 @@ Concrete preset Datasets are available from this module but are implemented in t
 
 
 from . import dexeddataset
+from . import surgedataset
 # TODO import future datasets
 
 # ====================== Concrete dataset classes ======================
 DexedDataset = dexeddataset.DexedDataset
+SurgeDataset = surgedataset.SurgeDataset
 # TODO add future datasets here
 # ======================================================================
 

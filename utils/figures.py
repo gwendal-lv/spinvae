@@ -13,7 +13,7 @@ import torch
 
 import logs.metrics
 
-from data.abstractbasedataset import PresetDataset
+from data.abstractbasedataset import AudioDataset, PresetDataset
 from data.preset import PresetIndexesHelper
 
 import utils.stat
@@ -24,7 +24,35 @@ __param_width = 0.12
 __x_tick_font_size = 8
 
 
-def plot_train_spectrograms(x_in, x_out, sample_info, dataset: PresetDataset,
+def plot_audio(audio: np.ndarray, dataset: Optional[AudioDataset] = None, preset_UID: Optional[int] = None,
+               figsize=(8, 3),
+               Fs: Optional[int] = None, title: Optional[str] = None,
+               midi_note: Optional[tuple] = None, variation: Optional[int] = None):
+    if dataset is not None:  # if dataset is available: some input args are forgotten
+        Fs = dataset.Fs
+        if preset_UID is not None:
+            title = "{} (UID={})".format(dataset.get_name_from_preset_UID(preset_UID), preset_UID)
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    if Fs is not None:
+        t = np.linspace(0, audio.shape[0] * 1.0 / Fs, audio.shape[0])
+    else:
+        t = np.arange(audio.shape[0])
+    plt.plot(t, audio)
+    if title is None:
+        plt.title("Waveform")
+    else:
+        plt.title(title)
+    plt.xlabel("Time (s)" if Fs is not None else 'Sample')
+    plt.ylabel("Amplitude")
+    if midi_note is not None:
+        legend_str = "MIDI: {}".format(midi_note)
+        if variation is not None:
+            legend_str += "\nvariation {}".format(variation)
+        plt.legend([legend_str])
+    return fig, ax
+
+
+def plot_train_spectrograms(x_in, x_out, sample_info, dataset: AudioDataset,
                             model_config, train_config):
     """ Wrapper for plot_spectrograms, which is made to be easily used during training/validation. """
     if dataset.multichannel_stacked_spectrograms:  # Plot only 1 preset ID, multiple midi notes
@@ -41,6 +69,7 @@ def plot_train_spectrograms(x_in, x_out, sample_info, dataset: PresetDataset,
                              add_colorbar=True)
 
 
+# TODO also plot names (not UIDs onyl)
 def plot_spectrograms(specs_GT, specs_recons=None,
                       presets_UIDs=None, midi_notes=None, multichannel_spectrograms=False,
                       plot_error=False, error_magnitude=1.0,
@@ -98,9 +127,8 @@ def plot_spectrograms(specs_GT, specs_recons=None,
             if print_info:
                 if j == 0:
                     print("Dataset Spectrogram size: {}x{} = {} pixels\n"
-                          "Original raw audio: {} samples (22.050kHz, 4.0s))"
                           .format(spectrogram.shape[0], spectrogram.shape[1],
-                                  spectrogram.shape[0] * spectrogram.shape[1], 4 * 22050))  # TODO don't hardcode
+                                  spectrogram.shape[0] * spectrogram.shape[1]))
                 print("Dataset STFT Spectrogram UID={}: min={:.1f} max={:.1f} (normalized dB)"
                       .format(UID, spectrogram.min(), spectrogram.max()))
             if row == 0:

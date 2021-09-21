@@ -59,6 +59,10 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
     def total_nb_presets(self):
         return self._synth.n_patches
 
+    def get_name_from_preset_UID(self, preset_UID: int) -> str:
+        patch_index = self.get_index_from_preset_UID(preset_UID)
+        return self._synth.get_patch_info(patch_index)['patch_name']
+
     @property
     def nb_variations_per_note(self):
         return self._synth.nb_variations_per_note

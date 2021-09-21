@@ -95,11 +95,11 @@ class Surge:
     def get_patches_json_path():
         return pathlib.Path(__file__).parent.joinpath('surge_patches_list.json')
 
-    def get_patch_info(self, patch_index):
+    def get_patch_info(self, patch_index: int) -> dict:
         """ Returns a copy of the dict containing information about a patch. """
         return copy.deepcopy(self._patches_list[patch_index])
 
-    def get_UID_from_index(self, patch_index):
+    def get_UID_from_index(self, patch_index: int):
         return self._patches_list[patch_index]['UID']
 
     def check_json_patches_list(self):

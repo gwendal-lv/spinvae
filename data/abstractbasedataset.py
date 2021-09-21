@@ -177,6 +177,11 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         else:  # 'usual' case: each UID has its own unique dataset index
             return index_in_valid_list
 
+    @abstractmethod
+    def get_name_from_preset_UID(self, preset_UID: int) -> str:
+        """ Returns the name of a preset. """
+        pass
+
     @property
     def default_midi_note(self):
         """ Default MIDI pitch and velocity, e.g. for audio renders evaluation, labelling, ... """
