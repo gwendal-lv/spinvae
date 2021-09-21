@@ -101,7 +101,7 @@ class SimpleSampleLabeler:
         """
         assert Fs == 22050  # Librosa defaults must be used at the moment
         self.x_wav = x_wav
-        self.Fs = Fs
+        self.Fs = Fs  # FIXME 22 or 16 kHz
         self.hpss_margin = hpss_margin
         self.perc_duration_ms = perc_duration_ms
         # Pre-computation of spectrograms and energies
@@ -109,7 +109,7 @@ class SimpleSampleLabeler:
         self.energy, self.energy_ratio = self._get_energy_ratios()
         # Energies on attack (to identify perc sounds)
         # Perc content supposed to be found in the first 10s of ms. Hop: default librosa 256
-        limit_index = int(np.ceil(self.perc_duration_ms * self.Fs / 256.0 / 1000.0))
+        limit_index = int(np.ceil(self.perc_duration_ms * self.Fs / 256.0 / 1000.0))  # FIXME 22 or 16 kHz
         self.attack_specs = dict()
         self.attack_energies = dict()
         for k in self.specs:
@@ -224,43 +224,61 @@ def get_spectrogram_from_audio(audio_samples_path: pathlib.Path, audio_name: str
 
 
 
-def dataset_samples_rms(dataset: AudioDataset,
+def dataset_samples_rms(dataset: AudioDataset, outliers_min: Optional[int] = None,
                         num_workers=os.cpu_count(), print_analysis_duration=True):
-    """ Computes a list of RMS frames for each audio file available from the given dataset.
+    """ Computes a list of RMS stats (min/avg/max) for each audio file available from the given dataset.
     Also returns outliers (each outlier as a (UID, pitch, vel, var) tuple) if min/max values are given, else None.
 
-    :returns: (rms_frames_list, outliers_list) """
+    :returns: (rms_stats list of dicts, outliers list of tuples) """
     if print_analysis_duration:
         print("Starting dataset RMS computation...")
     t_start = datetime.now()
     if num_workers < 1:
         num_workers = 1
     if num_workers == 1:
-        audio_rms_frames, outliers = _dataset_samples_rms((dataset, dataset.valid_preset_UIDs))
+        audio_rms_stats, outliers = _dataset_samples_rms((dataset, dataset.valid_preset_UIDs, outliers_min))
     else:
         split_preset_UIDs = np.array_split(dataset.valid_preset_UIDs, num_workers)
-        workers_args = [(dataset, UIDs) for UIDs in split_preset_UIDs]
+        workers_args = [(dataset, UIDs, outliers_min) for UIDs in split_preset_UIDs]
         with multiprocessing.Pool(num_workers) as p:  # automatically closes and joins all workers
             results = p.map(_dataset_samples_rms, workers_args)
-        audio_rms_frames, outliers = results
+            # Structure of results:
+            #     list of length num_workers
+            #         dict of 3 lists (1 list for 'min', etc....)
+            #         list of outliers (1 tuple / outlier)
+        audio_rms_stats = dict()
+        for k in results[0][0]:  # keys detected automatically (defined in _dataset_samples_rms)
+            audio_rms_stats[k] = list()
+        outliers = list()
+        for r in results:
+            for k in audio_rms_stats:
+                audio_rms_stats[k] += r[0][k]
+            outliers += r[1]  # merges the 2 lists
     delta_t = (datetime.now() - t_start).total_seconds()
     if print_analysis_duration:
         print("Dataset RMS computation finished. {:.1f} min total ({:.1f} ms / wav, {} audio files)"
               .format(delta_t / 60.0, 1000.0 * delta_t / dataset.nb_valid_audio_files, dataset.nb_valid_audio_files))
-    return audio_rms_frames, outliers
+    return audio_rms_stats, outliers
 
 
 def _dataset_samples_rms(worker_args):
-    dataset, preset_UIDs = worker_args
+    dataset, preset_UIDs, outliers_min = worker_args
     """ Auxiliary function for dataset_samples_rms: computes a single batch (multiproc or not). """
-    audio_rms_frames = list()  # all RMS frames (1 array / audio file)
+    audio_rms_stats = {'min': list(), 'avg': list(), 'max': list()}
+    outliers = list()
     for preset_UID in preset_UIDs:
         for midi_note in dataset.midi_notes:
             midi_pitch, midi_vel = midi_note
             for variation in range(dataset.nb_variations_per_note):
                 audio, Fs = dataset.get_wav_file(preset_UID, midi_pitch, midi_vel, variation=variation)
-                audio_rms_frames.append(librosa.feature.rms(audio))
-                # TODO check min/max
-    return audio_rms_frames, None
+                rms_frames = librosa.feature.rms(audio)  # type: np.ndarray
+                rms_frames = rms_frames[0]
+                audio_rms_stats['min'].append(rms_frames.min())
+                audio_rms_stats['avg'].append(rms_frames.mean())
+                audio_rms_stats['max'].append(rms_frames.max())
+                if outliers_min is not None:
+                    if audio_rms_stats['max'][-1] < outliers_min:  # If max RMS is very small: outlier
+                        outliers.append((preset_UID, midi_pitch, midi_vel, variation))
+    return audio_rms_stats, outliers
 
 

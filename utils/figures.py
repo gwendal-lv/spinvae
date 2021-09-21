@@ -49,6 +49,7 @@ def plot_audio(audio: np.ndarray, dataset: Optional[AudioDataset] = None, preset
         if variation is not None:
             legend_str += "\nvariation {}".format(variation)
         plt.legend([legend_str])
+    fig.tight_layout()
     return fig, ax
 
 

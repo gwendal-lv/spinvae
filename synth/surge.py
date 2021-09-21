@@ -96,11 +96,26 @@ class Surge:
         return pathlib.Path(__file__).parent.joinpath('surge_patches_list.json')
 
     def get_patch_info(self, patch_index: int) -> dict:
-        """ Returns a copy of the dict containing information about a patch. """
+        """ Returns a copy of the dict containing information about a patch.
+
+        :param patch_index: in [0, self.n_patches[
+        """
         return copy.deepcopy(self._patches_list[patch_index])
 
     def get_UID_from_index(self, patch_index: int):
+        """ Returns the UID corresponding to a local patch index.
+
+        :param patch_index: in [0, self.n_patches[
+        """
         return self._patches_list[patch_index]['UID']
+
+    def find_index_from_UID(self, patch_UID: int):
+        """ Transforms a UID into a local patch index.
+        """
+        for idx, p in enumerate(self._patches_list):
+            if p['UID'] == patch_UID:
+                return idx
+        raise ValueError("Patch UID {} does not exist.".format(patch_UID))
 
     def check_json_patches_list(self):
         pass  # TODO check patches (all UIDs must correspond to a valid folder and subfolder)

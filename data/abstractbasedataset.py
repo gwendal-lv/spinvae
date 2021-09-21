@@ -4,7 +4,7 @@ import os
 import pathlib
 import warnings
 from abc import ABC, abstractmethod  # Abstract Base Class
-from typing import Sequence, Optional
+from typing import Sequence, Optional, List
 
 import pandas as pd
 import json
@@ -163,6 +163,32 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     def valid_presets_count(self):
         """ Total number of presets currently available from this dataset. """
         return len(self.valid_preset_UIDs)
+
+    @property
+    def excluded_patches_UIDs(self) -> List[int]:
+        """ A list of UIDs of presets which are available but are excluded for this dataset
+        (see details in .txt files located in the data/excluded_preset folder). """
+        # Those files are located inside this Python code folder to be included in the git repo
+        try:
+            excluded_UIDs = list()
+            local_file_path = "excluded_presets/{}_excluded_presets.txt".format(self.synth_name)
+            file_path = pathlib.Path(__file__).parent.joinpath(local_file_path)
+            with open(file_path, 'r') as f:
+                lines = [l.rstrip("\n") for l in f.readlines()]
+            for i, line in enumerate(lines):
+                if len(line) > 0 and line[0] != '#':
+                    line_split = line.split(',')  # Multiple values (comma-separated) are allowed on a single line
+                    for word in line_split:
+                        try:
+                            UID = int(word.strip())  # Remove leading and trailing spaces
+                            excluded_UIDs.append(UID)
+                        except ValueError:
+                            warnings.warn("File {}, line {}: cannot parse '{}' into integer preset UID(s)."
+                                          .format(file_path, i + 1, line))
+            return excluded_UIDs
+        except FileNotFoundError as e:
+            warnings.warn("Cannot find preset UIDs to be excluded (missing file: '{}')".format(e.filename))
+            return []
 
     def get_index_from_preset_UID(self, preset_UID):
         """ Returns the dataset index (or list of indexes) of a preset described by its UID. """

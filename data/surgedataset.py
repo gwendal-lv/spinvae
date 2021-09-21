@@ -48,6 +48,12 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
                                   fx_bypass_level=fx_bypass_level)  # FIXME
         # All available presets are considered valid
         self.valid_preset_UIDs = [self._synth.get_patch_info(idx)['UID'] for idx in range(self._synth.n_patches)]
+        excluded_UIDs = self.excluded_patches_UIDs
+        for UID in excluded_UIDs:
+            # Trying to exclude a preset that does not exist is considered a fatal error (please triple-check the list
+            # of excluded UIDs). So, we don't try to catch a potential ValueError here
+            self.valid_preset_UIDs.remove(UID)
+
         # Final init and checks
         self._check_consistency()
 
@@ -59,9 +65,12 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
     def total_nb_presets(self):
         return self._synth.n_patches
 
+    def get_patch_info(self, preset_UID: int):
+        patch_index = self._synth.find_index_from_UID(preset_UID)
+        return self._synth.get_patch_info(patch_index)
+
     def get_name_from_preset_UID(self, preset_UID: int) -> str:
-        patch_index = self.get_index_from_preset_UID(preset_UID)
-        return self._synth.get_patch_info(patch_index)['patch_name']
+        return self.get_patch_info(preset_UID)['patch_name']
 
     @property
     def nb_variations_per_note(self):
