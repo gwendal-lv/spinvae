@@ -47,7 +47,8 @@ def gen_surge_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
 
 def gen_nsynth_dataset(regenerate_json: bool, regenerate_spectrograms: bool):
     """
-    Approx downloaded audio size: ????? Go
+    Approx downloaded audio size: 30 Go?
+        --> 39 Go with re-sorted JSON files and added symlinks (< 30s to compute and write all of them)
 
     Approx spectrograms computation time:
         Compute and store:    Mel: ????min (????ms / spectrogram)   ;     STFT only: ????min (????ms/spec)
@@ -68,10 +69,15 @@ def gen_nsynth_dataset(regenerate_json: bool, regenerate_spectrograms: bool):
 
     # No label restriction, etc...
     nsynth_dataset = dataset.NsynthDataset(** dataset.model_config_to_dataset_kwargs(config.model),
-                                           data_augmentation=True)
+                                           data_augmentation=True,
+                                           dataset_type='full',
+                                           exclude_instruments_with_missing_notes=True,
+                                           exclude_sonic_qualities=['reverb'],
+                                           force_include_all_acoustic=True
+                                           )
     print(nsynth_dataset)
     if regenerate_json:
-        nsynth_dataset.regenerate_json_files()
+        nsynth_dataset.regenerate_json_and_symlinks()
     #_gen_dataset(nsynth_dataset, False, regenerate_spectrograms)
 
 
@@ -96,5 +102,5 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 if __name__ == "__main__":
 
     # gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
-    gen_nsynth_dataset(regenerate_json=True, regenerate_spectrograms=False)
+    gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
 

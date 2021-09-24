@@ -56,7 +56,7 @@ model.spectrogram_size = (257, 251)  # see data/dataset.py to retrieve this from
 model.mel_f_limits = (0, 8000)  # min/max Mel-spectrogram frequencies (librosa default 0:Fs/2)
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
 # model.midi_notes = ((60, 85), )  # Reference note: C4 , intensity 85/127
-model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
+model.midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
 model.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_features_mix_level = -2  # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the

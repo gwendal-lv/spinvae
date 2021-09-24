@@ -1,0 +1,2 @@
+# This file contains UIDs of patches that should be excluded from the dataset.
+# The UIDs are the 'instrument' values from the original NSynth JSON files.

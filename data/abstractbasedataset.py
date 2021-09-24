@@ -161,7 +161,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
 
     @property
     def valid_presets_count(self):
-        """ Total number of presets currently available from this dataset. """
+        """ Total number of presets currently available from this dataset (presets that have not been invalidated). """
         return len(self.valid_preset_UIDs)
 
     @property
@@ -171,7 +171,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         # Those files are located inside this Python code folder to be included in the git repo
         try:
             excluded_UIDs = list()
-            local_file_path = "excluded_presets/{}_excluded_presets.txt".format(self.synth_name)
+            local_file_path = "presets_mods/{}_excluded_presets.txt".format(self.synth_name)
             file_path = pathlib.Path(__file__).parent.joinpath(local_file_path)
             with open(file_path, 'r') as f:
                 lines = [l.rstrip("\n") for l in f.readlines()]
@@ -313,7 +313,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
 
     def get_spec_file_path(self, preset_UID, midi_note, midi_velocity, variation=0):
         return self._spectrograms_folder\
-            .joinpath(self.get_audio_file_stem(preset_UID, midi_note, midi_velocity, variation) + '.pt')
+            .joinpath('{}.pt'.format(self.get_audio_file_stem(preset_UID, midi_note, midi_velocity, variation) ))
 
     @property
     def _spectrogram_stats_folder(self):

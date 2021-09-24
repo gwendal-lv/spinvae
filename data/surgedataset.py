@@ -48,8 +48,7 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
                                   fx_bypass_level=fx_bypass_level)  # FIXME
         # All available presets are considered valid
         self.valid_preset_UIDs = [self._synth.get_patch_info(idx)['UID'] for idx in range(self._synth.n_patches)]
-        excluded_UIDs = self.excluded_patches_UIDs
-        for UID in excluded_UIDs:
+        for UID in self.excluded_patches_UIDs:
             # Trying to exclude a preset that does not exist is considered a fatal error (please triple-check the list
             # of excluded UIDs). So, we don't try to catch a potential ValueError here
             self.valid_preset_UIDs.remove(UID)
