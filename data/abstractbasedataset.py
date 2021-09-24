@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import shutil
 import warnings
 from abc import ABC, abstractmethod  # Abstract Base Class
 from typing import Sequence, Optional, List
@@ -419,8 +420,9 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         return full_stats
 
     def _init_specs_and_stats_files(self):
-        if not os.path.exists(self._spectrograms_folder):
-            os.makedirs(self._spectrograms_folder)
+        if os.path.exists(self._spectrograms_folder):
+            shutil.rmtree(self._spectrograms_folder)
+        os.makedirs(self._spectrograms_folder)
         if not os.path.exists(self._spectrogram_stats_folder):
             os.makedirs(self._spectrogram_stats_folder)
         open(self._spectrogram_stats_file, 'w').close()

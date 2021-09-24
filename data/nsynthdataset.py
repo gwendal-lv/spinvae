@@ -132,11 +132,15 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
         return 3
 
     def get_wav_file(self, preset_UID, midi_note, midi_velocity, variation=0):
-        # TODO data augmentation: shift audio waveform of a few ms (or small integer number of samples)
-        if variation != 0:
-            raise NotImplementedError()
         audio_file_name = self.get_audio_file_stem(preset_UID, midi_note, midi_velocity, variation) + '.wav'
-        return soundfile.read(self._audio_symlinks_dir.joinpath(audio_file_name))
+        audio, Fs = soundfile.read(self._audio_symlinks_dir.joinpath(audio_file_name))
+        # data augmentation: shift audio waveform of a few ms (or small integer number of samples)
+        if variation != 0:
+            rng = np.random.default_rng(seed=(self._random_seed + preset_UID + variation))
+            n_roll_samples = rng.integers(1, int(self.Fs * 0.002), endpoint=True)  # max 2ms delay
+            audio = np.roll(audio, n_roll_samples, axis=0)
+            audio[:n_roll_samples] = 0.0
+        return audio, Fs
 
     def get_audio_file_stem(self, preset_UID, midi_note, midi_velocity, variation=0):
         # wav files are the same for all data augmentation variations
