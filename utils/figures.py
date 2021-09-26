@@ -2,7 +2,7 @@
 Utilities for plotting various figures (spectrograms, ...)
 """
 
-from typing import Optional, Sequence, Iterable
+from typing import Optional, Sequence, Iterable, List
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,6 +22,7 @@ import utils.stat
 # Display parameters for scatter/box/error plots
 __param_width = 0.12
 __x_tick_font_size = 8
+__max_nb_spec_presets = 4  # Max number of different presets whose corresponding spectrograms are displayed
 
 
 def plot_audio(audio: np.ndarray, dataset: Optional[AudioDataset] = None, preset_UID: Optional[int] = None,
@@ -60,22 +61,28 @@ def plot_train_spectrograms(x_in, x_out, sample_info, dataset: AudioDataset,
         midi_notes = model_config.midi_notes
         presets_UIDs = torch.ones((sample_info.shape[0],), dtype=sample_info.dtype, device=sample_info.device)
         presets_UIDs *= sample_info[0, 0]
+        presets_names = [dataset.get_name_from_preset_UID(presets_UIDs[0].item())]  # we send a single name
     else:  # Plot multiple preset IDs, possibly also different midi notes for different 1-ch spectrograms
         midi_notes = [(sample_info[i, 1].item(), sample_info[i, 2].item()) for i in range(sample_info.shape[0])]
         presets_UIDs = sample_info[:, 0]
+        presets_names = list()
+        for i in range(np.minimum(__max_nb_spec_presets, presets_UIDs.shape[0])):
+            presets_names.append(dataset.get_name_from_preset_UID(presets_UIDs[i].item()))
     return plot_spectrograms(x_in, x_out, presets_UIDs=presets_UIDs,
                              midi_notes=midi_notes,
                              multichannel_spectrograms=dataset.multichannel_stacked_spectrograms,
                              plot_error=(x_out is not None), max_nb_specs=train_config.logged_samples_count,
-                             add_colorbar=True)
+                             add_colorbar=True,
+                             presets_names=presets_names)
 
 
-# TODO also plot names (not UIDs onyl)
 def plot_spectrograms(specs_GT, specs_recons=None,
                       presets_UIDs=None, midi_notes=None, multichannel_spectrograms=False,
                       plot_error=False, error_magnitude=1.0,
-                      max_nb_specs=4, spec_ax_w=2.5, spec_ax_h=2.5,
-                      print_info=False, add_colorbar=False):
+                      max_nb_specs: Optional[int] = None,
+                      spec_ax_w=2.5, spec_ax_h=3.0,
+                      add_colorbar=False,
+                      presets_names: Optional[List[str]] = None):
     """
     Creates a figure and axes to plot some ground-truth spectrograms (1st row) and optional reconstructed
     spectrograms (2nd row).
@@ -93,6 +100,7 @@ def plot_spectrograms(specs_GT, specs_recons=None,
 
     :returns: fig, axes
     """
+    max_nb_specs = __max_nb_spec_presets if max_nb_specs is None else max_nb_specs
     if multichannel_spectrograms:  # Plot several notes (different channels)
         nb_specs = np.minimum(max_nb_specs, len(midi_notes))
     else:  # Plot several batch items, channel 0 only
@@ -109,14 +117,10 @@ def plot_spectrograms(specs_GT, specs_recons=None,
         fig, axes = plt.subplots(nb_rows, nb_specs, figsize=(nb_specs*spec_ax_w, spec_ax_h*nb_rows))
     if nb_specs == 1:
         axes = [axes]
+    # Row-by-row plots
     for row in range(nb_rows):
         for j in range(nb_specs):
-            if multichannel_spectrograms:
-                batch_idx = 0
-                ch = j
-            else:
-                batch_idx = j
-                ch = 0
+            batch_idx, ch = (0, j) if multichannel_spectrograms else (j, 0)
             if row == 0:
                 spectrogram = specs_GT[batch_idx, ch, :, :].clone().detach().cpu().numpy()
             elif row == 1:
@@ -124,18 +128,15 @@ def plot_spectrograms(specs_GT, specs_recons=None,
             else:
                 spectrogram = specs_recons[batch_idx, ch, :, :].clone().detach().cpu().numpy()\
                               - specs_GT[batch_idx, ch, :, :].clone().detach().cpu().numpy()
-            UID = presets_UIDs[j].item() if presets_UIDs is not None else None
-            if print_info:
-                if j == 0:
-                    print("Dataset Spectrogram size: {}x{} = {} pixels\n"
-                          .format(spectrogram.shape[0], spectrogram.shape[1],
-                                  spectrogram.shape[0] * spectrogram.shape[1]))
-                print("Dataset STFT Spectrogram UID={}: min={:.1f} max={:.1f} (normalized dB)"
-                      .format(UID, spectrogram.min(), spectrogram.max()))
-            if row == 0:
-                title = "{} ".format(UID) if UID is not None else ''
-                title += "pitch;vel={};{}"\
-                    .format(midi_notes[j][0], midi_notes[j][1]) if midi_notes is not None else ''
+            if row == 0:  # Some titles on first row only
+                title = ''
+                if multichannel_spectrograms and midi_notes is not None:
+                    title = "note ({},{})".format(midi_notes[j][0], midi_notes[j][1])
+                elif not multichannel_spectrograms:
+                    if presets_UIDs is not None:
+                        title += "{}".format(presets_UIDs[j].item())
+                    if presets_names is not None:
+                        title += " '{}'".format(presets_names[j])
                 axes[row][j].set(title=title)
             im = librosa.display.specshow(spectrogram, shading='flat', ax=axes[row][j],
                                           cmap=('magma' if row < 2 else 'bwr'),
@@ -144,6 +145,16 @@ def plot_spectrograms(specs_GT, specs_recons=None,
             if add_colorbar:
                 clb = fig.colorbar(im, ax=axes[row][j], orientation='vertical')
 
+    if multichannel_spectrograms:
+        title = ''
+        if presets_UIDs is not None:
+            title += 'UID={}'.format(presets_UIDs[0].item())
+        if presets_names is not None:
+            title += " '{}'".format(presets_names[0])
+        if len(title) > 0:
+            fig.suptitle(title)
+    elif not multichannel_spectrograms and midi_notes is not None:
+        fig.suptitle("note ({},{})".format(midi_notes[0][0], midi_notes[0][1]))
     fig.tight_layout()
     return fig, axes
 
