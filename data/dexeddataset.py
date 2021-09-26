@@ -36,6 +36,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                  algos=None, operators=None,
                  vst_params_learned_as_categorical: Optional[str] = None,
                  restrict_to_labels=None, constant_filter_and_tune_params=True,
+                 constant_middle_C=True,
                  prevent_SH_LFO=False,  # TODO re-implement
                  learn_mod_wheel_params=True,  # see dexed.py / get_mod_wheel_related_param_indexes()
                  check_constrains_consistency=True
@@ -56,7 +57,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             cardinality <= xxx (e.g. 8 or 32) as categorical
         :param restrict_to_labels: List of strings. If not None, presets of this dataset will be selected such
             that they are tagged with at least one of the given labels.
-        :param constant_filter_and_tune_params: if True, the main filter and the main tune settings are default
+        :param constant_filter_and_tune_params: if True, the main filter and the detune settings are set to default.
+        :param constant_middle_C: If True, the 'Middle C' transpose control will be set to its center position.
         :param prevent_SH_LFO: if True, replaces the SH random LFO by a square-wave deterministic LFO
         :param check_constrains_consistency: Set to False when this dataset instance is used to pre-render
             audio files
@@ -67,8 +69,10 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                          learn_mod_wheel_params)
         assert learn_mod_wheel_params  # Must be learned, because LFO modulation also depends on these params
         self.prevent_SH_LFO = prevent_SH_LFO
-        assert prevent_SH_LFO is False  # TODO re-implement S&H enable/disable
+        if prevent_SH_LFO:
+            raise NotImplementedError()  # TODO re-implement S&H enable/disable
         self.constant_filter_and_tune_params = constant_filter_and_tune_params
+        self.constant_middle_C = constant_middle_C
         if check_constrains_consistency:  # pre-rendered audio consistency
             self.check_audio_render_constraints_file()
         self.algos = algos if algos is not None else []
@@ -82,8 +86,10 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         # - - - Constraints on parameters, learnable VST parameters - - -
         self.learnable_params_idx = list(range(0, dexed_db.presets_mat.shape[1]))
         if self.constant_filter_and_tune_params:  # (see dexed_db_explore.ipynb)
-            for vst_idx in [0, 1, 2, 3, 13]:
+            for vst_idx in [0, 1, 2, 3]:
                 self.learnable_params_idx.remove(vst_idx)
+        if self.constant_middle_C:
+            self.learnable_params_idx.remove(13)
         for i_op in range(6):  # Search for disabled operators
             if not (i_op+1) in self._operators:  # If disabled: we remove all corresponding learnable params
                 for vst_idx in range(21):  # Don't remove the 22nd param (OP on/off selector) yet
@@ -129,12 +135,14 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         for op_i, op_switch_idx in enumerate([44, 66, 88, 110, 132, 154]):
             self._params_default_values[op_switch_idx] = 1.0 if ((op_i+1) in self._operators) else 0.0
         if self.constant_filter_and_tune_params:
-            self._params_cardinality[[0, 1, 2, 3, 13]] = np.ones((5,), dtype=np.int)
-            self._params_default_values[0] = 1.0
-            self._params_default_values[1] = 0.0
-            self._params_default_values[2] = 1.0
-            self._params_default_values[3] = 0.5
-            self._params_default_values[13] = 0.5
+            self._params_cardinality[[0, 1, 2, 3]] = np.ones((4,), dtype=np.int)
+            self._params_default_values[0] = 1.0  # 'cutoff'
+            self._params_default_values[1] = 0.0  # 'resonance'
+            self._params_default_values[2] = 1.0  # 'output' (volume)
+            self._params_default_values[3] = 0.5  # 'master tune adj' (small detune)
+        if self.constant_middle_C:
+            self._params_cardinality[13] = 1
+            self._params_default_values[13] = 0.5  # 'transpose'
         if not self.learn_mod_wheel_params:
             mod_vst_params_indexes = dexed.Dexed.get_mod_wheel_related_param_indexes()
             self._params_cardinality[mod_vst_params_indexes] = np.ones((len(mod_vst_params_indexes),), dtype=np.int)
@@ -171,7 +179,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                         raise ValueError("VST param idx={} is neither numerical nor categorical".format(vst_idx))
         # - - - Final initializations - - -
         self._preset_idx_helper = PresetIndexesHelper(self)
-        # Don't need to load stats here anymore: will be loaded on demand
+        # Don't need to load spectrograms stats here anymore: will be loaded on demand
 
     @property
     def synth_name(self):
@@ -241,22 +249,14 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             ops_description = 'operators_all'
         return ops_description
 
-    def write_audio_render_constraints_file(self):
-        file_path = dexed.PresetDatabase._get_presets_folder().joinpath("audio_render_constraints_file.json")
-        with open(file_path, 'w') as f:
-            json.dump({'constant_filter_and_tune_params': self.constant_filter_and_tune_params,
-                       'prevent_SH_LFO': self.prevent_SH_LFO}, f)
-
-    def check_audio_render_constraints_file(self):
-        """ Raises a RuntimeError if the constraints used to pre-rendered audio are different from
-        this instance constraints (S&H locked, filter/tune general params, ...) """
-        file_path = dexed.PresetDatabase._get_presets_folder().joinpath("audio_render_constraints_file.json")
-        with open(file_path, 'r') as f:
-            constraints = json.load(f)
-            if constraints['constant_filter_and_tune_params'] != self.constant_filter_and_tune_params:
-                raise RuntimeError()
-            if constraints['prevent_SH_LFO'] != self.prevent_SH_LFO:
-                raise RuntimeError()
+    @property
+    def audio_constraints(self):
+        constraints = super().audio_constraints
+        constraints['operators'] = self._operators_config_description
+        constraints['constant_filter_and_tune_params'] = self.constant_filter_and_tune_params
+        constraints['prevent_SH_LFO'] = self.prevent_SH_LFO
+        constraints['constant_middle_C'] = self.constant_middle_C
+        return constraints
 
     # ================================== Labels =================================
 
@@ -311,7 +311,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
 
     @property
     def _audio_files_folder(self):
-        return self.data_storage_path.joinpath("Audio").joinpath(self._operators_config_description)
+        return self.data_storage_path.joinpath("Audio")
 
     def _get_wav_file_path(self, patch_UID, midi_pitch, midi_vel, variation):
         return self._audio_files_folder.joinpath("{}.wav".format(self.get_audio_file_stem(patch_UID, midi_pitch,
@@ -336,7 +336,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             raise RuntimeError("[data/dexeddataset.py] Can't open file {}. Please pre-render audio files for this "
                                "dataset configuration.".format(file_path))
 
-    def generate_wav_files(self):  # FIXME delete this ???
+    def generate_wav_files(self):
         """ Reads all presets (names, param values, and labels) from .pickle and .txt files
          (see dexed.PresetDatabase.write_all_presets_to_files(...)) and renders them
          using attributes and constraints of this class (midi note, normalization, etc...)
@@ -347,10 +347,14 @@ class DexedDataset(abstractbasedataset.PresetDataset):
          """
         print("Dexed audio files rendering...")
         t_start = datetime.now()
+        # Handle previously written files and folders
         if os.path.exists(self._audio_files_folder):
             shutil.rmtree(self._audio_files_folder)
         self._audio_files_folder.mkdir(parents=True, exist_ok=False)
-        # 2) multi-processed audio rendering
+        self.write_audio_render_constraints_file()
+        # TODO remove all previously rendered spectrograms and stats
+
+        # multi-processed audio rendering
         num_workers = os.cpu_count()
         split_preset_UIDs = np.array_split(self.valid_preset_UIDs, num_workers)
         with multiprocessing.Pool(num_workers) as p:  # automatically closes and joins all workers
@@ -363,7 +367,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
 
     def _generate_wav_files_batch(self, preset_UIDs):
         """ Generates all audio files for a given list of preset UIDs. """
-        # TODO don't generate files for >0 audio delays
+        # don't generate files for >0 audio delays
         audio_delay = 0
         for UID in preset_UIDs:
             for note in self.midi_notes:

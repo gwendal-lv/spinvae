@@ -199,6 +199,48 @@ class SimpleSampleLabeler:
 
 
 
+def average_f0(dataset: AudioDataset, midi_pitch, midi_vel, num_workers: Optional[int] = None,
+               print_time=True):
+    """ Computes the f0 pitch of the given note, for each preset of the dataset.
+    -1 pitches correspond to no pitch detected by librosa.pyin.
+
+    Uses multiprocessing even if num_workers == 1. """
+    t_start = datetime.now()
+    presets_indexes = np.arange(len(dataset))
+    if num_workers is None:
+        num_workers = os.cpu_count()
+    split_presets_indexes = np.array_split(presets_indexes, num_workers)
+    workers_args = list()
+    for indexes in split_presets_indexes:
+        workers_args.append((dataset, midi_pitch, midi_vel, indexes))
+    with multiprocessing.Pool(num_workers) as p:
+        f0_split = p.map(_average_f0, workers_args)
+    f0_merged = list()
+    for f0 in f0_split:
+        f0_merged += f0
+    delta_t = (datetime.now() - t_start).total_seconds()
+    if print_time:
+        print("{} note f0 pitch estimatates computed in {:.1f} min ({:.1f} ms / note)"
+              .format(len(presets_indexes), delta_t/60.0, 1000.0*delta_t/len(presets_indexes)))
+    return f0_merged
+
+
+def _average_f0(worker_args):
+    dataset, midi_pitch, midi_vel, presets_indexes = worker_args
+    f0_list = list()
+    for preset_index in presets_indexes:
+        preset_UID = dataset.valid_preset_UIDs[preset_index]
+        audio, Fs = dataset.get_wav_file(preset_UID, midi_pitch, midi_vel, variation=0)
+        f0, voiced_flag, voiced_prob = librosa.pyin(audio, fmin=librosa.midi_to_hz(midi_pitch - 24),
+                                                    fmax=librosa.midi_to_hz(midi_pitch + 24), sr=dataset.Fs)
+        if f0[voiced_flag].shape[0] > 0:
+            f0_list.append(f0[voiced_flag].mean())
+        else:
+            f0_list.append(-1.0)
+    return f0_list
+
+
+
 def write_wav_and_mp3(base_path: pathlib.Path, base_name: str, samples, sr):
     """ Writes a .wav file and converts it to .mp3 using command-line ffmpeg (which must be available). """
     wav_path_str = "{}".format(base_path.joinpath(base_name + '.wav'))

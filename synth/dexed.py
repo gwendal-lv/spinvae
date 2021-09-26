@@ -454,8 +454,8 @@ if __name__ == "__main__":
     print("numerical VSTi params: {}".format(Dexed.get_numerical_params_indexes()))
     print("categorical VSTi params: {}".format(Dexed.get_categorical_params_indexes()))
 
-    if True:
-        # ***** RE-WRITE ALL PRESETS TO SEPARATE PICKLE/TXT FILES *****
+    # ***** RE-WRITE ALL PRESETS TO SEPARATE PICKLE/TXT FILES *****
+    if False:
         # Approx. 360Mo (yep, the SQLite DB is much lighter...) for all params values + names + labels
         dexed_db.write_all_presets_to_files()
 

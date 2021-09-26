@@ -594,4 +594,29 @@ class PresetDataset(AudioDataset):
         """
         pass
 
+    # ================================== Constraints (on presets' parameters) =================================
+
+    @property
+    def audio_constraints(self):
+        """ A dict describing the constraints applied to presets before rendering audio files. """
+        return {'learn_mod_wheel_params': self.learn_mod_wheel_params}
+
+    @property
+    def audio_constraints_file_path(self):
+        return self.data_storage_path.joinpath("audio_render_constraints_file.json")
+
+    def write_audio_render_constraints_file(self):
+        with open(self.audio_constraints_file_path, 'w') as f:
+            json.dump(self.audio_constraints, f)
+
+    def check_audio_render_constraints_file(self):
+        """ Raises a RuntimeError if the constraints used to pre-rendered audio are different from
+        this instance constraints (e.g. S&H locked, filter/tune general params, ...) """
+        with open(self.audio_constraints_file_path, 'r') as f:
+            rendered_constraints = json.load(f)
+            for k, v in self.audio_constraints:
+                if rendered_constraints[k] != v:
+                    raise ValueError("Rendered audio does not correspond to this dataset's configuration. Bad value "
+                                     "for constraint '{}' (expected: {} ; rendered audio files: {})"
+                                     .format(k, v, rendered_constraints[k]))
 
