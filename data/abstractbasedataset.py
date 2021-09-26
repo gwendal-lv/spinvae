@@ -86,6 +86,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         self._data_augmentation = data_augmentation
         self._random_seed = random_seed
         self._rng = np.random.default_rng(seed=self._random_seed)
+        self._last_variation = -1
         # - - - - - Attributes to be set by the child concrete class - - - - -
         self.valid_preset_UIDs = np.zeros((0,))  # UIDs (may be indexes) of valid presets for this dataset
         # - - - Spectrogram utility class - - -
@@ -137,12 +138,13 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         preset_UID = self.valid_preset_UIDs[preset_index]
         spectrograms = list()
         # TODO random noise added to spectrograms?
-        # The same variation is used for all notes
-        variation = self._rng.integers(0, self.nb_variations_per_note) if self._data_augmentation else 0
+        # The same variation is used for all notes (and is stored for child __getitem__ methods that call this one)
+        self._last_variation = self._rng.integers(0, self.nb_variations_per_note) if self._data_augmentation else 0
         for midi_note_idx in midi_note_indexes:
             midi_pitch, midi_vel = self.midi_notes[midi_note_idx]
             # Spectrogram, or Mel-Spectrogram if requested (see ctor arguments)
-            spectrograms.append(torch.load(self.get_spec_file_path(preset_UID, midi_pitch, midi_vel, variation)))
+            spectrograms.append(torch.load(self.get_spec_file_path(preset_UID, midi_pitch, midi_vel,
+                                                                   self._last_variation)))
 
         # Tuple output. Warning: torch.from_numpy does not copy values (torch.tensor(...) ctor does)
         if len(midi_note_indexes) == 1:
@@ -501,25 +503,22 @@ class PresetDataset(AudioDataset):
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
 
     def __str__(self):
-        return "{}\n{} learnable synth params, {} fixed params." \
+        return "{}\n{} learnable synth params, {} fixed params. Learnable representation: '{}'" \
             .format(super().__str__(),
-                    len(self.learnable_params_idx), self.total_nb_params - len(self.learnable_params_idx))
+                    len(self.learnable_params_idx), self.total_nb_params - len(self.learnable_params_idx),
+                    self.learnable_representation_name)
 
     def __getitem__(self, i):
-        # TODO on-the-fly audio generation. We should try:
-        #  - Use shell command to run a dedicated script. The script writes AUDIO_SAMPLE_TEMP_ID.wav
-        #  - wait for the file to be generated on disk (or for the command to notify... something)
-        #  - read and delete this .wav file
         spectrograms, notes_and_UID, labels = super().__getitem__(i)
         preset_UID = notes_and_UID[0].item()
+        preset_variation, audio_delay = self._get_variation_args(self._last_variation)
 
-        # TODO preset should be optional (for pre-training using sound and notes only)
-        preset_params = self.get_full_preset_params(preset_UID)  # FIXME use data augmentation
-        # TODO pre-compute and store learnable representations (+300% __getitem__ time vs. spectrogram only)
-        return spectrograms, torch.squeeze(preset_params.get_learnable(), 0), notes_and_UID, labels
+        # pre-computed learnable representations (otherwise: +300% __getitem__ time vs. spectrogram only)
+        preset_params = torch.load(self._get_learnable_preset_file_path(preset_UID, preset_variation))
+        return spectrograms, preset_params, notes_and_UID, labels
 
     @abstractmethod
-    def get_full_preset_params(self, preset_UID) -> PresetsParams:
+    def get_full_preset_params(self, preset_UID, preset_variation=0) -> PresetsParams:
         """ Returns a PresetsParams instance (see preset.py) of 1 preset for the requested preset_UID """
         pass
 
@@ -531,9 +530,11 @@ class PresetDataset(AudioDataset):
     def get_preset_param_cardinality(self, idx, learnable_representation=True):
         """ Returns the cardinality i.e. the number of possible different values of all parameters.
         A -1 cardinal indicates a continuous parameter.
+
         :param idx: The full-preset (VSTi representation) index
         :param learnable_representation: Some parameters can have a reduced cardinality for learning
-        (and their learnable representation is scaled consequently). """
+            (and their learnable representation is scaled consequently).
+        """
         return -1  # Default: continuous params only
 
     def get_preset_param_quantized_steps(self, idx, learnable_representation=True):
@@ -548,6 +549,35 @@ class PresetDataset(AudioDataset):
             return np.linspace(0.0, 1.0, endpoint=True, num=card)
         else:
             raise ValueError("Invalid parameter cardinality {}".format(card))
+
+    @property
+    def params_default_values(self):
+        """ Dict of default values of VSTi parameters. Not all indexes are keys of this dict (many params do not
+        have a default value). """
+        return {}
+
+    @property
+    @abstractmethod
+    def total_nb_params(self):
+        """ Total count of constrained and free VST parameters of a preset. """
+        pass
+
+    @abstractmethod
+    def _render_audio(self, preset_params: Sequence, midi_note: int, midi_velocity: int):
+        """ Renders audio on-the-fly and returns the computed audio waveform and sampling rate.
+
+        :param preset_params: List of preset VST parameters, constrained (constraints from this class ctor
+            args must have been applied before passing preset_params).
+        """
+        pass
+
+    # ================================== Learnable representations of presets =================================
+
+    @property
+    @abstractmethod
+    def learnable_representation_name(self):
+        """ Returns the name of the current learnable representation of presets. """
+        pass
 
     @property
     def learnable_params_count(self):
@@ -581,38 +611,45 @@ class PresetDataset(AudioDataset):
         return []  # Default: no categorical params
 
     @property
-    def params_default_values(self):
-        """ Dict of default values of VSTi parameters. Not all indexes are keys of this dict (many params do not
-        have a default value). """
-        return {}
-
-    @property
-    @abstractmethod
-    def total_nb_params(self):
-        """ Total count of constrained and free VST parameters of a preset. """
-        pass
-
-    @property
     def preset_indexes_helper(self):
         """ Returns the data.preset.PresetIndexesHelper instance which helps convert full/learnable presets
         from this dataset. """
         return PresetIndexesHelper(nb_params=self.total_nb_params)  # Default: identity
 
-    @abstractmethod
-    def _render_audio(self, preset_params: Sequence, midi_note: int, midi_velocity: int):
-        """ Renders audio on-the-fly and returns the computed audio waveform and sampling rate.
+    @property
+    def _learnable_preset_folder(self):
+        return self.data_storage_path.joinpath("LearnablePresets").joinpath(self.learnable_representation_name)
 
-        :param preset_params: List of preset VST parameters, constrained (constraints from this class ctor
-            args must have been applied before passing preset_params).
-        """
-        pass
+    def _get_learnable_preset_file_path(self, preset_UID, preset_variation):
+        return self._learnable_preset_folder.joinpath("{:06d}_pvar{:03d}.pt".format(preset_UID, preset_variation))
+
+    def compute_and_store_learnable_presets(self, verbose=True):
+        if verbose:
+            print("Computing and storing all learnable presets...")
+        t_start = datetime.now()
+        if os.path.exists(self._learnable_preset_folder):
+            shutil.rmtree(self._learnable_preset_folder)
+        os.makedirs(self._learnable_preset_folder)
+        for preset_UID in self.valid_preset_UIDs:
+            for preset_var in range(self._nb_preset_variations_per_note):
+                audio_delay = 0
+                preset_params = self.get_full_preset_params(preset_UID, preset_variation=preset_var)
+                preset_params = torch.squeeze(preset_params.get_learnable(), 0)
+                torch.save(preset_params.clone(), self._get_learnable_preset_file_path(preset_UID, preset_var))
+        if verbose:
+            delta_t = (datetime.now() - t_start).total_seconds()
+            print("Finished in {:.1f} min. {} presets with {}x data augmentation (presets variations), {:.1f} ms / "
+                  "file.".format(delta_t/60.0, len(self.valid_preset_UIDs), self._nb_preset_variations_per_note,
+                                 1000.0*delta_t/(len(self.valid_preset_UIDs)*self._nb_preset_variations_per_note)))
+
 
     # ================================== Constraints (on presets' parameters) =================================
 
     @property
     def audio_constraints(self):
         """ A dict describing the constraints applied to presets before rendering audio files. """
-        return {'learn_mod_wheel_params': self.learn_mod_wheel_params}
+        return {'learn_mod_wheel_params': self.learn_mod_wheel_params,
+                'nb_variations_per_note': self.nb_variations_per_note}
 
     @property
     def audio_constraints_file_path(self):
@@ -633,3 +670,30 @@ class PresetDataset(AudioDataset):
                                      "for constraint '{}' (expected: {} ; rendered audio files: {})"
                                      .format(k, v, rendered_constraints[k]))
 
+    # ========================== Data augmentation: presets variations + audio delays =========================
+
+    @property
+    def nb_variations_per_note(self):
+        return self._nb_preset_variations_per_note * self._nb_audio_delay_variations_per_note
+
+    @property
+    @abstractmethod
+    def _nb_preset_variations_per_note(self):
+        pass
+
+    @property
+    @abstractmethod
+    def _nb_audio_delay_variations_per_note(self):
+        pass
+
+    def _get_variation_args(self, variation):
+        """ Transforms a variation index into (preset_variation, audio_delay) integers. """
+        if variation < 0 or variation >= self.nb_variations_per_note:
+            raise ValueError("Invalid variation (should be < {}".format(self.nb_variations_per_note))
+        else:
+            preset_variation = variation // self._nb_audio_delay_variations_per_note
+            audio_delay = variation % self._nb_audio_delay_variations_per_note
+            return preset_variation, audio_delay
+
+    def _get_variation_index_from_args(self, preset_variation, audio_delay):
+        return audio_delay + preset_variation * self._nb_audio_delay_variations_per_note

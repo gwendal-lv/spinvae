@@ -16,7 +16,7 @@ from data.abstractbasedataset import AudioDataset
 
 
 
-def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
+def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool, regenerate_learnable_presets: bool):
     """
     Approx audio rendering time:
         10.8 minutes (3.6ms/file) for 30200 patches, 6 notes and 1 variations / patch (48-core CPU),
@@ -27,8 +27,12 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
         Total / spectrogram config: 90 Go
 
     If both params are set to False, the entire dataset will be read on 1 CPU (testing procedure)
-        4.4 ms / __getitem__ call (6 notes / item ; 1 CPU)
+        (4.4 ms / __getitem__ call (6 notes / item ; 1 CPU) - live learnable representations computation)
+        3.1 ms / __getitem__ call (6 notes / item ; 1 CPU) <- pre-computed learnable representations
         (1.0ms without preset learnable representations calculations <- )
+
+    Learnable preset regeneration:
+        1.3 min, 30293 presets with 1x data augmentation (presets variations), 2.7 ms / file  (on 1 CPU)
     """
     importlib.reload(sys)
     sys.path.append(pathlib.Path(__file__).parent.parent)
@@ -37,17 +41,23 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
 
     operators = config.model.dataset_synth_args[1]
 
+    # Possible values: None, 'vst_cat' or 'all<=xx' where xx is numerical params threshold cardinal
+    vst_params_learned_as_cat = config.model.synth_vst_params_learned_as_categorical
+
     # No label restriction, no normalization, etc...
     dexed_dataset = DexedDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                  algos=None,  # allow all algorithms
                                  operators=operators,  # Operators limitation (config.py, or chosen above)
                                  # Params learned as categorical: maybe comment
-                                 vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
+                                 vst_params_learned_as_categorical=vst_params_learned_as_cat,
                                  restrict_to_labels=None,
                                  check_constrains_consistency=(not regenerate_wav) and (not regenerate_spectrograms)
                                  )
-    #print(dexed_dataset.preset_indexes_helper)
+    print(dexed_dataset.preset_indexes_helper)
+    if regenerate_learnable_presets:
+        dexed_dataset.compute_and_store_learnable_presets()
     _gen_dataset(dexed_dataset, regenerate_wav, regenerate_spectrograms)
+
 
 
 def gen_surge_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
@@ -133,7 +143,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=True)
+    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=False, regenerate_learnable_presets=False)
     #gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
     #gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
 

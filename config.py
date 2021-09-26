@@ -44,8 +44,8 @@ model.data_root_path = "/media/gwendal/Data/Datasets"
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
 model.sampling_rate = 16000  # 16000 for NSynth dataset compatibility
-model.stft_args = (1024, 256)  # fft size and hop size
-model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
+model.stft_args = (512, 256)  # fft size and hop size
+model.mel_bins = -1  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 # Spectrogram sizes @ 22.05 kHz:
 #   (513, 433): audio 5.0s, fft size 1024, fft hop 256
 #   (257, 347): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
@@ -72,6 +72,7 @@ model.synth_params_count = -1  # Will be set automatically - see data.build.get_
 model.learnable_params_tensor_length = -1  # Will be set automatically - see data.build.get_full_and_split_datasets
 # Modeling of synth controls probability distributions
 # Possible values: None, 'vst_cat' or 'all<=xx' where xx is numerical params threshold cardinal
+# TODO implement '+pitch' option
 model.synth_vst_params_learned_as_categorical = 'all<=32'
 # flags/values to describe the dataset to be used
 model.dataset_labels = None  # tuple of labels (e.g. ('harmonic', 'percussive')), or None to use all available labels

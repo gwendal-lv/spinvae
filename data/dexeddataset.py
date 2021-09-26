@@ -52,7 +52,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         :param algos: List. Can be used to limit the DX7 algorithms included in this dataset. Set to None
             to use all available algorithms
         :param operators: List of ints, or None. Enables the specified operators only, or all of them if None.
-        :param vst_params_learned_as_categorical: 'all_num' to learn all vst params as numerical, 'vst_cat'
+        :param vst_params_learned_as_categorical: None to learn all vst params as numerical, 'vst_cat'
             to learn vst cat params as categorical, or 'all<=x' to learn all vst params (including numerical) with
             cardinality <= xxx (e.g. 8 or 32) as categorical
         :param restrict_to_labels: List of strings. If not None, presets of this dataset will be selected such
@@ -147,6 +147,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             for vst_param_idx in mod_vst_params_indexes:
                 self._params_default_values[vst_param_idx] = 0.0  # Default: no modulation when MIDI mod wheel changes
         # - - - None / Numerical / Categorical learnable status array - - -
+        self._vst_params_learned_as_categorical = vst_params_learned_as_categorical
         self._vst_param_learnable_model = list()
         num_vst_learned_as_cat_cardinal_threshold = None
         if vst_params_learned_as_categorical is not None:
@@ -200,6 +201,19 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     # ============================== Presets and parameters (PresetDataset only) =============================
 
     @property
+    def learnable_representation_name(self):
+        if self._vst_params_learned_as_categorical is None:
+            return "all_numerical"
+        elif self._vst_params_learned_as_categorical == 'vst_cat':
+            return "vst_cat_as_cat"
+        elif self._vst_params_learned_as_categorical.startswith('all<='):
+            cardinal_threshold = int(self._vst_params_learned_as_categorical.replace('all<=', ''))
+            return "vst_num_lt{}_as_cat".format(cardinal_threshold)
+        else:
+            raise ValueError("Invalid 'vst_params_learned_as_categorical' value: {}"
+                             .format(self._vst_params_learned_as_categorical))
+
+    @property
     def vst_param_learnable_model(self):
         return self._vst_param_learnable_model
 
@@ -232,8 +246,10 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             return 32  # Algorithm is always an annoying special case... could be improved
         return self._params_cardinality[idx]
 
-    def get_full_preset_params(self, preset_UID):
+    def get_full_preset_params(self, preset_UID, preset_variation=0):
         raw_full_preset = dexed.PresetDatabase.get_preset_params_values_from_file(preset_UID)
+        if preset_variation > 0:
+            raise NotImplementedError()  # TODO data augmentation if required
         return DexedPresetsParams(full_presets=torch.unsqueeze(torch.tensor(raw_full_preset, dtype=torch.float32), 0),
                                   dataset=self)
 
@@ -283,28 +299,12 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     # ================================== Audio files =================================
 
     @property
-    def nb_variations_per_note(self):
-        return self._nb_preset_variations_per_note * self._nb_audio_delay_variations_per_note
-
-    @property
     def _nb_preset_variations_per_note(self):
         return 1
 
     @property
     def _nb_audio_delay_variations_per_note(self):
         return 2
-
-    def _get_variation_args(self, variation):
-        """ Transforms a variation index into (preset_variation, audio_delay) integers. """
-        if variation < 0 or variation >= self.nb_variations_per_note:
-            raise ValueError("Invalid variation (should be < {}".format(self.nb_variations_per_note))
-        else:
-            preset_variation = variation // self._nb_audio_delay_variations_per_note
-            audio_delay = variation % self._nb_audio_delay_variations_per_note
-            return preset_variation, audio_delay
-
-    def _get_variation_index_from_args(self, preset_variation, audio_delay):
-        return audio_delay + preset_variation * self._nb_audio_delay_variations_per_note
 
     def get_audio_file_stem(self, preset_UID, midi_note, midi_velocity, variation=0):
         return "{:06d}_pitch{:03d}vel{:03d}_var{:03d}".format(preset_UID, midi_note, midi_velocity, variation)
