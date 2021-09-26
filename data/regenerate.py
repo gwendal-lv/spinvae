@@ -35,18 +35,17 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
     import config  # Dirty path trick to import config.py from project root dir
     importlib.reload(config)
 
-    #operators = config.model.dataset_synth_args[1]  # Custom operators limitation?
-    operators = None
+    operators = config.model.dataset_synth_args[1]
 
     # No label restriction, no normalization, etc...
-    # But: OPERATORS LIMITATIONS and DEFAULT PARAM CONSTRAINTS (main params (filter, transpose,...) are constant)
     dexed_dataset = DexedDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                  algos=None,  # allow all algorithms
                                  operators=operators,  # Operators limitation (config.py, or chosen above)
                                  # Params learned as categorical: maybe comment
                                  vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
                                  restrict_to_labels=None,
-                                 check_constrains_consistency=False)
+                                 check_constrains_consistency=(not regenerate_wav) and (not regenerate_spectrograms)
+                                 )
     #print(dexed_dataset.preset_indexes_helper)
     _gen_dataset(dexed_dataset, regenerate_wav, regenerate_spectrograms)
 
@@ -134,7 +133,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=False)
+    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=True)
     #gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
     #gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
 

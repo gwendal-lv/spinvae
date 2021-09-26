@@ -73,8 +73,6 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             raise NotImplementedError()  # TODO re-implement S&H enable/disable
         self.constant_filter_and_tune_params = constant_filter_and_tune_params
         self.constant_middle_C = constant_middle_C
-        if check_constrains_consistency:  # pre-rendered audio consistency
-            self.check_audio_render_constraints_file()
         self.algos = algos if algos is not None else []
         self._operators = operators if operators is not None else [1, 2, 3, 4, 5, 6]
         self.restrict_to_labels = restrict_to_labels
@@ -180,13 +178,15 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         # - - - Final initializations - - -
         self._preset_idx_helper = PresetIndexesHelper(self)
         # Don't need to load spectrograms stats here anymore: will be loaded on demand
+        if check_constrains_consistency:  # check consistency of pre-rendered audio files
+            self.check_audio_render_constraints_file()
 
     @property
     def synth_name(self):
         return "Dexed"
 
     def __str__(self):
-        return "{}. Restricted to labels: {}. Enabled algorithms: {}. Enabled operators: {}"\
+        return "{}\nRestricted to labels: {}. Enabled algorithms: {}. Enabled operators: {}"\
             .format(super().__str__(), self.restrict_to_labels,
                     ('all' if len(self.algos) == 0 else self.algos), self._operators_config_description)
 
@@ -352,8 +352,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             shutil.rmtree(self._audio_files_folder)
         self._audio_files_folder.mkdir(parents=True, exist_ok=False)
         self.write_audio_render_constraints_file()
-        # TODO remove all previously rendered spectrograms and stats
-
+        self._delete_all_spectrogram_data()
         # multi-processed audio rendering
         num_workers = os.cpu_count()
         split_preset_UIDs = np.array_split(self.valid_preset_UIDs, num_workers)

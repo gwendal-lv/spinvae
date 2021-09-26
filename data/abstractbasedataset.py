@@ -377,6 +377,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         and dataset-wide averaged results are stored into a .json file
 
         This function must be re-run when spectrogram parameters are changed. """
+        print("Computing spectrograms and stats...")
         t_start = datetime.now()
         # 0) clear previous stats files
         self._init_specs_and_stats_files()
@@ -460,6 +461,18 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
                     tensor_spectrogram = torch.load(file_path)
                     tensor_spectrogram = self.normalize_spectrogram(tensor_spectrogram)
                     torch.save(tensor_spectrogram.clone(), file_path)
+
+    def _delete_all_spectrogram_data(self, verbose=True):
+        """ Removes all folders containing spectrogram data.
+        Intended to be called if new audio data has been generated. """
+        if verbose:
+            print("Removing all pre-computed spectrograms data...")
+        dirs_to_del = [d for d in self.data_storage_path.glob("Specs_*") if d.is_dir()]
+        for d in dirs_to_del:
+            shutil.rmtree(d)
+            print("Removed {}".format(d))
+        shutil.rmtree(self._spectrogram_stats_folder)
+        print("Removed {}".format(self._spectrogram_stats_folder))
 
 
 
@@ -614,7 +627,7 @@ class PresetDataset(AudioDataset):
         this instance constraints (e.g. S&H locked, filter/tune general params, ...) """
         with open(self.audio_constraints_file_path, 'r') as f:
             rendered_constraints = json.load(f)
-            for k, v in self.audio_constraints:
+            for k, v in self.audio_constraints.items():
                 if rendered_constraints[k] != v:
                     raise ValueError("Rendered audio does not correspond to this dataset's configuration. Bad value "
                                      "for constraint '{}' (expected: {} ; rendered audio files: {})"
