@@ -43,6 +43,8 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
             - spectrograms generation from wav files
             - computes statistics on spectrogram, for normalization
 
+        However, it does NOT render audio files (each child class must handle files rendering or loading itself).
+
         It can be inherited by a concrete dataset class such as :
             - a fixed dataset of audio samples (e.g. NSynth)
             - a generated dataset of audio samples (e.g. Surge)
@@ -272,16 +274,19 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         """ Returns the name of a given audio (.wav, spectrogram, ...) file, without any extension. """
         pass
 
-    def _get_wav_file(self, preset_UID):
-        """ Returns the preset_UID audio (numpy array). MIDI note and velocity of the note are the class defaults. """
-        # FIXME incompatible with future multi-MIDI notes input
-        return self.get_wav_file(preset_UID, self.midi_note, self.midi_velocity)
-
     @property
     def nb_valid_audio_files(self):
         """ The grand total of wav files that are available or can be generated (using a synth),
         including all valid presets, all MIDI notes, and all variations of presets (data augmentation). """
         return len(self.valid_preset_UIDs) * len(self.midi_notes) * self.nb_variations_per_note
+
+    def pseudo_random_audio_delay(self, audio, random_seed):
+        """ Useful to delay a 'note-on' event of a few samples, using zeros at the beginning. """
+        rng = np.random.default_rng(seed=random_seed)
+        n_roll_samples = rng.integers(1, int(self.Fs * 0.002), endpoint=True)  # max 2ms delay
+        audio = np.roll(audio, n_roll_samples, axis=0)
+        audio[:n_roll_samples] = 0.0
+        return audio
 
     # ================================== Spectrograms (and spectrograms' stats) =================================
 
@@ -464,7 +469,9 @@ class PresetDataset(AudioDataset):
                  midi_notes=((60, 100),),
                  multichannel_stacked_spectrograms=False,
                  n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
-                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
+                 normalize_audio=False, spectrogram_min_dB=-120.0,
+                 spectrogram_normalization='min_max',
+                 data_storage_root_path: Optional[str] = None,
                  learn_mod_wheel_params=False
                  ):
         """
@@ -474,7 +481,8 @@ class PresetDataset(AudioDataset):
             be learned or not.
         """
         super().__init__(note_duration, n_fft, fft_hop, Fs, midi_notes, multichannel_stacked_spectrograms,
-                         n_mel_bins, mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization)
+                         n_mel_bins, mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization,
+                         data_storage_root_path)
         self.learn_mod_wheel_params = learn_mod_wheel_params
         # - - - - - Attributes to be set by the child concrete class - - - - -
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
@@ -493,7 +501,8 @@ class PresetDataset(AudioDataset):
         preset_UID = notes_and_UID[0].item()
 
         # TODO preset should be optional (for pre-training using sound and notes only)
-        preset_params = self.get_full_preset_params(preset_UID)
+        preset_params = self.get_full_preset_params(preset_UID)  # FIXME use data augmentation
+        # TODO pre-compute and store learnable representations (+300% __getitem__ time vs. spectrogram only)
         return spectrograms, torch.squeeze(preset_params.get_learnable(), 0), notes_and_UID, labels
 
     @abstractmethod
@@ -584,4 +593,5 @@ class PresetDataset(AudioDataset):
             args must have been applied before passing preset_params).
         """
         pass
+
 

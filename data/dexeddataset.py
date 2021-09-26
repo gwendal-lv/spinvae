@@ -7,6 +7,7 @@ See end of file.
 import os
 import pathlib
 import json
+import shutil
 from typing import Optional, Iterable
 import multiprocessing
 from datetime import datetime
@@ -26,15 +27,17 @@ from data.preset import DexedPresetsParams, PresetIndexesHelper
 
 
 class DexedDataset(abstractbasedataset.PresetDataset):
-    def __init__(self, note_duration, n_fft, fft_hop,  # FIXME add mandatory Fs
+    def __init__(self, note_duration, n_fft, fft_hop, Fs,
                  midi_notes=((60, 100),), multichannel_stacked_spectrograms=False,
-                 n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
-                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
+                 n_mel_bins=-1, mel_fmin=0, mel_fmax=8000,
+                 normalize_audio=False, spectrogram_min_dB=-120.0,
+                 spectrogram_normalization: Optional[str] = 'min_max',
+                 data_storage_root_path: Optional[str] = None,
                  algos=None, operators=None,
                  vst_params_learned_as_categorical: Optional[str] = None,
                  restrict_to_labels=None, constant_filter_and_tune_params=True,
                  prevent_SH_LFO=False,  # TODO re-implement
-                 learn_mod_wheel_params=True,
+                 learn_mod_wheel_params=True,  # see dexed.py / get_mod_wheel_related_param_indexes()
                  check_constrains_consistency=True
                  ):
         """
@@ -58,9 +61,10 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         :param check_constrains_consistency: Set to False when this dataset instance is used to pre-render
             audio files
         """
-        super().__init__(note_duration, n_fft, fft_hop, midi_notes, multichannel_stacked_spectrograms,
-                         n_mel_bins, mel_fmin, mel_fmax,
-                         normalize_audio, spectrogram_min_dB, spectrogram_normalization, learn_mod_wheel_params)
+        super().__init__(note_duration, n_fft, fft_hop, Fs,
+                         midi_notes, multichannel_stacked_spectrograms, n_mel_bins, mel_fmin, mel_fmax,
+                         normalize_audio, spectrogram_min_dB, spectrogram_normalization, data_storage_root_path,
+                         learn_mod_wheel_params)
         assert learn_mod_wheel_params  # Must be learned, because LFO modulation also depends on these params
         self.prevent_SH_LFO = prevent_SH_LFO
         assert prevent_SH_LFO is False  # TODO re-implement S&H enable/disable
@@ -167,7 +171,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                         raise ValueError("VST param idx={} is neither numerical nor categorical".format(vst_idx))
         # - - - Final initializations - - -
         self._preset_idx_helper = PresetIndexesHelper(self)
-        self._load_spectrogram_stats()  # Must be called after super() ctor
+        # Don't need to load stats here anymore: will be loaded on demand
 
     @property
     def synth_name(self):
@@ -176,11 +180,16 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def __str__(self):
         return "{}. Restricted to labels: {}. Enabled algorithms: {}. Enabled operators: {}"\
             .format(super().__str__(), self.restrict_to_labels,
-                    ('all' if len(self.algos) == 0 else self.algos), self._operators)
+                    ('all' if len(self.algos) == 0 else self.algos), self._operators_config_description)
 
     @property
     def total_nb_presets(self):
         return self._total_nb_presets
+
+    def get_name_from_preset_UID(self, preset_UID: int) -> str:
+        return dexed.PresetDatabase.get_preset_name_from_file(preset_UID)
+
+    # ============================== Presets and parameters (PresetDataset only) =============================
 
     @property
     def vst_param_learnable_model(self):
@@ -220,6 +229,37 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         return DexedPresetsParams(full_presets=torch.unsqueeze(torch.tensor(raw_full_preset, dtype=torch.float32), 0),
                                   dataset=self)
 
+    # ================================== Constraints (on presets' parameters) =================================
+
+    @property
+    def _operators_config_description(self) -> str:
+        """ Returns a description (to be used in file and directory names) that describes enabled DX7 operators,
+        as configured in this dataset's constructor. """
+        if self._operators != [1, 2, 3, 4, 5, 6]:
+            ops_description = 'operators_' + ''.join(['{}'.format(op) for op in self._operators])
+        else:
+            ops_description = 'operators_all'
+        return ops_description
+
+    def write_audio_render_constraints_file(self):
+        file_path = dexed.PresetDatabase._get_presets_folder().joinpath("audio_render_constraints_file.json")
+        with open(file_path, 'w') as f:
+            json.dump({'constant_filter_and_tune_params': self.constant_filter_and_tune_params,
+                       'prevent_SH_LFO': self.prevent_SH_LFO}, f)
+
+    def check_audio_render_constraints_file(self):
+        """ Raises a RuntimeError if the constraints used to pre-rendered audio are different from
+        this instance constraints (S&H locked, filter/tune general params, ...) """
+        file_path = dexed.PresetDatabase._get_presets_folder().joinpath("audio_render_constraints_file.json")
+        with open(file_path, 'r') as f:
+            constraints = json.load(f)
+            if constraints['constant_filter_and_tune_params'] != self.constant_filter_and_tune_params:
+                raise RuntimeError()
+            if constraints['prevent_SH_LFO'] != self.prevent_SH_LFO:
+                raise RuntimeError()
+
+    # ================================== Labels =================================
+
     def is_label_included(self, label):
         """ Returns True if the label belongs to the restricted labels list. """
         if self.restrict_to_labels is None:
@@ -240,42 +280,63 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         """ Returns a tuple of string descriptions of labels. """
         return dexed.PresetDatabase.get_available_labels()
 
-    def _render_audio(self, preset_params: Iterable, midi_note, midi_velocity):
-        # reload the VST to prevent hanging notes/sounds
-        dexed_renderer = dexed.Dexed(midi_note_duration_s=self.note_duration[0],
-                                     render_duration_s=self.note_duration[0] + self.note_duration[1])
-        dexed_renderer.assign_preset(dexed.PresetDatabase.get_params_in_plugin_format(preset_params))
-        x_wav = dexed_renderer.render_note(midi_note, midi_velocity, normalize=self.normalize_audio)
-        return x_wav, dexed_renderer.Fs
-
-    def _get_spectrogram_stats_file_stem(self):
-        return super()._get_spectrogram_stats_file_stem() + self._operators_suffix
+    # ================================== Audio files =================================
 
     @property
-    def _operators_suffix(self):
-        """ Returns a suffix (to be used in files names) that describes enabled DX7 operators, as configured
-        in this dataset's constructor. Return an empty string if all operators are used. """
-        ops_suffix = ''
-        if self._operators != [1, 2, 3, 4, 5, 6]:
-            ops_suffix = '_op' + ''.join(['{}'.format(op) for op in self._operators])
-        return ops_suffix
+    def nb_variations_per_note(self):
+        return self._nb_preset_variations_per_note * self._nb_audio_delay_variations_per_note
 
-    def get_wav_file_path(self, preset_UID, midi_note, midi_velocity):
-        """ Returns the path of a wav (from dexed_presets folder). Operators"""
-        presets_folder = dexed.PresetDatabase._get_presets_folder()
-        filename = "preset{:06d}_midi{:03d}vel{:03d}{}.wav".format(preset_UID, midi_note, midi_velocity,
-                                                                   self._operators_suffix)
-        return presets_folder.joinpath(filename)
+    @property
+    def _nb_preset_variations_per_note(self):
+        return 1
 
-    def get_wav_file(self, preset_UID, midi_note, midi_velocity):
-        file_path = self.get_wav_file_path(preset_UID, midi_note, midi_velocity)
+    @property
+    def _nb_audio_delay_variations_per_note(self):
+        return 2
+
+    def _get_variation_args(self, variation):
+        """ Transforms a variation index into (preset_variation, audio_delay) integers. """
+        if variation < 0 or variation >= self.nb_variations_per_note:
+            raise ValueError("Invalid variation (should be < {}".format(self.nb_variations_per_note))
+        else:
+            preset_variation = variation // self._nb_audio_delay_variations_per_note
+            audio_delay = variation % self._nb_audio_delay_variations_per_note
+            return preset_variation, audio_delay
+
+    def _get_variation_index_from_args(self, preset_variation, audio_delay):
+        return audio_delay + preset_variation * self._nb_audio_delay_variations_per_note
+
+    def get_audio_file_stem(self, preset_UID, midi_note, midi_velocity, variation=0):
+        return "{:06d}_pitch{:03d}vel{:03d}_var{:03d}".format(preset_UID, midi_note, midi_velocity, variation)
+
+    @property
+    def _audio_files_folder(self):
+        return self.data_storage_path.joinpath("Audio").joinpath(self._operators_config_description)
+
+    def _get_wav_file_path(self, patch_UID, midi_pitch, midi_vel, variation):
+        return self._audio_files_folder.joinpath("{}.wav".format(self.get_audio_file_stem(patch_UID, midi_pitch,
+                                                                                          midi_vel, variation)))
+
+    def get_wav_file(self, preset_UID, midi_note, midi_velocity, variation=0):
+        # The 'audio' variation is computed when rendering spectrograms only (they use the same audio file, but
+        # this method rolls the audio np array).
+        # The 'preset' variation, however, changes the sound (we need to render/load a different wav file).
+        # So:
+        #    - load the same for different delays
+        #    - apply a delay if necessary
+        preset_variation, audio_delay = self._get_variation_args(variation)
+        new_variation = self._get_variation_index_from_args(preset_variation, audio_delay=0)
+        file_path = self._get_wav_file_path(preset_UID, midi_note, midi_velocity, new_variation)
         try:
-            return soundfile.read(file_path)
+            audio, Fs = soundfile.read(file_path)
+            if audio_delay > 0:
+                audio = self.pseudo_random_audio_delay(audio, random_seed=(self._random_seed + preset_UID + audio_delay))
+            return audio, Fs
         except RuntimeError:
-            raise RuntimeError("[data/dataset.py] Can't open file {}. Please pre-render audio files for this "
+            raise RuntimeError("[data/dexeddataset.py] Can't open file {}. Please pre-render audio files for this "
                                "dataset configuration.".format(file_path))
 
-    def generate_wav_files(self):
+    def generate_wav_files(self):  # FIXME delete this ???
         """ Reads all presets (names, param values, and labels) from .pickle and .txt files
          (see dexed.PresetDatabase.write_all_presets_to_files(...)) and renders them
          using attributes and constraints of this class (midi note, normalization, etc...)
@@ -284,111 +345,57 @@ class DexedDataset(abstractbasedataset.PresetDataset):
 
          Also writes a audio_render_constraints.json file that should be checked when loading data.
          """
+        print("Dexed audio files rendering...")
         t_start = datetime.now()
-        # TODO multiple midi notes generation
+        if os.path.exists(self._audio_files_folder):
+            shutil.rmtree(self._audio_files_folder)
+        self._audio_files_folder.mkdir(parents=True, exist_ok=False)
+        # 2) multi-processed audio rendering
         num_workers = os.cpu_count()
-        workers_args = self._get_multi_note_workers_args(num_workers)
-        # Multi-process rendering
+        split_preset_UIDs = np.array_split(self.valid_preset_UIDs, num_workers)
         with multiprocessing.Pool(num_workers) as p:  # automatically closes and joins all workers
-            p.map(self._generate_wav_files_batch, workers_args)
-        self.write_audio_render_constraints_file()
+            p.map(self._generate_wav_files_batch, split_preset_UIDs)
+        # final display
         delta_t = (datetime.now() - t_start).total_seconds()
         num_wav_written = len(self.valid_preset_UIDs) * len(self.midi_notes)
-        print("Finished writing {} .wav files ({:.1f}s total, {:.1f}ms/file)"
-              .format(num_wav_written, delta_t, 1000.0*delta_t/num_wav_written))
+        print("Finished writing {} .wav files ({:.1f} min total, {:.1f} ms / file)"
+              .format(num_wav_written, delta_t/60.0, 1000.0*delta_t/num_wav_written))
 
-    def _generate_wav_files_batch(self, worker_args):
-        """ Generates wav files using the given list of (preset_UID, midi_pitch, midi_vel) tuples. """
-        for preset_UID, midi_pitch, midi_vel in worker_args:
-            self._generate_single_wav_file(preset_UID, midi_pitch, midi_vel)
+    def _generate_wav_files_batch(self, preset_UIDs):
+        """ Generates all audio files for a given list of preset UIDs. """
+        # TODO don't generate files for >0 audio delays
+        audio_delay = 0
+        for UID in preset_UIDs:
+            for note in self.midi_notes:
+                for preset_variation in range(self._nb_preset_variations_per_note):
+                    variation = self._get_variation_index_from_args(preset_variation, audio_delay)
+                    self._generate_single_wav_file(UID, note[0], note[1], variation)
 
-    def _generate_single_wav_file(self, preset_UID, midi_pitch, midi_velocity):
+    def _generate_single_wav_file(self, preset_UID, midi_pitch, midi_velocity, variation):
+        preset_variation, audio_delay = self._get_variation_args(variation)
+        if audio_delay > 0:
+            # We do not need to render all variations (do not render delayed audio to save some SSD storage)
+            raise ValueError("Audio files should all be rendered with a 0 note-on delay.")
+        if preset_variation > 0:
+            raise NotImplementedError()
         # Constrained params (1-element batch)
         preset_params = self.get_full_preset_params(preset_UID)
+        # TODO handle preset variation - should be the same for all notes of a given preset
+
         x_wav, Fs = self._render_audio(torch.squeeze(preset_params.get_full(apply_constraints=True), 0),
                                        midi_pitch, midi_velocity)  # Re-Loads the VST
-        soundfile.write(self.get_wav_file_path(preset_UID, midi_pitch, midi_velocity),
+        soundfile.write(self._get_wav_file_path(preset_UID, midi_pitch, midi_velocity, variation),
                         x_wav, Fs, subtype='FLOAT')
 
-    def write_audio_render_constraints_file(self):
-        file_path = dexed.PresetDatabase._get_presets_folder().joinpath("audio_render_constraints_file.json")
-        with open(file_path, 'w') as f:
-            json.dump({'constant_filter_and_tune_params': self.constant_filter_and_tune_params,
-                       'prevent_SH_LFO': self.prevent_SH_LFO}, f)
-
-    def check_audio_render_constraints_file(self):
-        """ Raises a RuntimeError if the constraints used to pre-rendered audio are different from
-        this instance constraints (S&H locked, filter/tune general params, ...) """
-        file_path = dexed.PresetDatabase._get_presets_folder().joinpath("audio_render_constraints_file.json")
-        with open(file_path, 'r') as f:
-            constraints = json.load(f)
-            if constraints['constant_filter_and_tune_params'] != self.constant_filter_and_tune_params:
-                raise RuntimeError()
-            if constraints['prevent_SH_LFO'] != self.prevent_SH_LFO:
-                raise RuntimeError()
-
-
-
-
-if __name__ == "__main__":
-    import sys
-    sys.path.append(pathlib.Path(__file__).parent.parent)
-    import config  # Dirty path trick to import config.py from project root dir
-
-    # ============== DATA RE-GENERATION - FROM config.py ==================
-    regenerate_wav = False  # multi-notes: a few minutes on a powerful CPU (20+ cores) - else: much longer
-    # WARNING: when computing stats, please make sure that *all* midi notes are available
-    regenerate_spectrograms_stats = False  # 30e3 presets, 6 MIDI notes: 5minutes on 24 cores
-    if regenerate_spectrograms_stats:
-        assert len(config.model.midi_notes) > 1  # all MIDI notes (6?) must be used to compute stats
-
-
-    #operators = config.model.dataset_synth_args[1]  # Custom operators limitation?
-    operators = None
-
-    # No label restriction, no normalization, etc...
-    # But: OPERATORS LIMITATIONS and DEFAULT PARAM CONSTRAINTS (main params (filter, transpose,...) are constant)
-    dexed_dataset = DexedDataset(note_duration=config.model.note_duration,
-                                 midi_notes=config.model.midi_notes,
-                                 multichannel_stacked_spectrograms=config.model.stack_spectrograms,
-                                 n_fft=config.model.stft_args[0], fft_hop=config.model.stft_args[1],
-                                 n_mel_bins=config.model.mel_bins,
-                                 spectrogram_normalization=None,  # No normalization: we want to compute stats
-                                 algos=None,  # allow all algorithms
-                                 operators=operators,  # Operators limitation (config.py, or chosen above)
-                                 # Params learned as categorical: maybe comment
-                                 vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
-                                 restrict_to_labels=None,
-                                 spectrogram_min_dB=config.model.spectrogram_min_dB,
-                                 check_constrains_consistency=False)
-    print(dexed_dataset.preset_indexes_helper)
-    if not regenerate_wav and not regenerate_spectrograms_stats:
-        print(dexed_dataset)  # All files must be pre-rendered before printing
-        for i in range(100):
-            test = dexed_dataset[i]  # try get an item - for debug purposes
-
-    if regenerate_wav:
-        # WRITE ALL WAV FILES (approx. 10.5Go for 4.0s audio, 1 midi note)
-        dexed_dataset.generate_wav_files()
-    if regenerate_spectrograms_stats:
-        # whole-dataset stats (for proper normalization)
-        dexed_dataset.compute_and_store_spectrograms_stats()
-    # ============== DATA RE-GENERATION - FROM config.py ==================
-
-
-    # Dataloader debug tests
-    if False:
-        # Test dataload - to trigger potential errors
-        # _, _, _ = dexed_dataset[0]
-
-        dexed_dataloader = torch.utils.data.DataLoader(dexed_dataset, batch_size=128, shuffle=False,
-                                                       num_workers=1)#os.cpu_count() * 9 // 10)
-        t0 = time.time()
-        for batch_idx, sample in enumerate(dexed_dataloader):
-            print(batch_idx)
-            print(sample)
-            if batch_idx%10 == 0:
-                print("batch {}".format(batch_idx))
-        print("Full dataset read in {:.1f} minutes.".format((time.time() - t0) / 60.0))
+    def _render_audio(self, preset_params: Iterable, midi_note, midi_velocity):
+        """ Does not require a 'variation' (preset_params must have been modified accordingly, before calling
+        this method) """
+        # We always have to reload the VST to prevent hanging notes/sounds
+        dexed_renderer = dexed.Dexed(output_Fs=self.Fs,
+                                     midi_note_duration_s=self.note_duration[0],
+                                     render_duration_s=self.note_duration[0] + self.note_duration[1])
+        dexed_renderer.assign_preset(dexed.PresetDatabase.get_params_in_plugin_format(preset_params))
+        x_wav, Fs = dexed_renderer.render_note(midi_note, midi_velocity, normalize=self.normalize_audio)
+        return x_wav, Fs
 
 

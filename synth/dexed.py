@@ -14,6 +14,7 @@ import multiprocessing
 import time
 from typing import Iterable
 
+import librosa
 import numpy as np
 from scipy.io import wavfile
 import sqlite3
@@ -215,21 +216,23 @@ class PresetDatabase:
 class Dexed:
     """ A Dexed (DX7) synth that can be used through RenderMan for offline wav rendering. """
 
-    def __init__(self, plugin_path="/home/gwendal/Jupyter/AudioPlugins/Dexed.so",
+    def __init__(self, output_Fs, render_Fs=48000,
+                 plugin_path="/home/gwendal/Jupyter/AudioPlugins/Dexed.so",
                  midi_note_duration_s=3.0, render_duration_s=4.0,
-                 sample_rate=22050,  # librosa default sr
                  buffer_size=512, fft_size=512,
-                 fadeout_duration_s=0.1):
+                 fadeout_duration_s=0.0,  # Default: disabled
+                 ):
         self.fadeout_duration_s = fadeout_duration_s  # To reduce STFT discontinuities with long-release presets
         self.midi_note_duration_s = midi_note_duration_s
         self.render_duration_s = render_duration_s
 
         self.plugin_path = plugin_path
-        self.Fs = sample_rate
+        self.render_Fs = render_Fs
+        self.reduced_Fs = output_Fs
         self.buffer_size = buffer_size
         self.fft_size = fft_size  # FFT not used
 
-        self.engine = rm.RenderEngine(self.Fs, self.buffer_size, self.fft_size)
+        self.engine = rm.RenderEngine(self.render_Fs, self.buffer_size, self.fft_size)
         self.engine.load_plugin(self.plugin_path)
 
         # A generator preset is a list of (int, float) tuples.
@@ -237,37 +240,25 @@ class Dexed:
         self.current_preset = None
 
     def __str__(self):
-        return "Plugin loaded from {}, Fs={}Hz, buffer {} samples."\
+        return "Plugin loaded from {}, Fs={}Hz (output downsampled to {}Hz), buffer {} samples."\
                "MIDI note on duration: {:.1f}s / {:.1f}s total."\
-            .format(self.plugin_path, self.Fs, self.buffer_size,
+            .format(self.plugin_path, self.render_Fs, self.reduced_Fs, self.buffer_size,
                     self.midi_note_duration_s, self.render_duration_s)
 
     def render_note(self, midi_note, midi_velocity, normalize=False):
-        """ Renders a midi note (for the currently set patch) and returns the normalized float array. """
+        """ Renders a midi note (for the currently set patch) and returns the (normalized) float array and
+         associated sampling rate. """
         self.engine.render_patch(midi_note, midi_velocity, self.midi_note_duration_s, self.render_duration_s)
         audio_out = self.engine.get_audio_frames()
         audio = np.asarray(audio_out)
-        fadeout_len = int(np.floor(self.Fs * self.fadeout_duration_s))
+        fadeout_len = int(np.floor(self.render_Fs * self.fadeout_duration_s))
         if fadeout_len > 1:  # fadeout might be disabled if too short
             fadeout = np.linspace(1.0, 0.0, fadeout_len)
             audio[-fadeout_len:] = audio[-fadeout_len:] * fadeout
         if normalize:
-            return audio / np.abs(audio).max()
-        else:
-            return audio
-
-    def render_note_to_file(self, midi_note, midi_velocity, filename="./dexed_output.wav"):
-        """ Renders a midi note (for the currently set patch), normalizes it and stores it
-        to a 16-bit PCM wav file. """
-        assert False  # deprecated function
-        self.engine.render_patch(midi_note, midi_velocity, self.midi_note_duration_s, self.render_duration_s)
-        # RenderMan wav writing is broken - using scipy instead
-        audio_out = self.engine.get_audio_frames()
-        audio = np.asarray(audio_out)
-        max_amplitude = np.abs(audio).max()
-        audio = ((2**15 - 1) / max_amplitude) * audio
-        audio = np.array(np.round(audio), dtype=np.int16)
-        wavfile.write(filename, self.Fs, audio)
+            audio = audio * (0.99 / np.abs(audio).max())  # to prevent 16-bit conversion clipping
+        audio = librosa.resample(audio, self.render_Fs, self.reduced_Fs, res_type="kaiser_best")
+        return audio, self.reduced_Fs
 
     def assign_preset(self, preset):
         """ :param preset: List of tuples (param_idx, param_value) """
@@ -282,7 +273,7 @@ class Dexed:
         self.engine.set_patch(self.current_preset)
 
     def set_release_short(self, eg_4_rate_min=0.5):
-        assert False  # deprecated - should return the modified params as well
+        raise AssertionError()  # deprecated - should return the modified params as well
         for i, param in enumerate(self.current_preset):
             idx, value = param  # a param is actually a tuple...
             # Envelope release level: always to zero (or would be an actual hanging note)

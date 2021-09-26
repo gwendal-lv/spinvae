@@ -7,6 +7,7 @@ import multiprocessing
 import pathlib
 import json
 import copy
+import shutil
 import warnings
 from datetime import datetime
 import os
@@ -106,8 +107,11 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
         return self.data_storage_path.joinpath("normalized_amplitudes.txt")
 
     def generate_wav_files(self):
+        print("Surge audio files rendering...")
         t_start = datetime.now()
-        self.data_storage_path.joinpath("Audio").mkdir(parents=False, exist_ok=True)
+        if os.path.exists(self.data_storage_path.joinpath("Audio")):
+            shutil.rmtree(self.data_storage_path.joinpath("Audio"))
+        self.data_storage_path.joinpath("Audio").mkdir(parents=False, exist_ok=False)
         # 0) Clean previous data
         open(self._normalized_audio_file_path, 'w').close()
         # 1) retrieve data for the .json file and for audio rendering
@@ -129,7 +133,6 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
         split_preset_indexes = np.array_split(valid_preset_indexes, num_workers)
         with multiprocessing.Pool(num_workers) as p:  # automatically closes and joins all workers
             p.map(self._generate_wav_files_batch, split_preset_indexes)
-        # self._generate_wav_files_batch(valid_preset_indexes)  # TODO remove, temp
         # 3) Write results
         with open(self._get_patches_info_path(), 'w') as f:
             json.dump(dataset_info, f, indent=4)
