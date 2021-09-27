@@ -73,8 +73,7 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
     def get_name_from_preset_UID(self, preset_UID: int) -> str:
         return self.get_patch_info(preset_UID)['patch_name']
 
-    @property
-    def nb_variations_per_note(self):
+    def get_nb_variations_per_note(self, preset_UID=-1):
         return self._synth.nb_variations_per_note
 
     def _check_consistency(self):
@@ -115,11 +114,12 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
         # 0) Clean previous data
         open(self._normalized_audio_file_path, 'w').close()
         # 1) retrieve data for the .json file and for audio rendering
+        # Same number of variations for all presets
         dataset_info = {'surge': self._synth.dict_description,
                         'midi_notes': {'description': '(pitch, velocity) available for all patches',
                                        'notes': self.midi_notes},
                         'data_augmentation': {'description': 'Number of variations available for each note',
-                                              'nb_variations': self.nb_variations_per_note},
+                                              'nb_variations': self.get_nb_variations_per_note()},
                         'patches_count': self.valid_presets_count,
                         'patches': list()}
         valid_preset_indexes = list()
@@ -152,7 +152,7 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
             audio_renders = list()
             max_amplitude = -1.0
             for midi_note in self.midi_notes:
-                for variation in range(self.nb_variations_per_note):
+                for variation in range(self.get_nb_variations_per_note()):  # same number of vars for all presets
                     audio, Fs = self._synth.render_note(idx, midi_note[0], midi_note[1], variation)
                     audio_renders.append([idx, midi_note[0], midi_note[1], variation, audio])
                     m = np.abs(audio).max()

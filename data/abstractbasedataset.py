@@ -139,7 +139,10 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         spectrograms = list()
         # TODO random noise added to spectrograms?
         # The same variation is used for all notes (and is stored for child __getitem__ methods that call this one)
-        self._last_variation = self._rng.integers(0, self.nb_variations_per_note) if self._data_augmentation else 0
+        if self._data_augmentation:
+            self._last_variation = self._rng.integers(0, self.get_nb_variations_per_note(preset_UID))
+        else:
+            self._last_variation = 0
         for midi_note_idx in midi_note_indexes:
             midi_pitch, midi_vel = self.midi_notes[midi_note_idx]
             # Spectrogram, or Mel-Spectrogram if requested (see ctor arguments)
@@ -224,9 +227,10 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         """ Number of available midi notes (different pitch and/or velocity) for a given preset. """
         return len(self.midi_notes)
 
-    @property
-    def nb_variations_per_note(self):
-        """ Number of variations (data augmentation) available for a given note. """
+    def get_nb_variations_per_note(self, preset_UID=-1):
+        """ Number of variations (data augmentation) available for a given note.
+
+        :param preset_UID: required if the number of variations depend on this. """
         return 1  # Default value, to be overridden by child class if data augmentation is available
 
     @property
@@ -279,8 +283,12 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     @property
     def nb_valid_audio_files(self):
         """ The grand total of wav files that are available or can be generated (using a synth),
-        including all valid presets, all MIDI notes, and all variations of presets (data augmentation). """
-        return len(self.valid_preset_UIDs) * len(self.midi_notes) * self.nb_variations_per_note
+        including all valid presets, all MIDI notes, and all variations of each preset (data augmentation). """
+        # consider that the nb of variations per note might depend on preset UID (e.g. MergedDataset child class)
+        total_nb = 0
+        for preset_UID in self.valid_preset_UIDs:
+            total_nb += self.get_nb_variations_per_note(preset_UID)
+        return total_nb * len(self.midi_notes)
 
     def pseudo_random_audio_delay(self, audio, random_seed):
         """ Useful to delay a 'note-on' event of a few samples, using zeros at the beginning. """
@@ -412,7 +420,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         for preset_UID in self.valid_preset_UIDs:
             for midi_note in self.midi_notes:
                 pitch, vel = midi_note[0], midi_note[1]
-                for variation in range(self.nb_variations_per_note):
+                for variation in range(self.get_nb_variations_per_note(preset_UID)):
                     x_wav, Fs = self.get_wav_file(preset_UID, pitch, vel, variation)
                     if Fs != self.Fs:
                         raise ValueError("Wrong sampling frequency ({} instead of {}} preset UID = {}"
@@ -458,7 +466,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         for preset_UID in self.valid_preset_UIDs:
             for midi_note in self.midi_notes:
                 pitch, vel = midi_note[0], midi_note[1]
-                for variation in range(self.nb_variations_per_note):
+                for variation in range(self.get_nb_variations_per_note(preset_UID)):
                     file_path = self.get_spec_file_path(preset_UID, pitch, vel, variation)
                     tensor_spectrogram = torch.load(file_path)
                     tensor_spectrogram = self.normalize_spectrogram(tensor_spectrogram)
@@ -487,6 +495,7 @@ class PresetDataset(AudioDataset):
                  normalize_audio=False, spectrogram_min_dB=-120.0,
                  spectrogram_normalization='min_max',
                  data_storage_root_path: Optional[str] = None,
+                 random_seed=0, data_augmentation=True,
                  learn_mod_wheel_params=False
                  ):
         """
@@ -497,7 +506,7 @@ class PresetDataset(AudioDataset):
         """
         super().__init__(note_duration, n_fft, fft_hop, Fs, midi_notes, multichannel_stacked_spectrograms,
                          n_mel_bins, mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization,
-                         data_storage_root_path)
+                         data_storage_root_path, random_seed, data_augmentation)
         self.learn_mod_wheel_params = learn_mod_wheel_params
         # - - - - - Attributes to be set by the child concrete class - - - - -
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
@@ -649,7 +658,7 @@ class PresetDataset(AudioDataset):
     def audio_constraints(self):
         """ A dict describing the constraints applied to presets before rendering audio files. """
         return {'learn_mod_wheel_params': self.learn_mod_wheel_params,
-                'nb_variations_per_note': self.nb_variations_per_note}
+                'nb_variations_per_note': self.get_nb_variations_per_note()}  # same nb of vars for all presets
 
     @property
     def audio_constraints_file_path(self):
@@ -672,8 +681,8 @@ class PresetDataset(AudioDataset):
 
     # ========================== Data augmentation: presets variations + audio delays =========================
 
-    @property
-    def nb_variations_per_note(self):
+    def get_nb_variations_per_note(self, preset_UID=-1):
+        # Same number of vars for each preset
         return self._nb_preset_variations_per_note * self._nb_audio_delay_variations_per_note
 
     @property
@@ -688,8 +697,8 @@ class PresetDataset(AudioDataset):
 
     def _get_variation_args(self, variation):
         """ Transforms a variation index into (preset_variation, audio_delay) integers. """
-        if variation < 0 or variation >= self.nb_variations_per_note:
-            raise ValueError("Invalid variation (should be < {}".format(self.nb_variations_per_note))
+        if variation < 0 or variation >= self.get_nb_variations_per_note():  # same nb of vars for each preset
+            raise ValueError("Invalid variation (should be < {}".format(self.get_nb_variations_per_note()))
         else:
             preset_variation = variation // self._nb_audio_delay_variations_per_note
             audio_delay = variation % self._nb_audio_delay_variations_per_note

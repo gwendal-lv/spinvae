@@ -311,7 +311,7 @@ def _dataset_samples_rms(worker_args):
     for preset_UID in preset_UIDs:
         for midi_note in dataset.midi_notes:
             midi_pitch, midi_vel = midi_note
-            for variation in range(dataset.nb_variations_per_note):
+            for variation in range(dataset.get_nb_variations_per_note(preset_UID)):
                 audio, Fs = dataset.get_wav_file(preset_UID, midi_pitch, midi_vel, variation=variation)
                 rms_frames = librosa.feature.rms(audio)  # type: np.ndarray
                 rms_frames = rms_frames[0]

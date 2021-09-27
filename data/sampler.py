@@ -5,7 +5,7 @@ Support k-fold cross validation and subtleties of multi-note (multi-layer spectr
 """
 
 from collections.abc import Iterable
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import torch
@@ -14,21 +14,24 @@ import torch.utils.data
 from data.abstractbasedataset import AudioDataset
 
 
-def build_subset_samplers(dataset: AudioDataset,
-                          k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
-                          random_seed=0
-                          ) -> Dict[str, torch.utils.data.SubsetRandomSampler]:
+def get_subsets_indexes(dataset: AudioDataset,
+                        k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
+                        random_seed=0
+                        ) -> Dict[str, List[int]]:
     """
-    Builds 'train', 'validation' and 'test' subset samplers
+    Builds 'train', 'validation' and 'test' arrays of indexes
 
     :param dataset: Required to properly separate dataset items indexes by preset UIDs (not to split
         a multi-note preset into multiple subsets).
-    :param k_fold: Current k-fold cross-validation fold index
+    :param k_fold: Current k-fold cross-validation fold index. If -1, builds a 'special fold' that randomly assigns
+        indexes from 'normal' folds to the train and validation sets (test items are never part of those 'special'
+        train/valid sets.). The -1 value can be useful for pre-training part of a model, before doing some proper
+        k-fold cross-validation and test.
     :param k_folds_count: Total number of k-folds
     :param test_holdout_proportion: Proportion of 'test' data, excluded from cross-validation folds.
     :param random_seed: For reproducibility, always use the same seed
 
-    :returns: dict of subset_samplers
+    :returns: dict of arrays of indexes (not UIDs)
     """
     presets_count = dataset.valid_presets_count
     all_preset_indexes = np.arange(presets_count)
@@ -39,6 +42,12 @@ def build_subset_samplers(dataset: AudioDataset,
     first_test_idx = int(np.floor(presets_count * (1.0 - test_holdout_proportion)))
     non_test_preset_indexes, preset_indexes['test'] = np.split(all_preset_indexes, [first_test_idx])
     # All folds are retrieved - we'll choose only one of these as validation subset, and merge the others
+    #    'special fold' -1 for pre-training a single model: the 'validation' fold contains samples for all
+    #    normal k-folds (test held-out set is of course always excluded)
+    #    We just shuffle the indexes one more time before splitting, then arbitrarily use the 'new' first fold
+    if k_fold == -1:
+        rng.shuffle(non_test_preset_indexes)
+        k_fold = 0
     preset_indexes_folds = np.array_split(non_test_preset_indexes, k_folds_count)
     preset_indexes['validation'] = preset_indexes_folds[k_fold]
     preset_indexes['train'] = np.hstack([preset_indexes_folds[i] for i in range(k_folds_count) if i != k_fold])
@@ -53,6 +62,19 @@ def build_subset_samplers(dataset: AudioDataset,
             for preset_idx in preset_indexes[k]:
                 final_indexes[k] += [preset_idx * dataset.midi_notes_per_preset + i
                                      for i in range(dataset.midi_notes_per_preset)]
+    return final_indexes
+
+
+def build_subset_samplers(dataset: AudioDataset,
+                          k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
+                          random_seed=0
+                          ) -> Dict[str, torch.utils.data.SubsetRandomSampler]:
+    """
+    Builds 'train', 'validation' and 'test' subset samplers
+
+    Args description: see get_subsets_indexes(...)
+    """
+    final_indexes = get_subsets_indexes(dataset, k_fold, k_folds_count, test_holdout_proportion, random_seed)
     subset_samplers = dict()
     for k in final_indexes:
         subset_samplers[k] = torch.utils.data.SubsetRandomSampler(final_indexes[k])

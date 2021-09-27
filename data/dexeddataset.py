@@ -8,7 +8,7 @@ import os
 import pathlib
 import json
 import shutil
-from typing import Optional, Iterable
+from typing import Optional, Iterable, List
 import multiprocessing
 from datetime import datetime
 
@@ -33,7 +33,9 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                  normalize_audio=False, spectrogram_min_dB=-120.0,
                  spectrogram_normalization: Optional[str] = 'min_max',
                  data_storage_root_path: Optional[str] = None,
-                 algos=None, operators=None,
+                 random_seed=0, data_augmentation=True,
+                 algos: Optional[List[int]] = None,
+                 operators: Optional[List[int]] = None,
                  vst_params_learned_as_categorical: Optional[str] = None,
                  restrict_to_labels=None, constant_filter_and_tune_params=True,
                  constant_middle_C=True,
@@ -66,7 +68,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         super().__init__(note_duration, n_fft, fft_hop, Fs,
                          midi_notes, multichannel_stacked_spectrograms, n_mel_bins, mel_fmin, mel_fmax,
                          normalize_audio, spectrogram_min_dB, spectrogram_normalization, data_storage_root_path,
-                         learn_mod_wheel_params)
+                         random_seed, data_augmentation, learn_mod_wheel_params)
         assert learn_mod_wheel_params  # Must be learned, because LFO modulation also depends on these params
         self.prevent_SH_LFO = prevent_SH_LFO
         if prevent_SH_LFO:

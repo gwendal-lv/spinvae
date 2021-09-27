@@ -42,6 +42,7 @@ def train_config():
 
 
     # ========== Datasets and DataLoaders ==========
+    # TODO load a MergedDataset for pre-training (builds its dataloaders itself)
     # Must be constructed first because dataset output sizes will be required to automatically
     # infer models output sizes.
     # ********************* config.model.dim_z will be changed if a flow network is used **********************

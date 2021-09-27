@@ -12,8 +12,9 @@ train_queue_backup.py
 librenderman.so
 synth/librenderman.so
 
-# Folder of figures (matplotlib or others) and audio/images exports
-figures/*
+# Folder of figures (omnigraffle, ...) and audio/images exports
+figures/git_untracked/*
 exports/*
 
-
+# Temp and debug scripts
+debug_tests.py

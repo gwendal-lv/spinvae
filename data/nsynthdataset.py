@@ -127,8 +127,7 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
     def get_name_from_preset_UID(self, preset_UID: int) -> str:
         return self._instru_info_df['instrument_str'][preset_UID]  # original dataframe indexes always remain usable
 
-    @property
-    def nb_variations_per_note(self):
+    def get_nb_variations_per_note(self, preset_UID=-1):
         return 3
 
     def get_wav_file(self, preset_UID, midi_note, midi_velocity, variation=0):
