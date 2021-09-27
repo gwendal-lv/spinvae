@@ -143,7 +143,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=True, regenerate_learnable_presets=False)
-    #gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
-    #gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
+    # gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=True, regenerate_learnable_presets=False)
+    # gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
+    gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=True)
 

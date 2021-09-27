@@ -54,7 +54,7 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
             be excluded from the dataset. An instrument will be excluded if at least one note presents one of the
             given qualities.
         :param force_include_all_acoustic: If True, no acoustic instrument will be excluded from this dataset
-            (even if it has a sonic quality that should exclude it).
+            (even if it has a sonic quality that should excludec it).
         """
         super().__init__(note_duration, n_fft, fft_hop, Fs, midi_notes, multichannel_stacked_spectrograms, n_mel_bins,
                          mel_fmin, mel_fmax, normalize_audio, spectrogram_min_dB, spectrogram_normalization,
@@ -131,7 +131,7 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
         return 3
 
     def get_wav_file(self, preset_UID, midi_note, midi_velocity, variation=0):
-        audio_file_name = self.get_audio_file_stem(preset_UID, midi_note, midi_velocity, variation) + '.wav'
+        audio_file_name = self.get_audio_file_stem(preset_UID, midi_note, midi_velocity, variation=-1) + '.wav'
         audio, Fs = soundfile.read(self._audio_symlinks_dir.joinpath(audio_file_name))
         # data augmentation: shift audio waveform of a few ms (or small integer number of samples)
         if variation != 0:
@@ -139,9 +139,17 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
         return audio, Fs
 
     def get_audio_file_stem(self, preset_UID, midi_note, midi_velocity, variation=0):
+        """ This method is to be used for audio file loading and spectrograms writing.
+        To disable the 'variation' suffix (e.g. when loading audio files, they are always the same), use variation = -1.
+        """
         # wav files are the same for all data augmentation variations
         # Preset UIDs remains dataframe indexes (even if we've deleted rows from the dataframe)
-        return "{}-{:03d}-{:03d}".format(self._instru_info_df['instrument_str'][preset_UID], midi_note, midi_velocity)
+        nsynth_filename = "{}-{:03d}-{:03d}".format(self._instru_info_df['instrument_str'][preset_UID],
+                                                    midi_note, midi_velocity)
+        if variation == -1:
+            return nsynth_filename
+        else:
+            return nsynth_filename + "_var{:03d}".format(variation)
 
     def compute_and_store_spectrograms_and_stats(self):
         if self.dataset_type != 'full':
