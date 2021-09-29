@@ -1,4 +1,9 @@
-""" TODO proper doc """
+"""
+Abstract classes to easily build an AudioDataset (without synthesis parameters)
+or a PresetDataset (with synthesis parameters).
+
+Only a few methods are abstract, most of the implementation is ready-to-use for various synths or audio datasets.
+"""
 
 import os
 import pathlib
@@ -14,6 +19,7 @@ import multiprocessing
 
 import torch
 import torch.utils
+import torch.utils.data
 import numpy as np
 
 import utils.torchspectrograms
@@ -21,12 +27,12 @@ import utils.torchspectrograms
 from data.preset import PresetsParams, PresetIndexesHelper
 
 # See https://github.com/pytorch/audio/issues/903
-#torchaudio.set_audio_backend("sox_io")
+# torchaudio.set_audio_backend("sox_io")
 
 
 class AudioDataset(torch.utils.data.Dataset, ABC):
     def __init__(self, note_duration,
-                 n_fft, fft_hop, Fs,  # ftt 1024 hop=512: spectrogram is approx. the size of 5.0s@22.05kHz audio
+                 n_fft, fft_hop, Fs,
                  midi_notes=((60, 100),),
                  multichannel_stacked_spectrograms=False,
                  n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,

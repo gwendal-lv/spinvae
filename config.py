@@ -44,8 +44,8 @@ model.data_root_path = "/media/gwendal/Data/Datasets"
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
 model.sampling_rate = 16000  # 16000 for NSynth dataset compatibility
-model.stft_args = (1024, 256)  # fft size and hop size
-model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
+model.stft_args = (512, 256)  # fft size and hop size
+model.mel_bins = -1  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 # Spectrogram sizes @ 22.05 kHz:
 #   (513, 433): audio 5.0s, fft size 1024, fft hop 256
 #   (257, 347): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
@@ -55,7 +55,7 @@ model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 model.spectrogram_size = (257, 251)  # see data/dataset.py to retrieve this from audio/stft params
 model.mel_f_limits = (0, 8000)  # min/max Mel-spectrogram frequencies (librosa default 0:Fs/2)
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
-# model.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 85/127
+# model.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
 model.midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
 model.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_features_mix_level = -2  # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...

@@ -5,13 +5,16 @@ Support k-fold cross validation and subtleties of multi-note (multi-layer spectr
 """
 
 from collections.abc import Iterable
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 import numpy as np
 import torch
 import torch.utils.data
 
 from data.abstractbasedataset import AudioDataset
+
+
+_SEED_OFFSET = 6357396522630986725  # because PyTorch recommends to use a seed "with a lot of 0 and 1 bits"
 
 
 def get_subsets_indexes(dataset: AudioDataset,
@@ -77,8 +80,11 @@ def build_subset_samplers(dataset: AudioDataset,
     final_indexes = get_subsets_indexes(dataset, k_fold, k_folds_count, test_holdout_proportion, random_seed)
     subset_samplers = dict()
     for k in final_indexes:
-        subset_samplers[k] = torch.utils.data.SubsetRandomSampler(final_indexes[k])
+        torch_rng = torch.Generator().manual_seed(_SEED_OFFSET + random_seed)
+        subset_samplers[k] = torch.utils.data.SubsetRandomSampler(final_indexes[k], generator=torch_rng)
     return subset_samplers
+
+
 
 
 if __name__ == "__main__":
@@ -120,3 +126,4 @@ if __name__ == "__main__":
     test_preset_UIDs_across_subsets('validation', 'train', 'test')
 
     print("Random Samplers: OK, no preset UID dispersion across train/validation/test subsets.")
+

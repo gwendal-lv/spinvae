@@ -40,10 +40,9 @@ def get_dataset(model_config, train_config):
     return full_dataset
 
 
-def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):
-    """ Returns a dict of train/validation/test DataLoader instances, and a dict which contains the
-    length of each sub-dataset. """
-    # Num workers might be zero (no multiprocessing)
+def get_num_workers(train_config):
+    """ Returns the appropriate number of multi-processing workers (might be 0) depending on the current config
+     and debugging status. """
     _debugger = False
     if train_config.profiler_args['enabled'] and train_config.profiler_args['use_cuda']:
         num_workers = 0  # CUDA PyTorch profiler does not work with a multiprocess-dataloader
@@ -54,6 +53,14 @@ def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):
     else:  # We should use an higher CPU count for real-time audio rendering
         # 4*GPU count: optimal w/ light dataloader (e.g. (mel-)spectrogram computation)
         num_workers = min(train_config.minibatch_size, torch.cuda.device_count() * 4)
+    return num_workers
+
+
+def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):
+    """ Returns a dict of train/validation/test DataLoader instances, and a dict which contains the
+    length of each sub-dataset. """
+    # Num workers might be zero (no multiprocessing)
+    num_workers = get_num_workers(train_config)
     # Dataloader easily build from samplers
     subset_samplers = data.sampler.build_subset_samplers(full_dataset, k_fold=train_config.current_k_fold,
                                                          k_folds_count=train_config.k_folds,
