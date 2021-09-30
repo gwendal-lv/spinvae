@@ -110,7 +110,8 @@ def gen_nsynth_dataset(regenerate_json: bool, regenerate_spectrograms: bool):
                                    dataset_type='full',
                                    exclude_instruments_with_missing_notes=True,
                                    exclude_sonic_qualities=None,#['reverb'],
-                                   force_include_all_acoustic=True
+                                   force_include_all_acoustic=True,
+                                   required_midi_notes=config.model.required_dataset_midi_notes
                                    )
     if regenerate_json:
         nsynth_dataset.regenerate_json_and_symlinks()
@@ -145,5 +146,5 @@ if __name__ == "__main__":
 
     # gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=True, regenerate_learnable_presets=False)
     # gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
-    gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=True)
+    gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
 

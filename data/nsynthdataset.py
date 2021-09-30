@@ -31,7 +31,8 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
                  dataset_type='full',
                  exclude_instruments_with_missing_notes=True,
                  exclude_sonic_qualities: Optional[List[str]] = None,
-                 force_include_all_acoustic=True
+                 force_include_all_acoustic=True,
+                 required_midi_notes=None
                  ):
         """
         Class for using a downloaded NSynth dataset. Can be used by a PyTorch DataLoader.
@@ -104,6 +105,10 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
                     for note in self.midi_notes:
                         if note not in row['notes']:
                             missing_notes = True
+                    if required_midi_notes is not None:
+                        for note in required_midi_notes:
+                            if note not in row['notes']:
+                                missing_notes = True
                     if missing_notes:
                         excluded_indexes.append(idx)
                 self._instru_info_df.drop(index=excluded_indexes, inplace=True)
