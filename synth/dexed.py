@@ -11,6 +11,7 @@ import sys
 import os
 import pickle
 import multiprocessing
+from multiprocessing.pool import ThreadPool
 import time
 from typing import Iterable
 
@@ -96,8 +97,12 @@ class PresetDatabase:
             row_index_limits.append([n * rows_count_by_proc, (n+1) * rows_count_by_proc - 1])
         # Last proc takes the remaining
         row_index_limits.append([(num_workers-1)*rows_count_by_proc, presets_count-1])
-        with multiprocessing.Pool(num_workers) as p:
-            partial_presets_dfs = p.map(get_partial_presets_df, row_index_limits)
+        if sys.gettrace() is not None:  # PyCharm debugger detected (should work with others)
+            with ThreadPool(num_workers) as p:  # multiproc breaks PyCharm remote debug
+                partial_presets_dfs = p.map(get_partial_presets_df, row_index_limits)
+        else:
+            with multiprocessing.Pool(num_workers) as p:
+                partial_presets_dfs = p.map(get_partial_presets_df, row_index_limits)
         return pd.concat(partial_presets_dfs)
 
     @staticmethod

@@ -8,11 +8,13 @@ Concrete preset Datasets are available from this module but are implemented in t
 from . import dexeddataset
 from . import surgedataset
 from . import nsynthdataset
+from . import mergeddataset
 
 # ====================== Concrete dataset classes ======================
 DexedDataset = dexeddataset.DexedDataset
 SurgeDataset = surgedataset.SurgeDataset
 NsynthDataset = nsynthdataset.NsynthDataset
+MergedDataset = mergeddataset.MergedDataset
 # ======================================================================
 
 
@@ -20,7 +22,8 @@ NsynthDataset = nsynthdataset.NsynthDataset
 def model_config_to_dataset_kwargs(model_config):
     """ Creates a dict that can be unpacked to pass to an AudioDataset class constructor.
 
-    :param model_config: should be the config.model attribute from config.py. """
+    :param model_config: should be the config.model attribute from config.py.
+    """
     return {'note_duration': model_config.note_duration, 'n_fft': model_config.stft_args[0],
             'fft_hop': model_config.stft_args[1], 'Fs': model_config.sampling_rate,
             'midi_notes': model_config.midi_notes, 'multichannel_stacked_spectrograms': model_config.stack_spectrograms,
