@@ -66,6 +66,10 @@ class BasicVAE(nn.Module):
         # Default: divergence or discrepancy vs. zero-mean unit-variance multivariate gaussian
         return self.latent_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
 
+    @property
+    def is_flow_based_latent_space(self):
+        return False
+
 
 class FlowVAE(nn.Module):
     """
@@ -118,6 +122,10 @@ class FlowVAE(nn.Module):
                 output_bn=self.flow_output_bn)
         else:
             raise NotImplementedError("Unavailable flow '{}'".format(self.flow_type))
+
+    @property
+    def is_flow_based_latent_space(self):
+        return True
 
     @property
     def flow_forward_function(self):

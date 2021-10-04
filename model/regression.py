@@ -59,7 +59,7 @@ class PresetActivation(nn.Module):
 #    (whose coeffs will depend on the size of the one-hot sub-vector, to always get the same softmax activation)
 
 
-class MLPRegression(nn.Module):
+class MLPControlsRegression(nn.Module):
     def __init__(self, architecture, dim_z, idx_helper: PresetIndexesHelper, dropout_p=0.0,
                  cat_softmax_activation=False):
         """
@@ -103,7 +103,7 @@ class MLPRegression(nn.Module):
         return self.reg_model(z_K)
 
 
-class FlowRegression(nn.Module):
+class FlowControlsRegression(nn.Module):
     def __init__(self, architecture, dim_z, idx_helper: PresetIndexesHelper, dropout_p=0.0,
                  fast_forward_flow=True, cat_softmax_activation=False):
         """
@@ -181,5 +181,7 @@ class FlowRegression(nn.Module):
         return self.activation_layer(v_out)
 
 
-
+# TODO
+#class EmptyRegression(nn.Module):
+#    def
 

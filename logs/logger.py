@@ -167,7 +167,8 @@ class RunLogger:
 
     def write_model_summary(self, model, input_tensor_size, model_name):
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
-            description = torchinfo.summary(model, input_size=input_tensor_size, depth=5, device='cpu', verbose=0)
+            description = torchinfo.summary(model, input_size=input_tensor_size, depth=5,
+                                            device=torch.device('cpu'), verbose=0)
             with open(self.run_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
                 f.write(description.__str__())
 
@@ -196,10 +197,15 @@ class RunLogger:
         if save_full_trace:
             prof.export_chrome_trace(self.run_dir.joinpath('profiling_chrome_trace.json'))
 
-    def save_checkpoint(self, epoch, ae_model, optimizer, scheduler):
-        torch.save({'epoch': epoch, 'ae_model_state_dict': ae_model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(), 'scheduler_state_dict': scheduler.state_dict()},
-                   self.checkpoints_dir.joinpath('{:05d}.tar'.format(epoch)))
+    def save_checkpoint(self, epoch, ae_model, optimizer, scheduler, reg_model=None):
+        checkpoint_dict = {'epoch': epoch, 'ae_model_state_dict': ae_model.state_dict(),
+                           'optimizer_state_dict': optimizer.state_dict(),
+                           'scheduler_state_dict': scheduler.state_dict()}
+        if reg_model is not None:
+            checkpoint_dict['reg_model_state_dict'] = reg_model
+        torch.save(checkpoint_dict, self.checkpoints_dir.joinpath('{:05d}.tar'.format(epoch)))
+
+    # TODO load checkpoint method????
 
     def on_epoch_finished(self, epoch):
         self.epoch_start_datetimes.append(datetime.datetime.now())

@@ -16,10 +16,20 @@ import datetime
 from utils.config import _Config  # Empty class - to ease JSON serialization of this file
 
 
+# ===================================================================================================================
+# ================================================= Model configuration =============================================
+# ===================================================================================================================
 model = _Config()
-model.name = "PosteriorCollapse"
-model.run_name = 'dummy_tests'  # run: different hyperparams, optimizer, etc... for a given model
+
+# ----------------------------------------------- Data ---------------------------------------------------
+model.data_root_path = "/media/gwendal/Data/Datasets"
+model.logs_root_dir = "saved"  # Path from this directory
+model.name = "PreTrainVAE"
+model.run_name = 'dummy_tests2'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
+# TODO add path to pre-trained ae model
+
+# ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 model.encoder_architecture = 'speccnn8l1'
 # Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
@@ -29,6 +39,7 @@ model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: 
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
 model.forward_controls_loss = True  # Must be true for non-invertible MLP regression (False is now deprecated)
 
+# --------------------------------------------- Latent space -----------------------------------------------
 # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concatenated to the latent vector
 model.concat_midi_to_z = None  # See update_dynamic_config_params()
 # Latent space dimension  *************** When using a Flow regressor, this dim is automatically set ******************
@@ -40,7 +51,7 @@ model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
 #               _BNbetween (between flow layers), _BNoutput (BN on the last two layers, or not)
 model.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
 
-model.data_root_path = "/media/gwendal/Data/Datasets"
+# ------------------------------------------------ Audio -------------------------------------------------
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
 model.sampling_rate = 16000  # 16000 for NSynth dataset compatibility
@@ -54,10 +65,12 @@ model.mel_bins = -1  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 #   (257, 251): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
 model.spectrogram_size = (257, 251)  # see data/dataset.py to retrieve this from audio/stft params
 model.mel_f_limits = (0, 8000)  # min/max Mel-spectrogram frequencies (librosa default 0:Fs/2)
+# All the notes that must be available for each instrument (even if we currently use only a subset of those notes)
+model.required_dataset_midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
-# model.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
-model.midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
-model.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
+model.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
+# model.midi_notes = model.required_dataset_midi_notes
+model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_features_mix_level = -2  # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
 # dataset size is artificially increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
@@ -65,6 +78,8 @@ model.increased_dataset_size = None  # See update_dynamic_config_params()
 model.spectrogram_min_dB = -120.0
 model.input_tensor_size = None  # see update_dynamic_config_params()
 
+# ------------------------------------------------ __ -------------------------------------------------
+# TODO refactor this section - make it compatible with pre-training
 model.synth = 'dexed'  # TODO set to 'all' for pre-training, or 'dexed' for auto synth prog
 # Dexed-specific auto rename: '*' in 'al*_op*_lab*' will be replaced by the actual algorithms, operators and labels
 model.synth_args_str = 'al*_op*_lab*'  # Auto-generated string (see end of script)
@@ -81,9 +96,11 @@ model.dataset_labels = None  # tuple of labels (e.g. ('harmonic', 'percussive'))
 # Other synth: ...?
 model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # Directory for saving metrics, samples, models, etc... see README.md
-model.logs_root_dir = "saved"  # Path from this directory
 
 
+# ===================================================================================================================
+# ======================================= Training procedure configuration ==========================================
+# ===================================================================================================================
 train = _Config()
 train.start_datetime = datetime.datetime.now().isoformat()
 train.minibatch_size = 160  # 160
@@ -94,9 +111,13 @@ train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
-train.save_period = 50  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
-# TODO after refactoring: reduce plot frequency to 1 plot / 20 epochs
-train.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
+# TODO train regression network alone when full-train has finished?
+train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
+# The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
+# more than 30x more instruments than NSynth). All available data will always be used for validation.
+train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
+
+# ------------------------------------------------ Losses -------------------------------------------------
 # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
 # FIXME 'logprob' loss with flow-VAE
 train.latent_loss = 'Dkl'  # TODO implement checks: no Dkl loss for a flow-based latent transform, etc....
@@ -106,24 +127,6 @@ train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied 
 # When un-normalized, the reconstruction loss (log-probability of a multivariate gaussian) is orders of magnitude
 # bigger than other losses. Train does not work with normalize=False at the moment - use train.beta to compensate
 train.normalize_losses = True  # Normalize all losses over the vector-dimension (e.g. spectrogram pixels count, D, ...)
-
-
-# TODO train regression network alone when full-train has finished?
-train.optimizer = 'Adam'
-# Maximal learning rate (reached after warmup, then reduced on plateaus)
-# LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
-train.initial_learning_rate = 2e-4  # 7e-5  # e-9 LR with e+4 loss does not allow any train (vanishing grad?)
-# Learning rate warmup (see https://arxiv.org/abs/1706.02677)
-train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
-train.lr_warmup_start_factor = 0.1
-train.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
-train.weight_decay = 1e-4
-train.fc_dropout = 0.3
-train.reg_fc_dropout = 0.4
-train.latent_input_dropout = 0.0  # Should always remains zero... intended for tests (not tensorboard-logged)
-# When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
-# TODO latent input batch-norm is a very strong constraint for the network, maybe remove it when using MMD-VAE regul.
-train.latent_flow_input_regularization = 'None'  # 'BN'  # 'BN' (on encoder output), 'Dkl' (on q_Z0 gaussian flow input) or 'None'
 # (beta<1, normalize=True) corresponds to (beta>>1, normalize=False) in the beta-VAE formulation (ICLR 2017)
 train.beta = 0.2  # latent loss factor - use much lower value (e-2) to get closer the ELBO
 train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very unstable training)
@@ -131,32 +134,59 @@ train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very 
 train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). 16k samples dataset: set to 40
 train.beta_cycle_epochs = -1  # beta cyclic annealing (https://arxiv.org/abs/1903.10145). -1 deactivates TODO do
 
+# ------------------------------------------- Optimizer + scheduler -------------------------------------------
+# Different optimizers for the pre-trained AE and the regression networks ('ae_' or 'reg_' prefixes or dict keys)
+train.optimizer = 'Adam'
+# Maximal learning rate (reached after warmup, then reduced on plateaus)
+# LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
+# e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
+train.initial_learning_rate = {'ae': 2e-4, 'reg': 2e-4}
+# Learning rate warmup (see https://arxiv.org/abs/1706.02677)
+train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
+train.lr_warmup_start_factor = 0.1
+train.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
 train.scheduler_name = 'ReduceLROnPlateau'  # TODO try CosineAnnealing
 # Possible values: 'VAELoss' (total), 'ReconsLoss', 'Controls/BackpropLoss', ... All required losses will be summed
-train.scheduler_loss = ('ReconsLoss/Backprop', 'Controls/BackpropLoss')
-train.scheduler_lr_factor = 0.2
+train.scheduler_losses = {'ae': ('ReconsLoss/Backprop', ), 'reg': ('Controls/BackpropLoss', )}
+train.scheduler_lr_factor = {'ae': 0.2, 'reg': 0.2}
 # Set a longer patience with smaller datasets and quite unstable trains
-train.scheduler_patience = 6  # See update_dynamic_config_params(). 16k samples dataset:  set to 10
-train.scheduler_cooldown = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
+# See update_dynamic_config_params(). 16k samples dataset:  set to 10
+train.scheduler_patience = {'ae': 15, 'reg': 6}
+train.scheduler_cooldown = {'ae': 15, 'reg': 6}
 train.scheduler_threshold = 1e-4
-# Training considered "dead" when dynamic LR reaches this value
+# Training considered "dead" when dynamic LR reaches this value (or the initial LR multiplied by the following ratios)
+train.early_stop_lr_ratio = {'ae': 1e-3, 'reg': 1e-3}
 train.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 
+# ----------------------------------------------- Regularization --------------------------------------------------
+train.weight_decay = 1e-4
+train.fc_dropout = 0.3
+train.reg_fc_dropout = 0.4
+train.latent_input_dropout = 0.0  # Should always remain zero... intended for tests (not tensorboard-logged)
+# When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
+# TODO latent input batch-norm is a very strong constraint for the network, maybe remove it when using MMD-VAE regul.
+# 'BN' (on encoder output), 'Dkl' (on q_Z0 gaussian flow input) or 'None'
+train.latent_flow_input_regularization = 'None'
+train.latent_flow_input_regul_weight = 0.1
+
+# -------------------------------------------- Logs, figures, ... ---------------------------------------------
+train.save_period = 500  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
+train.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
 train.verbosity = 1  # 0: no console output --> 3: fully-detailed per-batch console output
 train.init_security_pause = 0.0  # Short pause before erasing an existing run
 # Number of logged audio and spectrograms for a given epoch
 train.logged_samples_count = 4  # See update_dynamic_config_params()
+
+# ------------------------------------------ Performance and Profiling ----------------------------------------------
+train.dataloader_pin_memory = False
+train.dataloader_persistent_workers = True
 train.profiler_args = {'enabled': False, 'use_cuda': True, 'record_shapes': False,
                        'profile_memory': False, 'with_stack': False}
 train.profiler_full_trace = False  # If True, runs only a few batches then exits - but saves a fully detailed trace.json
 train.profiler_1_GPU = False  # Profiling on only 1 GPU allow a much better understanding of trace.json
 
 
-evaluate = _Config()
-evaluate.epoch = -1  # Trained model to be loaded for post-training evaluation.
 
-
-# ---------------------------------------------------------------------------------------
 
 
 def update_dynamic_config_params():
@@ -175,7 +205,8 @@ def update_dynamic_config_params():
                                model.spectrogram_size[0], model.spectrogram_size[1])
 
     # Dynamic train hyper-params
-    train.early_stop_lr_threshold = train.initial_learning_rate * 1e-3
+    train.early_stop_lr_threshold = {k: train.initial_learning_rate[k] * ratio
+                                     for k, ratio in train.early_stop_lr_ratio.items()}
     train.logged_samples_count = max(train.logged_samples_count, len(model.midi_notes))
     # Train hyper-params (epochs counts) that should be increased when using a subset of the dataset
     if model.dataset_synth_args[0] is not None:  # Limited Dexed algorithms?  TODO handle non-dexed synth

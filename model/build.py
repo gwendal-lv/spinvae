@@ -71,20 +71,20 @@ def build_extended_ae_model(model_config, train_config, idx_helper):
     if model_config.params_regression_architecture.startswith("mlp_"):
         assert model_config.forward_controls_loss is True  # Non-invertible MLP cannot inverse target values
         reg_arch = model_config.params_regression_architecture.replace("mlp_", "")
-        reg_model = regression.MLPRegression(reg_arch, model_config.dim_z, idx_helper, train_config.reg_fc_dropout,
-                                             cat_softmax_activation=model_config.params_reg_softmax)
+        reg_model = regression.MLPControlsRegression(reg_arch, model_config.dim_z, idx_helper, train_config.reg_fc_dropout,
+                                                     cat_softmax_activation=model_config.params_reg_softmax)
     elif model_config.params_regression_architecture.startswith("flow_"):
         assert model_config.learnable_params_tensor_length > 0  # Flow models require dim_z to be equal to this length
         reg_arch = model_config.params_regression_architecture.replace("flow_", "")
-        reg_model = regression.FlowRegression(reg_arch, model_config.dim_z, idx_helper,
-                                              fast_forward_flow=model_config.forward_controls_loss,
-                                              dropout_p=train_config.reg_fc_dropout,
-                                              cat_softmax_activation=model_config.params_reg_softmax)
+        reg_model = regression.FlowControlsRegression(reg_arch, model_config.dim_z, idx_helper,
+                                                      fast_forward_flow=model_config.forward_controls_loss,
+                                                      dropout_p=train_config.reg_fc_dropout,
+                                                      cat_softmax_activation=model_config.params_reg_softmax)
     else:
         raise NotImplementedError("Synth param regression arch '{}' not implemented"
                                   .format(model_config.params_regression_architecture))
-    extended_ae_model = extendedAE.ExtendedAE(ae_model, reg_model, idx_helper, train_config.fc_dropout)
-    return encoder_model, decoder_model, ae_model, extended_ae_model
+    extended_ae_model = extendedAE.ExtendedAE(ae_model, reg_model, idx_helper)
+    return encoder_model, decoder_model, ae_model, reg_model, extended_ae_model
 
 
 def _is_attr_equal(attr1, attr2):

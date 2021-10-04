@@ -39,7 +39,7 @@ class SpectrogramDecoder(nn.Module):
 
         # - - - - - 1) MLP output size must to correspond to encoder's MLP input size - - - -
         assert self.base_arch_name.startswith('speccnn')
-        self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 4)
+        self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 3)  # 16kHz sr: 3x3 instead of 3x4
         self.mlp = nn.Sequential()
         for i in range(self.num_fc_layers):
             in_units = self.dim_z if (i == 0) else 1024
@@ -74,9 +74,9 @@ class SpectrogramDecoder(nn.Module):
                     kernel = (4, 4)
                 else:
                     kernel = (5, 5)
-                if i in [1, 3, 4]:
+                if i in [1, 2, 3, 4]:
                     output_padding = (1, 1)
-                elif i in [2, 5, 6]:
+                elif i in [5, 6]:
                     output_padding = (1, 0)
                 else:  # last layer
                     output_padding = (0, 0)

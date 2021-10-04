@@ -3,6 +3,8 @@ Defines 'Extended Auto-Encoders', which are basically spectrogram VAEs with an a
 which infers synth parameters values from latent space values.
 """
 
+from typing import Optional
+
 import torch.nn as nn
 
 from model import VAE
@@ -13,31 +15,23 @@ from data.preset import PresetIndexesHelper
 class ExtendedAE(nn.Module):
     """ Model based on any compatible Auto-Encoder and Regression models. """
 
-    def __init__(self, ae_model, reg_model, idx_helper: PresetIndexesHelper, dropout_p=0.0):
+    def __init__(self, ae_model: nn.Module, reg_model: Optional[nn.Module] = None):
         super().__init__()
-        self.idx_helper = idx_helper  # unused at the moment
         self.ae_model = ae_model
-        if isinstance(self.ae_model, VAE.BasicVAE):
-            self._is_flow_based_latent_space = False
-        elif isinstance(self.ae_model, VAE.FlowVAE):
-            self._is_flow_based_latent_space = True
-        else:
-            raise TypeError("Unrecognized auto-encoder model")
         self.reg_model = reg_model
-        if isinstance(self.reg_model, model.regression.FlowRegression):
-            self._is_flow_based_regression = True
-        elif isinstance(self.reg_model, model.regression.MLPRegression):
-            self._is_flow_based_regression = False
-        else:
-            raise TypeError("Unrecognized synth params regression model")
 
     @property
     def is_flow_based_latent_space(self):
-        return self._is_flow_based_latent_space
+        return self.ae_model.is_flow_based_latent_space
 
     @property
     def is_flow_based_regression(self):
-        return self._is_flow_based_regression
+        if isinstance(self.reg_model, model.regression.FlowControlsRegression):
+            return True
+        elif isinstance(self.reg_model, model.regression.MLPControlsRegression):
+            return False
+        else:
+            raise TypeError("Unrecognized synth params regression model")
 
     def forward(self, x, sample_info=None):
         """
