@@ -22,7 +22,7 @@ from data import sampler
 
 
 class MergedDataset(AudioDataset):
-    def __init__(self, model_config, dataset_type: str):
+    def __init__(self, model_config, dataset_type: str, dummy_synth_params_tensor=False):
         """
 
         Subsets of data:
@@ -35,10 +35,13 @@ class MergedDataset(AudioDataset):
 
         :param model_config:
         :param dataset_type: 'full', 'train' or 'validation'
+        :param dummy_synth_params_tensor: If True, a 0 single-element tensor will be returned by the __getitem__
+            method (for compatibility with a PresetDataset)
         """
         from data import dataset  # local import to prevent recursive import issues
         super().__init__(** dataset.model_config_to_dataset_kwargs(model_config))
 
+        self.dummy_synth_params_tensor = dummy_synth_params_tensor
         self.dataset_type = dataset_type
         if self.dataset_type not in ['full', 'train', 'validation' ]:
             raise ValueError("Invalid dataset type '{}'".format(self.dataset_type))
@@ -94,6 +97,13 @@ class MergedDataset(AudioDataset):
         for synth_name in self._global_UID_offsets.keys():
             self._global_indices_offset[synth_name] = next_index
             next_index += len(self._local_indexes[synth_name])
+
+    def __getitem__(self, i):
+        if not self.dummy_synth_params_tensor:
+            return super().__getitem__(i)
+        else:
+            spec, info, labels = super().__getitem__(i)
+            return spec, torch.zeros((1, )), info, labels
 
     def _global_to_local_UID_and_ds(self, global_UID: int) -> Tuple[int, AudioDataset]:
         """ Converts a global UID (e.g. can be > 500 000) into a (local_UID, local_dataset) tuple. """

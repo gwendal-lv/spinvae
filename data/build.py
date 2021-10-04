@@ -45,8 +45,8 @@ def get_dataset(model_config, train_config):
 
 
 def get_pretrain_datasets(model_config, train_config):
-    train_ds = dataset.MergedDataset(model_config, dataset_type='train')
-    valid_ds = dataset.MergedDataset(model_config, dataset_type='validation')
+    train_ds = dataset.MergedDataset(model_config, dataset_type='train', dummy_synth_params_tensor=True)
+    valid_ds = dataset.MergedDataset(model_config, dataset_type='validation', dummy_synth_params_tensor=True)
     return train_ds, valid_ds
 
 

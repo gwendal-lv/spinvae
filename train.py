@@ -21,6 +21,7 @@ import torch.optim
 from torch.autograd import profiler
 
 import config
+import model.base
 import model.loss
 import model.build
 import model.extendedAE
@@ -82,12 +83,13 @@ def train_config():
     # are set to None during pre-training). Useful to change device or train/eval status of all models.
     if pretrain:
         _, _, ae_model = model.build.build_ae_model(config.model, config.train)
-        reg_model = None
+        reg_model = model.base.DummyModel()
         extended_ae_model = model.extendedAE.ExtendedAE(ae_model, reg_model)
     else:
         _, _, ae_model, reg_model, extended_ae_model = model.build.build_extended_ae_model(config.model, config.train,
                                                                                            preset_indexes_helper)
     if start_checkpoint is not None:
+        # FIXME models should load the checkpoint themselves
         ae_model.load_state_dict(start_checkpoint['ae_model_state_dict'])  # GPU tensor params
         if not pretrain:
             raise NotImplementedError()
@@ -96,7 +98,7 @@ def train_config():
     extended_ae_model.eval()
     # will write tensorboard graph and torchinfo txt summary. model must not be parallel
     logger.init_with_model(ae_model, config.model.input_tensor_size)  # main model: autoencoder
-    if reg_model is not None:
+    if not isinstance(reg_model, model.base.DummyModel):
         logger.write_model_summary(reg_model, (config.train.minibatch_size, config.model.dim_z), "reg")  # Other model
 
 
@@ -118,8 +120,7 @@ def train_config():
         parallel_device_ids.insert(0, config.train.main_cuda_device_idx)
     extended_ae_model = extended_ae_model.to(device)
     ae_model_parallel = nn.DataParallel(ae_model, device_ids=parallel_device_ids, output_device=device)
-    reg_model_parallel = (nn.DataParallel(reg_model, device_ids=parallel_device_ids, output_device=device)
-                          if reg_model is not None else None)
+    reg_model_parallel = nn.DataParallel(reg_model, device_ids=parallel_device_ids, output_device=device)
 
 
     # ========== Losses (criterion functions) ==========
@@ -165,6 +166,7 @@ def train_config():
     scalars = {  # Reconstruction loss (variable scale) + monitoring metrics comparable across all models
                'ReconsLoss/Backprop/Train': EpochMetric(), 'ReconsLoss/Backprop/Valid': EpochMetric(),
                'ReconsLoss/MSE/Train': EpochMetric(), 'ReconsLoss/MSE/Valid': EpochMetric(),
+                # TODO maybe don't add controls losses ?
                # 'ReconsLoss/SC/Train': EpochMetric(), 'ReconsLoss/SC/Valid': EpochMetric(),  # TODO
                # Controls losses used for backprop + monitoring metrics (quantized numerical loss, categorical accuracy)
                'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),
@@ -190,6 +192,7 @@ def train_config():
                'LatLoss/Valid_': logs.metrics.BufferedMetric(),
                'LatCorr/z0/Valid_': logs.metrics.BufferedMetric(),
                'LatCorr/zK/Valid_': logs.metrics.BufferedMetric(),
+                # TODO maybe don't add controls losses ?
                'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
                'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
                'epochs': config.train.start_epoch}
@@ -203,7 +206,7 @@ def train_config():
         optimizer = dict()  # type: dict[str, Optional[torch.optim.Optimizer]]
         for k in ['ae', 'reg']:
             m = ae_model if k == 'ae' else reg_model
-            if m is not None:
+            if not isinstance(m, model.base.DummyModel):  # FIXME use dummy optimizer?
                 optimizer[k] = torch.optim.Adam(m.parameters(), lr=config.train.initial_learning_rate[k],
                                                 weight_decay=config.train.weight_decay, betas=config.train.adam_betas)
             else:
@@ -214,7 +217,7 @@ def train_config():
         scheduler = dict()
         for k in ['ae', 'reg']:
             m = ae_model if k == 'ae' else reg_model
-            if m is not None:
+            if not isinstance(m, model.base.DummyModel):  # FIXME use dummy scheduler?
                 scheduler[k] = torch.optim.lr_scheduler.\
                     ReduceLROnPlateau(optimizer[k], factor=config.train.scheduler_lr_factor[k],
                                       patience=config.train.scheduler_patience[k],
@@ -255,25 +258,19 @@ def train_config():
         # when profiling is disabled: true no-op context manager, and prof is None
         with utils.profile.get_optional_profiler(config.train.profiler_args) as prof:
             ae_model_parallel.train()
-            if reg_model_parallel is not None:  # TODO use a dummy reg model? that does nothing during pretrain
-                reg_model_parallel.train()
+            reg_model_parallel.train()
             dataloader_iter = iter(dataloader['train'])
             for i in range(len(dataloader['train'])):
                 with profiler.record_function("DATA_LOAD") if is_profiled else contextlib.nullcontext():
                     sample = next(dataloader_iter)
-                    x_in = sample[0].to(device)
-                    v_in, sample_info = ((sample[1].to(device), sample[2].to(device)) if not pretrain
-                                         else (torch.zeros((1,), device=device), sample[1].to(device)))
+                    x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 with profiler.record_function("FORWARD") if is_profiled else contextlib.nullcontext():
                     optimizer['ae'].zero_grad()
                     if optimizer['reg'] is not None:
                         optimizer['reg'].zero_grad()
                     ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                     z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-                    if reg_model_parallel is not None:
-                        v_out = reg_model_parallel(z_K_sampled)   # TODO modèle qui retourne un bête zéro?
-                    else:
-                        v_out = torch.zeros((1,), device=device)
+                    v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
                 with profiler.record_function("LOSSES") if is_profiled else contextlib.nullcontext():
                     super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                     recons_loss = reconstruction_criterion(x_out, x_in)
@@ -307,7 +304,7 @@ def train_config():
                     (recons_loss + lat_loss + flow_input_loss + cont_loss).backward()  # Actual backpropagation is here
                 with profiler.record_function("OPTIM_STEP") if is_profiled else contextlib.nullcontext():
                     optimizer['ae'].step()  # Internal params. update; before scheduler step
-                    if optimizer['reg'] is not None:
+                    if optimizer['reg'] is not None:  # FIXME use dummy optimizers?
                         optimizer['reg'].step()
                 logger.on_minibatch_finished(i)
                 # For full-trace profiling: we need to stop after a few mini-batches
@@ -322,20 +319,15 @@ def train_config():
 
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
         with torch.no_grad():
-            __dbg_UIDs = list()  # TODO remove
             ae_model_parallel.eval()  # BN stops running estimates
             if reg_model_parallel is not None:
                 reg_model_parallel.eval()
             v_error = torch.Tensor().to(device=recons_loss.device)  # Params inference error (Tensorboard plot)
             for i, sample in enumerate(dataloader['validation']):
-                x_in = sample[0].to(device)
-                v_in, sample_info = ((sample[1].to(device), sample[2].to(device)) if not pretrain
-                                     else (torch.zeros((1,), device=device), sample[1].to(device)))
-                __dbg_UIDs += list(sample_info[:, 0].cpu().numpy())  # TODO remove
+                x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-                # TODO refactor (dummy model)
-                v_out = reg_model_parallel(z_K_sampled) if reg_model_parallel is not None else torch.zeros((1,), device=device)
+                v_out = reg_model_parallel(z_K_sampled)
                 super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                 recons_loss = reconstruction_criterion(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
@@ -344,17 +336,14 @@ def train_config():
                 # lat_loss *= scalars['Sched/beta'].get(epoch)  # Warmup factor: useless for monitoring
                 # Monitoring losses
                 scalars['ReconsLoss/MSE/Valid'].append(recons_loss)
-                if not pretrain:  # TODO déplacer tout ça dans un dummy reg model
+                if not pretrain:
                     scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
                     scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
-                if not pretrain:
                     if config.model.forward_controls_loss:  # unused params might be modified by this criterion
                         cont_loss = controls_criterion(v_out, v_in)
                     else:
                         cont_loss = controls_criterion(z_0_mu_logvar, v_in)
-                else:
-                    cont_loss = torch.zeros((1,), device=device)
-                scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
+                    scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
                 # Validation plots
                 if should_plot:
                     v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage
@@ -421,8 +410,7 @@ def train_config():
     del scheduler, optimizer
     del reg_model_parallel, ae_model_parallel
     del extended_ae_model, ae_model
-    if reg_model is not None:
-        del reg_model
+    del reg_model
     del controls_criterion, controls_num_eval_criterion, controls_accuracy_criterion, reconstruction_criterion
     del logger
     del dataloader, dataset

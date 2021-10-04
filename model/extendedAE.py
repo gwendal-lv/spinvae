@@ -8,6 +8,7 @@ from typing import Optional
 import torch.nn as nn
 
 from model import VAE
+import model.base
 import model.regression
 from data.preset import PresetIndexesHelper
 
@@ -28,7 +29,8 @@ class ExtendedAE(nn.Module):
     def is_flow_based_regression(self):
         if isinstance(self.reg_model, model.regression.FlowControlsRegression):
             return True
-        elif isinstance(self.reg_model, model.regression.MLPControlsRegression):
+        elif isinstance(self.reg_model, model.regression.MLPControlsRegression)\
+                or isinstance(self.reg_model, model.base.DummyModel):
             return False
         else:
             raise TypeError("Unrecognized synth params regression model")
