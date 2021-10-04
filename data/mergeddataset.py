@@ -157,7 +157,8 @@ class MergedDataset(AudioDataset):
     def get_dataloader(self, batch_size: int,
                        use_weighted_sampler=False, max_imbalance_ratio=10.0,
                        num_workers=0, persistent_workers=True, pin_memory=False):
-        """ Returns a dataloader properly configured to access this dataset.
+        """ Returns a dataloader properly configured to access this dataset, and the nb of items returns by this
+        dataloader for each epoch.
 
         :param batch_size: (PyTorch DataLoader arg)
         :param use_weighted_sampler: If True, the number of items from overrepresented synths available at each
@@ -196,8 +197,20 @@ class MergedDataset(AudioDataset):
             num_samples_after = sum([l for _, l in ds_len_after.items()])
             random_sampler = torch.utils.data.WeightedRandomSampler(weights=weights, num_samples=num_samples_after,
                                                                     generator=torch_rng)
-        return torch.utils.data.DataLoader(self, batch_size=batch_size, sampler=random_sampler, num_workers=num_workers,
-                                           pin_memory=pin_memory, drop_last=drop_last,
-                                           persistent_workers=((num_workers > 0) and persistent_workers))
+        # Actual nb of items depends on: wsampler or not, and drop_last or not
+        if not use_weighted_sampler:
+            if drop_last:
+                nb_dataloader_items = (len(self) // batch_size) * batch_size
+            else:
+                nb_dataloader_items = len(self)
+        else:
+            if drop_last:
+                nb_dataloader_items = (len(random_sampler) // batch_size) * batch_size
+            else:
+                nb_dataloader_items = len(random_sampler)
+        return (torch.utils.data.DataLoader(self, batch_size=batch_size, sampler=random_sampler, num_workers=num_workers,
+                                            pin_memory=pin_memory, drop_last=drop_last,
+                                            persistent_workers=((num_workers > 0) and persistent_workers)),
+                nb_dataloader_items)
 
 

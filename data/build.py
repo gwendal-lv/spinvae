@@ -3,6 +3,8 @@ Utility function for building datasets and dataloaders using given configuration
 """
 
 import sys
+import warnings
+
 import numpy as np
 
 import torch.utils.data
@@ -35,9 +37,17 @@ def get_dataset(model_config, train_config):
     model_config.synth_params_count = full_dataset.learnable_params_count
     model_config.learnable_params_tensor_length = full_dataset.learnable_params_tensor_length
     if model_config.params_regression_architecture.startswith("flow_"):
-        # ********************************* dim_z changes if a flow network is used *********************************
+        if model_config.dim_z != model_config.learnable_params_tensor_length:
+            warnings.warn("FlowControlsRegression model: dim_z must be changed from {} to {}"
+                          .format(model_config.dim_z, model_config.learnable_params_tensor_length))
         model_config.dim_z = model_config.learnable_params_tensor_length
     return full_dataset
+
+
+def get_pretrain_datasets(model_config, train_config):
+    train_ds = dataset.MergedDataset(model_config, dataset_type='train')
+    valid_ds = dataset.MergedDataset(model_config, dataset_type='validation')
+    return train_ds, valid_ds
 
 
 def get_num_workers(train_config):
@@ -56,7 +66,7 @@ def get_num_workers(train_config):
     return num_workers
 
 
-def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):
+def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):  # TODO model_config arg: pin_memory?
     """ Returns a dict of train/validation/test DataLoader instances, and a dict which contains the
     length of each sub-dataset. """
     # Num workers might be zero (no multiprocessing)
@@ -67,20 +77,46 @@ def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):
                                                          test_holdout_proportion=train_config.test_holdout_proportion)
     dataloaders = dict()
     sub_datasets_lengths = dict()
+    batch_size = train_config.minibatch_size
     for k, sampler in subset_samplers.items():
         # Last train minibatch must be dropped to help prevent training instability. Worst case example, last minibatch
         # contains only 8 elements, mostly sfx: these hard to learn (or generate) item would have a much higher
         # equivalent learning rate because all losses are minibatch-size normalized. No issue for eval though
         drop_last = (k.lower() == 'train')
         # Dataloaders based on previously built samplers
-        dataloaders[k] = torch.utils.data.DataLoader(full_dataset, batch_size=train_config.minibatch_size,
-                                                     sampler=sampler, num_workers=num_workers, pin_memory=False,
-                                                     persistent_workers=((num_workers > 0) and persistent_workers),
-                                                     drop_last=drop_last)
-        sub_datasets_lengths[k] = len(sampler.indices)
+        dataloaders[k] = torch.utils.data.DataLoader(full_dataset, batch_size=batch_size, drop_last=drop_last,
+                                                     sampler=sampler, num_workers=num_workers,
+                                                     pin_memory=train_config.dataloader_pin_memory,
+                                                     persistent_workers=((num_workers > 0) and persistent_workers))
+        # actual nb of dataloader items length depends on drop last, or not
+        if drop_last:
+            sub_datasets_lengths[k] = (len(sampler.indices) // batch_size) * batch_size
+        else:
+            sub_datasets_lengths[k] = len(sampler.indices)
         if train_config.verbosity >= 1:
             print("[data/build.py] Dataset '{}' contains {}/{} samples ({:.1f}%). num_workers={}"
                   .format(k, sub_datasets_lengths[k], len(full_dataset),
                           100.0 * sub_datasets_lengths[k]/len(full_dataset), num_workers))
     return dataloaders, sub_datasets_lengths
+
+
+def get_pretrain_dataloaders(model_config, train_config,
+                             train_ds: dataset.MergedDataset, valid_ds: dataset.MergedDataset):
+    """ Returns a dict with 'train' and 'validation' dataloaders, and the length or corresponding datasets
+     Return is consistent with get_split_dataloaders(...). """
+    use_wsampler = train_config.pretrain_synths_max_imbalance_ratio > 0.0  # Only for the training dataloader
+    imbalance_ratio = train_config.pretrain_synths_max_imbalance_ratio if use_wsampler else None
+    train_dl, train_nb_items = \
+        train_ds.get_dataloader(batch_size=train_config.minibatch_size, use_weighted_sampler=use_wsampler,
+                                max_imbalance_ratio=imbalance_ratio, num_workers=get_num_workers(train_config),
+                                pin_memory=train_config.dataloader_pin_memory,
+                                persistent_workers=train_config.dataloader_persistent_workers)
+    valid_dl, valid_nb_items = \
+        valid_ds.get_dataloader(batch_size=train_config.minibatch_size, use_weighted_sampler=False,
+                                max_imbalance_ratio=None,
+                                num_workers=get_num_workers(train_config),
+                                pin_memory=train_config.dataloader_pin_memory,
+                                persistent_workers=train_config.dataloader_persistent_workers)
+    return ({'train': train_dl, 'validation': valid_dl},
+            {'train': train_nb_items, 'validation': valid_nb_items})
 
