@@ -51,11 +51,13 @@ def build_ae_model(model_config, train_config):
         # No additional input regularization is allowed for basic VAE (ELBO Dkl regularization term only)
         assert train_config.latent_flow_input_regularization == 'None'
         ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
-                                train_config.latent_loss)
+                                train_config.latent_loss,
+                                train_config=train_config)
     else:
         ae_model = VAE.FlowVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
                                model_config.latent_flow_arch, concat_midi_to_z0=model_config.concat_midi_to_z,
-                               flows_internal_dropout_p=train_config.fc_dropout)
+                               flows_internal_dropout_p=train_config.fc_dropout,
+                               train_config=train_config)
     return encoder_model, decoder_model, ae_model
 
 
@@ -72,18 +74,20 @@ def build_extended_ae_model(model_config, train_config, idx_helper):
         assert model_config.forward_controls_loss is True  # Non-invertible MLP cannot inverse target values
         reg_arch = model_config.params_regression_architecture.replace("mlp_", "")
         reg_model = regression.MLPControlsRegression(reg_arch, model_config.dim_z, idx_helper, train_config.reg_fc_dropout,
-                                                     cat_softmax_activation=model_config.params_reg_softmax)
+                                                     cat_softmax_activation=model_config.params_reg_softmax,
+                                                     train_config=train_config)
     elif model_config.params_regression_architecture.startswith("flow_"):
         assert model_config.learnable_params_tensor_length > 0  # Flow models require dim_z to be equal to this length
         reg_arch = model_config.params_regression_architecture.replace("flow_", "")
         reg_model = regression.FlowControlsRegression(reg_arch, model_config.dim_z, idx_helper,
                                                       fast_forward_flow=model_config.forward_controls_loss,
                                                       dropout_p=train_config.reg_fc_dropout,
-                                                      cat_softmax_activation=model_config.params_reg_softmax)
+                                                      cat_softmax_activation=model_config.params_reg_softmax,
+                                                      train_config=train_config)
     else:
         raise NotImplementedError("Synth param regression arch '{}' not implemented"
                                   .format(model_config.params_regression_architecture))
-    extended_ae_model = extendedAE.ExtendedAE(ae_model, reg_model, idx_helper)
+    extended_ae_model = extendedAE.ExtendedAE(ae_model, reg_model)
     return encoder_model, decoder_model, ae_model, reg_model, extended_ae_model
 
 

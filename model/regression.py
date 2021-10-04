@@ -14,6 +14,7 @@ from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 
 from data.preset import PresetIndexesHelper
+import model.base
 import model.flows
 from model.flows import CustomRealNVP, InverseFlow
 
@@ -59,9 +60,10 @@ class PresetActivation(nn.Module):
 #    (whose coeffs will depend on the size of the one-hot sub-vector, to always get the same softmax activation)
 
 
-class MLPControlsRegression(nn.Module):
+class MLPControlsRegression(model.base.TrainableModel):
     def __init__(self, architecture, dim_z, idx_helper: PresetIndexesHelper, dropout_p=0.0,
-                 cat_softmax_activation=False):
+                 cat_softmax_activation=False,
+                 train_config=None):
         """
         :param architecture: MLP automatically built from architecture string. E.g. '3l1024' means
             3 hidden layers of 1024 neurons. Some options can be given after an underscore
@@ -70,7 +72,7 @@ class MLPControlsRegression(nn.Module):
         :param idx_helper:
         :param dropout_p:
         """
-        super().__init__()
+        super().__init__(train_config=train_config, model_type='reg')
         self.architecture = architecture.split('_')  # Split between base args and opt args (e.g. _nobn)
         self.dim_z = dim_z
         self.idx_helper = idx_helper  # Useless here?
@@ -103,9 +105,10 @@ class MLPControlsRegression(nn.Module):
         return self.reg_model(z_K)
 
 
-class FlowControlsRegression(nn.Module):
+class FlowControlsRegression(model.base.TrainableModel):
     def __init__(self, architecture, dim_z, idx_helper: PresetIndexesHelper, dropout_p=0.0,
-                 fast_forward_flow=True, cat_softmax_activation=False):
+                 fast_forward_flow=True, cat_softmax_activation=False,
+                 train_config=None):
         """
         :param architecture: Flow automatically built from architecture string. E.g. 'realnvp_16l200' means
             16 RealNVP flow layers with 200 hidden features each. Some options can be given after an underscore
@@ -118,7 +121,7 @@ class FlowControlsRegression(nn.Module):
             between layers, the flow can be trained only its 'fast' direction (which can be forward or inverse
             depending on this argument).
         """
-        super().__init__()
+        super().__init__(train_config=train_config, model_type='reg')
         self.dim_z = dim_z
         self.idx_helper = idx_helper
         self._fast_forward_flow = fast_forward_flow

@@ -25,7 +25,7 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "PreTrainVAE"
-model.run_name = 'dev_tests_2'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'dev_tests_3'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = False  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
@@ -110,7 +110,7 @@ train.k_folds = 5
 train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
-train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
+train.n_epochs = 22  # See update_dynamic_config_params().  16k sample dataset: set to 700
 # TODO train regression network alone when full-train has finished?
 train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
 # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
@@ -141,7 +141,7 @@ train.optimizer = 'Adam'
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
 # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
 train.initial_learning_rate = {'ae': 2e-4, 'reg': 2e-4}
-# Learning rate warmup (see https://arxiv.org/abs/1706.02677)
+# Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
 train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
 train.lr_warmup_start_factor = 0.1
 train.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)

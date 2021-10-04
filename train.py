@@ -10,7 +10,7 @@ See train_queue.py for enqueued training runs
 
 from pathlib import Path
 import contextlib
-from typing import Optional
+from typing import Optional, Dict, List
 
 import numpy as np
 import mkl
@@ -45,9 +45,10 @@ def train_config():
 
 
     # ========== Datasets and DataLoaders ==========
-    pretrain = config.train.pretrain_ae_only  # type: bool
-    if pretrain:
+    pretrain_vae = config.train.pretrain_ae_only  # type: bool
+    if pretrain_vae:
         train_audio_dataset, validation_audio_dataset = data.build.get_pretrain_datasets(config.model, config.train)
+        dataset = None
         # dataloader is a dict of 2 dataloaders ('train' and 'validation')
         dataloader, dataloaders_nb_items = data.build.get_pretrain_dataloaders(config.model, config.train,
                                                                                train_audio_dataset,
@@ -57,6 +58,7 @@ def train_config():
         # Must be constructed first because dataset output sizes will be required to automatically
         # infer models output sizes.
         dataset = data.build.get_dataset(config.model, config.train)
+        train_audio_dataset, validation_audio_dataset = None, None
         preset_indexes_helper = dataset.preset_indexes_helper
         # dataloader is a dict of 3 subsets dataloaders ('train', 'validation' and 'test')
         dataloader, dataloaders_nb_items = data.build.get_split_dataloaders(config.train, dataset)
@@ -68,7 +70,7 @@ def train_config():
     if logger.restart_from_checkpoint:
         model.build.check_configs_on_resume_from_checkpoint(config.model, config.train,
                                                             logger.get_previous_config_from_json())
-    if pretrain:
+    if pretrain_vae:
         if config.train.start_epoch > 0:  # Resume from checkpoint?
             raise NotImplementedError()  # TODO load the "pretrain" checkpoint"
             start_checkpoint = logs.logger.get_model_checkpoint(root_path, config.model, config.train.start_epoch - 1)
@@ -81,7 +83,7 @@ def train_config():
     # ========== Model definition (requires the full_dataset to be built) ==========
     # The extended_ae_model has all sub-models as attributes (even if some sub-models, e.g. synth controls regression,
     # are set to None during pre-training). Useful to change device or train/eval status of all models.
-    if pretrain:
+    if pretrain_vae:
         _, _, ae_model = model.build.build_ae_model(config.model, config.train)
         reg_model = model.base.DummyModel()
         extended_ae_model = model.extendedAE.ExtendedAE(ae_model, reg_model)
@@ -91,7 +93,7 @@ def train_config():
     if start_checkpoint is not None:
         # FIXME models should load the checkpoint themselves
         ae_model.load_state_dict(start_checkpoint['ae_model_state_dict'])  # GPU tensor params
-        if not pretrain:
+        if not pretrain_vae:
             raise NotImplementedError()
             # TODO separate ae and reg/extended ae models
             #    we should load the AE model from a different checkpoint ! and we need a new fct for that
@@ -130,7 +132,7 @@ def train_config():
         reconstruction_criterion = nn.MSELoss(reduction='mean')
     else:
         reconstruction_criterion = model.loss.L2Loss()
-    if not pretrain:
+    if not pretrain_vae:
         # Controls backprop loss
         if config.model.forward_controls_loss:  # usual straightforward loss - compares inference and target
             if config.train.params_cat_bceloss:
@@ -179,14 +181,15 @@ def train_config():
                'LatCorr/z0/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'z0'),
                'LatCorr/zK/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'zK'),
                'LatCorr/zK/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'zK'),
-               # Other misc. metrics  TODO different LRs for ae and reg models
-               'Sched/LR': SimpleMetric(config.train.initial_learning_rate),
+               # Other misc. metrics
                'Sched/LRwarmup': LinearDynamicParam(config.train.lr_warmup_start_factor, 1.0,
                                                     end_epoch=config.train.lr_warmup_epochs,
                                                     current_epoch=config.train.start_epoch),
-               'Sched/beta': LinearDynamicParam(config.train.beta_start_value, config.train.beta,
-                                                end_epoch=config.train.beta_warmup_epochs,
-                                                current_epoch=config.train.start_epoch)}
+               'Sched/Controls/LR': SimpleMetric(config.train.initial_learning_rate['reg']),
+               'Sched/VAE/LR': SimpleMetric(config.train.initial_learning_rate['ae']),
+               'Sched/VAE/beta': LinearDynamicParam(config.train.beta_start_value, config.train.beta,
+                                                    end_epoch=config.train.beta_warmup_epochs,
+                                                    current_epoch=config.train.start_epoch) }
     # Validation metrics have a '_' suffix to be different from scalars (tensorboard mixes them)
     metrics = {'ReconsLoss/MSE/Valid_': logs.metrics.BufferedMetric(),
                'LatLoss/Valid_': logs.metrics.BufferedMetric(),
@@ -200,33 +203,8 @@ def train_config():
 
 
     # ========== Optimizer and Scheduler ==========
-    # TODO optimizer différent selon pre-train ou pas ?????????????????????
-    extended_ae_model.train()
-    if config.train.optimizer == 'Adam':
-        optimizer = dict()  # type: dict[str, Optional[torch.optim.Optimizer]]
-        for k in ['ae', 'reg']:
-            m = ae_model if k == 'ae' else reg_model
-            if not isinstance(m, model.base.DummyModel):  # FIXME use dummy optimizer?
-                optimizer[k] = torch.optim.Adam(m.parameters(), lr=config.train.initial_learning_rate[k],
-                                                weight_decay=config.train.weight_decay, betas=config.train.adam_betas)
-            else:
-                optimizer[k] = None
-    else:
-        raise NotImplementedError()
-    if config.train.scheduler_name == 'ReduceLROnPlateau':
-        scheduler = dict()
-        for k in ['ae', 'reg']:
-            m = ae_model if k == 'ae' else reg_model
-            if not isinstance(m, model.base.DummyModel):  # FIXME use dummy scheduler?
-                scheduler[k] = torch.optim.lr_scheduler.\
-                    ReduceLROnPlateau(optimizer[k], factor=config.train.scheduler_lr_factor[k],
-                                      patience=config.train.scheduler_patience[k],
-                                      cooldown=config.train.scheduler_cooldown[k],
-                                      threshold=config.train.scheduler_threshold, verbose=(config.train.verbosity >= 2))
-            else:
-                scheduler[k] = None
-    else:
-        raise NotImplementedError()
+    ae_model.init_optimizer_and_scheduler()
+    reg_model.init_optimizer_and_scheduler()
     if start_checkpoint is not None:
         raise NotImplementedError()  # TODO handle pretrain/not cases (we won't load stats dict from the same checkpoint)
         optimizer.load_state_dict(start_checkpoint['optimizer_state_dict'])
@@ -249,10 +227,8 @@ def train_config():
 
         # = = = = = LR warmup (bypasses the scheduler during first epochs) = = = = =
         if epoch <= config.train.lr_warmup_epochs:
-            for k, opt in optimizer.items():  # TODO refactor
-                if opt is not None:
-                    for param_group in opt.param_groups:
-                        param_group['lr'] = scalars['Sched/LRwarmup'].get(epoch) * config.train.initial_learning_rate[k]
+            ae_model.learning_rate = scalars['Sched/LRwarmup'].get(epoch) * config.train.initial_learning_rate['ae']
+            reg_model.learning_rate = scalars['Sched/LRwarmup'].get(epoch) * config.train.initial_learning_rate['reg']
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =
         # when profiling is disabled: true no-op context manager, and prof is None
@@ -265,9 +241,8 @@ def train_config():
                     sample = next(dataloader_iter)
                     x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 with profiler.record_function("FORWARD") if is_profiled else contextlib.nullcontext():
-                    optimizer['ae'].zero_grad()
-                    if optimizer['reg'] is not None:
-                        optimizer['reg'].zero_grad()
+                    ae_model.optimizer.zero_grad()
+                    reg_model.optimizer.zero_grad()
                     ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                     z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                     v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
@@ -278,11 +253,11 @@ def train_config():
                     # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
                     lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
                     scalars['LatLoss/Train'].append(lat_loss)
-                    lat_loss *= scalars['Sched/beta'].get(epoch)
+                    lat_loss *= scalars['Sched/VAE/beta'].get(epoch)
                     # Monitoring losses
                     with torch.no_grad():
                         scalars['ReconsLoss/MSE/Train'].append(recons_loss)
-                        if not pretrain:  # TODO refactor....
+                        if not pretrain_vae:  # TODO refactor....
                             scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
                             scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
                     # Flow training stabilization loss?
@@ -291,7 +266,7 @@ def train_config():
                             (config.train.latent_flow_input_regularization.lower() == 'dkl'):
                         flow_input_loss = config.train.latent_flow_input_regul_weight * config.train.beta *\
                                           flow_input_dkl(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
-                    if not pretrain:
+                    if not pretrain_vae:
                         if config.model.forward_controls_loss:  # unused params might be modified by this criterion
                             cont_loss = controls_criterion(v_out, v_in)
                         else:
@@ -303,9 +278,8 @@ def train_config():
                 with profiler.record_function("BACKPROP") if is_profiled else contextlib.nullcontext():
                     (recons_loss + lat_loss + flow_input_loss + cont_loss).backward()  # Actual backpropagation is here
                 with profiler.record_function("OPTIM_STEP") if is_profiled else contextlib.nullcontext():
-                    optimizer['ae'].step()  # Internal params. update; before scheduler step
-                    if optimizer['reg'] is not None:  # FIXME use dummy optimizers?
-                        optimizer['reg'].step()
+                    ae_model.optimizer.step()  # Internal params. update; before scheduler step
+                    reg_model.optimizer.step()
                 logger.on_minibatch_finished(i)
                 # For full-trace profiling: we need to stop after a few mini-batches
                 if config.train.profiler_full_trace and i == 1:
@@ -336,7 +310,7 @@ def train_config():
                 # lat_loss *= scalars['Sched/beta'].get(epoch)  # Warmup factor: useless for monitoring
                 # Monitoring losses
                 scalars['ReconsLoss/MSE/Valid'].append(recons_loss)
-                if not pretrain:
+                if not pretrain_vae:
                     scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
                     scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
                     if config.model.forward_controls_loss:  # unused params might be modified by this criterion
@@ -356,26 +330,32 @@ def train_config():
                                                 + scalars['LatLoss/Valid'].get())
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
-        # TODO also handle reg model
-        scheduler['ae'].step(sum([scalars['{}/Valid'.format(loss_name)].get()
-                                  for loss_name in config.train.scheduler_losses['ae']]))
-        scalars['Sched/LR'] = logs.metrics.SimpleMetric(optimizer['ae'].param_groups[0]['lr'])
+        ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
+                                     for loss_name in config.train.scheduler_losses['ae']]))
+        if not pretrain_vae:
+            reg_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
+                                          for loss_name in config.train.scheduler_losses['reg']]))
+        scalars['Sched/VAE/LR'] = logs.metrics.SimpleMetric(ae_model.learning_rate)
+        if not pretrain_vae:
+            scalars['Sched/Controls/LR'] = logs.metrics.SimpleMetric(reg_model.learning_rate)
         # TODO replace early_stop by train_regression_only
-        early_stop = (optimizer['ae'].param_groups[0]['lr'] < config.train.early_stop_lr_threshold['ae'])  # Early stop?
+        # FIXME reactivate early stop
+        # early_stop = (optimizer['ae'].param_groups[0]['lr'] < config.train.early_stop_lr_threshold['ae'])  # Early stop?
+        early_stop = False  # TODO remove after proper implementation
         # TODO regression_train_plateau should be the new early-stop
 
         # = = = = = Epoch logs (scalars/sounds/images + updated metrics) = = = = =
         for k, s in scalars.items():  # All available scalars are written to tensorboard
             try:
                 logger.tensorboard.add_scalar(k, s.get(), epoch)  # .get might raise except if empty/unused scalar
-            except ValueError:
+            except ValueError:  # unused scalars with buffer (e.g. during pretrain) will raise that exception
                 pass
         if should_plot or early_stop:
             fig, _ = utils.figures.plot_latent_distributions_stats(latent_metric=super_metrics['LatentMetric/Valid'])
             logger.tensorboard.add_figure('LatentStats', fig, epoch)
             fig, _ = utils.figures.plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])
             logger.tensorboard.add_figure('LatentRhoCorr', fig, epoch)
-            if v_error.size(0) > 0 and not pretrain:  # u_error might be empty on early_stop
+            if v_error.size(0) > 0 and not pretrain_vae:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(), dataset.preset_indexes_helper)
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
             logger.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
@@ -385,7 +365,7 @@ def train_config():
         metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
         metrics['LatCorr/z0/Valid_'].append(scalars['LatCorr/z0/Valid'].get())
         metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
-        if not pretrain:  # TODO handle properly
+        if not pretrain_vae:  # TODO handle properly
             metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
             metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
         logger.tensorboard.update_metrics(metrics)
@@ -395,7 +375,8 @@ def train_config():
         # TODO properly save
         if (epoch > 0 and epoch % config.train.save_period == 0)\
                 or (epoch == config.train.n_epochs-1) or early_stop:
-            logger.save_checkpoint(epoch, extended_ae_model, optimizer, scheduler)  # FIXME
+            pass
+            #logger.save_checkpoint(epoch, extended_ae_model, optimizer, scheduler)  # FIXME
         logger.on_epoch_finished(epoch)
         if early_stop:
             print("[train.py] Training stopped early (final loss plateau)")
@@ -407,13 +388,13 @@ def train_config():
 
 
     # ========== "Manual GC" (to try to prevent random CUDA out-of-memory between enqueued runs ==========
-    del scheduler, optimizer
     del reg_model_parallel, ae_model_parallel
     del extended_ae_model, ae_model
     del reg_model
     del controls_criterion, controls_num_eval_criterion, controls_accuracy_criterion, reconstruction_criterion
     del logger
     del dataloader, dataset
+    del train_audio_dataset, validation_audio_dataset
 
 
 if __name__ == "__main__":

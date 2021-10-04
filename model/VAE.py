@@ -28,7 +28,7 @@ class BasicVAE(model.base.TrainableModel):
                  concat_midi_to_z0=False,
                  latent_loss_type: Optional[str] = None,
                  train_config=None):
-        super().__init__(train_config=train_config)
+        super().__init__(train_config=train_config, model_type='ae')
         # No size checks performed. Encoder and decoder must have been properly designed
         self.encoder = encoder
         self.dim_z = dim_z
