@@ -7,7 +7,7 @@ with small modifications to the config (enqueued train runs).
 
 See train_queue.py for enqueued training runs
 """
-
+import multiprocessing
 from pathlib import Path
 import contextlib
 from typing import Optional, Dict, List
@@ -320,29 +320,27 @@ def train_config():
                     scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
                 # Validation plots
                 if should_plot:
-                    v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage
+                    v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage - will be used later
                     if i == 0:  # tensorboard samples for minibatch 'eval' [0] only
-                        fig, _ = utils.figures.plot_train_spectrograms(x_in, x_out, sample_info,
-                                                                       validation_audio_dataset,
-                                                                       config.model, config.train)
-                    logger.tensorboard.add_figure('Spectrogram', fig, epoch, close=True)
+                        fig, _ = utils.figures.\
+                            plot_train_spectrograms(x_in, x_out, sample_info,
+                                                    dataset if dataset is not None else validation_audio_dataset,
+                                                    config.model, config.train)
+                        logger.tensorboard.add_figure('Spectrogram', fig, epoch, close=True)
+
         scalars['VAELoss/Valid'] = SimpleMetric(scalars['ReconsLoss/Backprop/Valid'].get()
                                                 + scalars['LatLoss/Valid'].get())
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
         ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
                                      for loss_name in config.train.scheduler_losses['ae']]))
+        scalars['Sched/VAE/LR'] = logs.metrics.SimpleMetric(ae_model.learning_rate)
         if not pretrain_vae:
             reg_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
                                           for loss_name in config.train.scheduler_losses['reg']]))
-        scalars['Sched/VAE/LR'] = logs.metrics.SimpleMetric(ae_model.learning_rate)
-        if not pretrain_vae:
             scalars['Sched/Controls/LR'] = logs.metrics.SimpleMetric(reg_model.learning_rate)
-        # TODO replace early_stop by train_regression_only
-        # FIXME reactivate early stop
-        # early_stop = (optimizer['ae'].param_groups[0]['lr'] < config.train.early_stop_lr_threshold['ae'])  # Early stop?
-        early_stop = False  # TODO remove after proper implementation
-        # TODO regression_train_plateau should be the new early-stop
+        # Possible early stop is reg model is not learning anything anymore
+        early_stop = (reg_model.learning_rate < config.train.early_stop_lr_threshold['reg'])
 
         # = = = = = Epoch logs (scalars/sounds/images + updated metrics) = = = = =
         for k, s in scalars.items():  # All available scalars are written to tensorboard
@@ -351,15 +349,10 @@ def train_config():
             except ValueError:  # unused scalars with buffer (e.g. during pretrain) will raise that exception
                 pass
         if should_plot or early_stop:
-            fig, _ = utils.figures.plot_latent_distributions_stats(latent_metric=super_metrics['LatentMetric/Valid'])
-            logger.tensorboard.add_figure('LatentStats', fig, epoch)
-            fig, _ = utils.figures.plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])
-            logger.tensorboard.add_figure('LatentRhoCorr', fig, epoch)
-            if v_error.size(0) > 0 and not pretrain_vae:  # u_error might be empty on early_stop
+            logger.plot_latent_stats_tensorboard(epoch, super_metrics)  # separate thread and process (-9s / plot epoch)
+            if v_error.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(), dataset.preset_indexes_helper)
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
-            logger.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
-            logger.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
         metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
@@ -384,7 +377,7 @@ def train_config():
 
 
     # ========== Logger final stats ==========
-    logger.on_training_finished()
+    logger.on_training_finished()  # Might have to wait for threads
 
 
     # ========== "Manual GC" (to try to prevent random CUDA out-of-memory between enqueued runs ==========

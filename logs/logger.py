@@ -1,20 +1,24 @@
-
+import copy
+import multiprocessing
+import threading
 import os
+import sys
 import time
 import shutil
 import json
 import datetime
 import pathlib
+from typing import List, Optional
 
 import numpy as np
 import torch
+import torchinfo
 
 import humanize
 
-import torch
-
-import torchinfo
-
+from data.abstractbasedataset import AudioDataset
+import utils
+import utils.figures
 from .tbwriter import TensorboardSummaryWriter  # Custom modified summary writer
 
 _erase_security_time_s = 5.0
@@ -84,7 +88,8 @@ class RunLogger:
 
      See ../README.md to get more info on storage location.
      """
-    def __init__(self, root_path, model_config, train_config, minibatches_count=0):
+    def __init__(self, root_path, model_config, train_config, minibatches_count=0,
+                 use_multiprocessing=True):
         """
 
         :param root_path: pathlib.Path of the project's root folder
@@ -141,6 +146,11 @@ class RunLogger:
         # - - - - - Tensorboard - - - - -
         self.tensorboard = TensorboardSummaryWriter(log_dir=self.tensorboard_run_dir, flush_secs=5,
                                                     model_config=model_config, train_config=train_config)
+        # - - - - - Multi-processed plotting (plot time: approx. 20s / plotted epoch) - - - - -
+        # Use multiprocessing if required by args, and if PyCharm debugger not detected
+        self.use_multiprocessing = use_multiprocessing and (not (sys.gettrace() is not None))
+        # Processes will be started and joined from those threads
+        self.figures_threads = [None, None]  # type: List[Optional[threading.Thread]]
 
     @staticmethod
     def _make_dirs_if_dont_exist(dir_path):
@@ -197,6 +207,7 @@ class RunLogger:
         if save_full_trace:
             prof.export_chrome_trace(self.run_dir.joinpath('profiling_chrome_trace.json'))
 
+    # TODO move this to the models. Only retrieve the checkpoint Path? (known to this class).
     def save_checkpoint(self, epoch, ae_model, optimizer, scheduler, reg_model=None):
         checkpoint_dict = {'epoch': epoch, 'ae_model_state_dict': ae_model.state_dict(),
                            'optimizer_state_dict': optimizer.state_dict(),
@@ -223,10 +234,50 @@ class RunLogger:
                           remaining_datetime, humanize.naturaldelta(remaining_datetime)))
 
     def on_training_finished(self):
+        # wait for all plotting threads to join
+        print("[logger.py] Waiting for tensorboard plotting threads to join...")
+        for t in self.figures_threads:
+            if t is not None:
+                t.join()
         # TODO write training stats
         self.tensorboard.flush()
         self.tensorboard.close()
         if self.train_config.verbosity >= 1:
             print("[RunLogger] Training has finished")
+
+    def plot_latent_stats_tensorboard(self, epoch, super_metrics):
+        if self.figures_threads[0] is not None:
+            self.figures_threads[0].join()
+        # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
+        self.figures_threads[0] = threading.Thread(target=self._plot_latent_stats_thread,
+                                                   args=(copy.deepcopy(epoch),
+                                                         copy.deepcopy(super_metrics)))
+        self.figures_threads[0].start()
+
+    def _get_latent_stats_figures(self, epoch, super_metrics):
+        fig0, _ = utils.figures.plot_latent_distributions_stats(latent_metric=super_metrics['LatentMetric/Valid'])
+        fig1, _ = utils.figures.plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])
+        return [fig0, fig1]
+
+    def _plot_latent_stats_thread(self, epoch, super_metrics):
+        if not self.use_multiprocessing:
+            figs = self._get_latent_stats_figures(epoch, super_metrics)
+        else:
+            q = multiprocessing.Queue()
+            p = multiprocessing.Process(target=self._get_latent_figs_multiproc, args=(q, epoch, super_metrics))
+            p.start()
+            figs = q.get()  # Will block until an item is available
+            p.join()
+
+        self.tensorboard.add_figure('LatentStats', figs[0], epoch)
+        self.tensorboard.add_figure('LatentRhoCorr', figs[1], epoch)
+        # Those plots do not need to be here, but multi threading might help improve perfs a bit...
+        self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
+        self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+
+    def _get_latent_figs_multiproc(self, q: multiprocessing.Queue, epoch, super_metrics):
+        q.put(self._get_latent_stats_figures(epoch, super_metrics))
+
+
 
 

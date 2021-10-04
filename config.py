@@ -25,8 +25,8 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "PreTrainVAE"
-model.run_name = 'dev_tests_3'  # run: different hyperparams, optimizer, etc... for a given model
-model.allow_erase_run = False  # If True, a previous run with identical name will be erased before training
+model.run_name = 'dev_tests_5'  # run: different hyperparams, optimizer, etc... for a given model
+model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
 # ---------------------------------------- General Architecture --------------------------------------------
@@ -110,7 +110,7 @@ train.k_folds = 5
 train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
-train.n_epochs = 22  # See update_dynamic_config_params().  16k sample dataset: set to 700
+train.n_epochs = 30  # See update_dynamic_config_params().  16k sample dataset: set to 700
 # TODO train regression network alone when full-train has finished?
 train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
 # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
@@ -155,6 +155,7 @@ train.scheduler_patience = {'ae': 15, 'reg': 6}
 train.scheduler_cooldown = {'ae': 15, 'reg': 6}
 train.scheduler_threshold = 1e-4
 # Training considered "dead" when dynamic LR reaches this value (or the initial LR multiplied by the following ratios)
+# Early stop is currently used for the regression loss only
 train.early_stop_lr_ratio = {'ae': 1e-3, 'reg': 1e-3}
 train.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 
