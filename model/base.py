@@ -7,6 +7,23 @@ import torch.nn as nn
 
 
 
+class TrainableModel(nn.Module):
+    def __init__(self, train_config=None):
+        super().__init__()
+     # TODO init
+
+    @property
+    def optimizer(self):
+        return None
+
+    @property
+    def scheduler(self):
+        return None
+
+    # TODO méthodes de load/save from checkpoint
+
+
+
 class DummyModel(nn.Module):
     def __init__(self, output_size=(1, )):
         """
@@ -18,4 +35,5 @@ class DummyModel(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return torch.zeros(self.output_size, device=x.device)
+
 
