@@ -59,7 +59,8 @@ class MergedDataset(AudioDataset):
                                                   exclude_sonic_qualities=['reverb'],
                                                   force_include_all_acoustic=True,
                                                   data_augmentation=self._data_augmentation,
-                                                  random_seed=self._random_seed),
+                                                  random_seed=self._random_seed,
+                                                  required_midi_notes=model_config.required_dataset_midi_notes),
                           }
         # Dataset items that belong to the current config (full/train/valid)
         self._local_indexes = {'NSynth': np.arange(len(self._datasets['NSynth']))}  # NSynth already configured
