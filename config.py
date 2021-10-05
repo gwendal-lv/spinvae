@@ -25,7 +25,7 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "PreTrainVAE"
-model.run_name = 'dev_tests_5'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'profiler_test_5'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
@@ -181,10 +181,10 @@ train.logged_samples_count = 4  # See update_dynamic_config_params()
 # ------------------------------------------ Performance and Profiling ----------------------------------------------
 train.dataloader_pin_memory = False
 train.dataloader_persistent_workers = True
-train.profiler_args = {'enabled': False, 'use_cuda': True, 'record_shapes': False,
-                       'profile_memory': False, 'with_stack': False}
-train.profiler_full_trace = False  # If True, runs only a few batches then exits - but saves a fully detailed trace.json
-train.profiler_1_GPU = False  # Profiling on only 1 GPU allow a much better understanding of trace.json
+train.profiler_enabled = True
+train.profiler_epoch_to_record = 0  # The profiler will record a few minibatches of this given epoch
+train.profiler_kwargs = {'record_shapes': True, 'with_stack': True}
+train.profiler_schedule_kwargs = {'skip_first': 5, 'wait': 1, 'warmup': 1, 'active': 3, 'repeat': 2}
 
 
 

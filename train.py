@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim
-from torch.autograd import profiler
+import torch.profiler
 
 import config
 import model.base
@@ -110,9 +110,7 @@ def train_config():
               .format(mkl.get_max_threads(), torch.get_num_threads(), torch.cuda.device_count()))
     if torch.cuda.device_count() == 0:
         raise NotImplementedError()  # CPU training not available
-    elif torch.cuda.device_count() == 1 or config.train.profiler_1_GPU:
-        if config.train.profiler_1_GPU:
-            print("Using 1/{} GPUs for code profiling".format(torch.cuda.device_count()))
+    elif torch.cuda.device_count() == 1:
         device = 'cuda:0'
         parallel_device_ids = [0]  # "Parallel" 1-GPU model
     else:
@@ -212,8 +210,7 @@ def train_config():
 
 
     # ========== PyTorch Profiling (optional) ==========
-    is_profiled = config.train.profiler_args['enabled']
-    extended_ae_model.is_profiled = is_profiled
+    optional_profiler = utils.profile.OptionalProfiler(config.train, logger.tensorboard_run_dir)
 
 
     # ========== Model training epochs ==========
@@ -232,62 +229,54 @@ def train_config():
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =
         # when profiling is disabled: true no-op context manager, and prof is None
-        with utils.profile.get_optional_profiler(config.train.profiler_args) as prof:
+        with optional_profiler.get_prof(epoch) as prof:
             ae_model_parallel.train()
             reg_model_parallel.train()
             dataloader_iter = iter(dataloader['train'])
             for i in range(len(dataloader['train'])):
-                with profiler.record_function("DATA_LOAD") if is_profiled else contextlib.nullcontext():
-                    sample = next(dataloader_iter)
-                    x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
-                with profiler.record_function("FORWARD") if is_profiled else contextlib.nullcontext():
-                    ae_model.optimizer.zero_grad()
-                    reg_model.optimizer.zero_grad()
-                    ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
-                    z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-                    v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
-                with profiler.record_function("LOSSES") if is_profiled else contextlib.nullcontext():
-                    super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
-                    recons_loss = reconstruction_criterion(x_out, x_in)
-                    scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
-                    # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
-                    lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
-                    scalars['LatLoss/Train'].append(lat_loss)
-                    lat_loss *= scalars['Sched/VAE/beta'].get(epoch)
-                    # Monitoring losses
-                    with torch.no_grad():
-                        scalars['ReconsLoss/MSE/Train'].append(recons_loss)
-                        if not pretrain_vae:  # TODO refactor....
-                            scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
-                            scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
-                    # Flow training stabilization loss?
-                    flow_input_loss = torch.tensor([0.0], device=lat_loss.device)
-                    if extended_ae_model.is_flow_based_latent_space and\
-                            (config.train.latent_flow_input_regularization.lower() == 'dkl'):
-                        flow_input_loss = config.train.latent_flow_input_regul_weight * config.train.beta *\
-                                          flow_input_dkl(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
+                sample = next(dataloader_iter)
+                x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+                ae_model.optimizer.zero_grad()
+                reg_model.optimizer.zero_grad()
+                ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
+                z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
+                v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
+                # Losses
+                super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
+                recons_loss = reconstruction_criterion(x_out, x_in)
+                scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
+                # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
+                lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
+                scalars['LatLoss/Train'].append(lat_loss)
+                lat_loss *= scalars['Sched/VAE/beta'].get(epoch)
+                with torch.no_grad():  # Monitoring-only losses
+                    scalars['ReconsLoss/MSE/Train'].append(recons_loss)
                     if not pretrain_vae:
-                        if config.model.forward_controls_loss:  # unused params might be modified by this criterion
-                            cont_loss = controls_criterion(v_out, v_in)
-                        else:
-                            cont_loss = controls_criterion(z_0_mu_logvar, v_in)
-                        scalars['Controls/BackpropLoss/Train'].append(cont_loss)
+                        scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
+                        scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
+                # Flow training stabilization loss?
+                flow_input_loss = torch.tensor([0.0], device=lat_loss.device)
+                if extended_ae_model.is_flow_based_latent_space and\
+                        (config.train.latent_flow_input_regularization.lower() == 'dkl'):
+                    flow_input_loss = config.train.latent_flow_input_regul_weight * config.train.beta *\
+                                      flow_input_dkl(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
+                if not pretrain_vae:
+                    if config.model.forward_controls_loss:  # unused params might be modified by this criterion
+                        cont_loss = controls_criterion(v_out, v_in)
                     else:
-                        cont_loss = torch.zeros((1,), device=device)
-                    utils.exception.check_nan_values(epoch, recons_loss, lat_loss, flow_input_loss, cont_loss)
-                with profiler.record_function("BACKPROP") if is_profiled else contextlib.nullcontext():
-                    (recons_loss + lat_loss + flow_input_loss + cont_loss).backward()  # Actual backpropagation is here
-                with profiler.record_function("OPTIM_STEP") if is_profiled else contextlib.nullcontext():
-                    ae_model.optimizer.step()  # Internal params. update; before scheduler step
-                    reg_model.optimizer.step()
+                        cont_loss = controls_criterion(z_0_mu_logvar, v_in)
+                    scalars['Controls/BackpropLoss/Train'].append(cont_loss)
+                else:
+                    cont_loss = torch.zeros((1,), device=device)
+                utils.exception.check_nan_values(epoch, recons_loss, lat_loss, flow_input_loss, cont_loss)
+                # Backprop and optim step
+                (recons_loss + lat_loss + flow_input_loss + cont_loss).backward()  # Actual backpropagation is here
+                ae_model.optimizer.step()  # Internal params. update; before scheduler step
+                reg_model.optimizer.step()
+                # End of mini-batch (step)
                 logger.on_minibatch_finished(i)
-                # For full-trace profiling: we need to stop after a few mini-batches
-                if config.train.profiler_full_trace and i == 1:
-                    break
-        if prof is not None:
-            logger.save_profiler_results(prof, config.train.profiler_full_trace)
-        if config.train.profiler_full_trace:
-            break  # Forced training stop
+                if prof is not None:
+                    prof.step()
         scalars['VAELoss/Train'] = SimpleMetric(scalars['ReconsLoss/Backprop/Train'].get()
                                                 + scalars['LatLoss/Train'].get())
 

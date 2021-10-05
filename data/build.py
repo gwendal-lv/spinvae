@@ -54,9 +54,7 @@ def get_num_workers(train_config):
     """ Returns the appropriate number of multi-processing workers (might be 0) depending on the current config
      and debugging status. """
     _debugger = False
-    if train_config.profiler_args['enabled'] and train_config.profiler_args['use_cuda']:
-        num_workers = 0  # CUDA PyTorch profiler does not work with a multiprocess-dataloader
-    elif sys.gettrace() is not None:
+    if sys.gettrace() is not None:
         _debugger = True
         print("[data/build.py] Debugger detected - num_workers=0 for all DataLoaders")
         num_workers = 0  # PyCharm debug behaves badly with multiprocessing...

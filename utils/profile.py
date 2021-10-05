@@ -1,37 +1,30 @@
 
 import contextlib
-from torch.autograd import profiler
+from pathlib import Path
+
+import torch.profiler
 
 
-def get_optional_profiler(profiler_args):
-    """ Can return an ActualProfiler, or a NoProfiler that really does nothing when disabled.
 
-    PyTorch might implement this in some way, but record_function(..) in profiler.py
-    actually creates an 'handle-tensor' """
-    if profiler_args['enabled']:
-        return ActualProfiler(profiler_args)
-    else:
-        return NoProfiler(profiler_args)
+class OptionalProfiler:
+    def __init__(self, train_config, tensorboard_run_dir: Path):
+        self.enabled = train_config.profiler_enabled
+        self.verbosity = train_config.verbosity
+        self.prof_kwargs = train_config.profiler_kwargs
+        self.prof_sched_kwargs = train_config.profiler_schedule_kwargs
+        self.epoch_to_profile = train_config.profiler_epoch_to_record
+        self.tensorboard_run_dir = tensorboard_run_dir
 
+    def get_prof(self, epoch):
+        """ Might return an torch.profile.profiler, or a NoProfiler if this epoch is not to be recorded. """
+        if self.enabled and epoch == self.epoch_to_profile:
+            if self.verbosity > 0:
+                print("Profiling epoch {}. Log dir: {}".format(epoch, self.tensorboard_run_dir))
+            return torch.profiler.profile(
+                schedule=(torch.profiler.schedule(**self.prof_sched_kwargs)),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(self.tensorboard_run_dir),
+                **self.prof_kwargs
+            )
+        else:
+            return contextlib.nullcontext()
 
-class ActualProfiler(profiler.profile):
-    def __init__(self, profiler_args):
-        """ Creates a PyTorch profile class instance, with a few added methods """
-        super().__init__(**profiler_args)
-        assert profiler_args['enabled']  # This class is not intended to be used as a disabled profiler
-
-    def record_function(self, name):
-        """ Function for compatibility with NoProfiler (not static to prevent static call) """
-        return profiler.record_function(name)
-
-
-class NoProfiler(contextlib.nullcontext):
-    """ Class that actualy does nothing, but which can be called as an ActualProfiler """
-    def __init__(self, profiler_args=None):
-        super().__init__()
-        if profiler_args is not None:
-            assert not profiler_args['enabled']  # This class should be used for disabled profiling use cases
-        self.enabled = False
-
-    def record_function(self, name):
-        return contextlib.nullcontext()

@@ -198,15 +198,6 @@ class RunLogger:
                                                              int(1000.0 * self.minibatch_duration_running_avg)))
         self.last_minibatch_start_datetime = minibatch_end_time
 
-    def save_profiler_results(self, prof, save_full_trace=False):
-        """ Saves (overwrites) current profiling results.
-        Warning: do not save full trace for long learning (approx. 10MB per **mini_batch**) """
-        # TODO Write several .txt files with different sort methods
-        with open(self.run_dir.joinpath('profiling_by_cuda_time.txt'), 'w') as f:
-            f.write(prof.key_averages(group_by_stack_n=5).table(sort_by='cuda_time_total').__str__())
-        if save_full_trace:
-            prof.export_chrome_trace(self.run_dir.joinpath('profiling_chrome_trace.json'))
-
     # TODO move this to the models. Only retrieve the checkpoint Path? (known to this class).
     def save_checkpoint(self, epoch, ae_model, optimizer, scheduler, reg_model=None):
         checkpoint_dict = {'epoch': epoch, 'ae_model_state_dict': ae_model.state_dict(),
@@ -244,6 +235,8 @@ class RunLogger:
         self.tensorboard.close()
         if self.train_config.verbosity >= 1:
             print("[RunLogger] Training has finished")
+
+    # - - - - - Multi threaded + multiprocessing plots to tensorboard - - - - -
 
     def plot_latent_stats_tensorboard(self, epoch, super_metrics):
         if self.figures_threads[0] is not None:
