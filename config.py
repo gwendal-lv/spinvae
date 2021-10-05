@@ -25,7 +25,7 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "PreTrainVAE"
-model.run_name = 'profiler_test_5'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'chkpt_test'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
@@ -104,14 +104,13 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 train = _Config()
 train.start_datetime = datetime.datetime.now().isoformat()
 train.minibatch_size = 160  # 160
-train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
+train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
 train.current_k_fold = 0
-train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
+train.start_epoch = 10  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
-train.n_epochs = 30  # See update_dynamic_config_params().  16k sample dataset: set to 700
-# TODO train regression network alone when full-train has finished?
+train.n_epochs = 50  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
 # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
 # more than 30x more instruments than NSynth). All available data will always be used for validation.
@@ -181,7 +180,7 @@ train.logged_samples_count = 4  # See update_dynamic_config_params()
 # ------------------------------------------ Performance and Profiling ----------------------------------------------
 train.dataloader_pin_memory = False
 train.dataloader_persistent_workers = True
-train.profiler_enabled = True
+train.profiler_enabled = False
 train.profiler_epoch_to_record = 0  # The profiler will record a few minibatches of this given epoch
 train.profiler_kwargs = {'record_shapes': True, 'with_stack': True}
 train.profiler_schedule_kwargs = {'skip_first': 5, 'wait': 1, 'warmup': 1, 'active': 3, 'repeat': 2}

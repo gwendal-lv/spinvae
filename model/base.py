@@ -91,7 +91,15 @@ class TrainableModel(nn.Module):
     def scheduler(self):
         return self._scheduler
 
-    # TODO méthodes de load/save from checkpoint
+    def load_checkpoint(self, checkpoint):
+        if self.model_type is None:
+            raise AssertionError("Cannot load a checkpoint for this dummy None model.")
+        # The checkpoint might contain info for different model types
+        sub_checkpoint = checkpoint[self.model_type]
+        # Dict keys are defined in logs/logger.py, RunLogger::save_checkpoint(...)
+        self.load_state_dict(sub_checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(sub_checkpoint['optimizer_state_dict'])
+        self.scheduler.load_state_dict(sub_checkpoint['scheduler_state_dict'])
 
 
 

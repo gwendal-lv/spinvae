@@ -70,14 +70,6 @@ def train_config():
     if logger.restart_from_checkpoint:
         model.build.check_configs_on_resume_from_checkpoint(config.model, config.train,
                                                             logger.get_previous_config_from_json())
-    if pretrain_vae:
-        if config.train.start_epoch > 0:  # Resume from checkpoint?
-            raise NotImplementedError()  # TODO load the "pretrain" checkpoint"
-            start_checkpoint = logs.logger.get_model_checkpoint(root_path, config.model, config.train.start_epoch - 1)
-        else:
-            start_checkpoint = None
-    else:
-        raise NotImplementedError()  # TODO  we should load the AE model from a different checkpoint
 
 
     # ========== Model definition (requires the full_dataset to be built) ==========
@@ -90,13 +82,6 @@ def train_config():
     else:
         _, _, ae_model, reg_model, extended_ae_model = model.build.build_extended_ae_model(config.model, config.train,
                                                                                            preset_indexes_helper)
-    if start_checkpoint is not None:
-        # FIXME models should load the checkpoint themselves
-        ae_model.load_state_dict(start_checkpoint['ae_model_state_dict'])  # GPU tensor params
-        if not pretrain_vae:
-            raise NotImplementedError()
-            # TODO separate ae and reg/extended ae models
-            #    we should load the AE model from a different checkpoint ! and we need a new fct for that
     extended_ae_model.eval()
     # will write tensorboard graph and torchinfo txt summary. model must not be parallel
     logger.init_with_model(ae_model, config.model.input_tensor_size)  # main model: autoencoder
@@ -121,6 +106,24 @@ def train_config():
     extended_ae_model = extended_ae_model.to(device)
     ae_model_parallel = nn.DataParallel(ae_model, device_ids=parallel_device_ids, output_device=device)
     reg_model_parallel = nn.DataParallel(reg_model, device_ids=parallel_device_ids, output_device=device)
+
+
+    # ========== Optimizer and Scheduler ==========
+    ae_model.init_optimizer_and_scheduler()
+    reg_model.init_optimizer_and_scheduler()
+
+
+    # ========== Load weights from pre-trained models? ==========
+    if pretrain_vae:
+        if logger.restart_from_checkpoint:
+            start_checkpoint = logs.logger.get_model_checkpoint(root_path, config.model, config.train.start_epoch - 1)
+            ae_model.load_checkpoint(start_checkpoint)
+    else:
+        if not logger.restart_from_checkpoint:
+            raise NotImplementedError()  # TODO load VAE from a different path (must be given)
+        else:
+            raise NotImplementedError()  # TODO  load ae+reg weights
+
 
 
     # ========== Losses (criterion functions) ==========
@@ -198,15 +201,6 @@ def train_config():
                'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
                'epochs': config.train.start_epoch}
     logger.tensorboard.init_hparams_and_metrics(metrics)  # hparams added knowing config.*
-
-
-    # ========== Optimizer and Scheduler ==========
-    ae_model.init_optimizer_and_scheduler()
-    reg_model.init_optimizer_and_scheduler()
-    if start_checkpoint is not None:
-        raise NotImplementedError()  # TODO handle pretrain/not cases (we won't load stats dict from the same checkpoint)
-        optimizer.load_state_dict(start_checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(start_checkpoint['scheduler_state_dict'])
 
 
     # ========== PyTorch Profiling (optional) ==========
@@ -352,13 +346,10 @@ def train_config():
             metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
         logger.tensorboard.update_metrics(metrics)
 
-
         # = = = = = Model+optimizer(+scheduler) save - ready for next epoch = = = = =
-        # TODO properly save
         if (epoch > 0 and epoch % config.train.save_period == 0)\
                 or (epoch == config.train.n_epochs-1) or early_stop:
-            pass
-            #logger.save_checkpoint(epoch, extended_ae_model, optimizer, scheduler)  # FIXME
+            logger.save_checkpoint(epoch, ae_model, (None if pretrain_vae else reg_model))
         logger.on_epoch_finished(epoch)
         if early_stop:
             print("[train.py] Training stopped early (final loss plateau)")

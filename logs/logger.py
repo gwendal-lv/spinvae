@@ -17,6 +17,7 @@ import torchinfo
 import humanize
 
 from data.abstractbasedataset import AudioDataset
+import model.base
 import utils
 import utils.figures
 from .tbwriter import TensorboardSummaryWriter  # Custom modified summary writer
@@ -31,11 +32,12 @@ def get_model_run_directory(root_path, model_config):
         .joinpath(model_config.name).joinpath(model_config.run_name)
 
 
-def get_model_checkpoint(root_path: pathlib.Path, model_config, epoch, device=None):
-    """ Returns the path to a .tar saved checkpoint, or prints all available checkpoints and raises an exception
-    if the required epoch has no saved .tar checkpoint. """
-    checkpoints_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)\
+def get_model_checkpoints_dir(root_path: pathlib.Path, model_config):
+    return root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)\
         .joinpath(model_config.run_name).joinpath('checkpoints')
+
+
+def get_model_checkpoint_from_dir(checkpoints_dir: pathlib.Path, epoch, device=None):
     checkpoint_path = checkpoints_dir.joinpath('{:05d}.tar'.format(epoch))
     try:
         if device is None:
@@ -49,6 +51,13 @@ def get_model_checkpoint(root_path: pathlib.Path, model_config, epoch, device=No
     return checkpoint
 
 
+def get_model_checkpoint(root_path: pathlib.Path, model_config, epoch, device=None):
+    """ Returns the path to a .tar saved checkpoint, or prints all available checkpoints and raises an exception
+    if the required epoch has no saved .tar checkpoint. """
+    checkpoints_dir = get_model_checkpoints_dir(root_path, model_config)
+    return get_model_checkpoint_from_dir(checkpoints_dir, epoch, device)
+
+
 def get_model_last_checkpoint(root_path: pathlib.Path, model_config, verbose=True, device=None):
     checkpoints_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)\
         .joinpath(model_config.run_name).joinpath('checkpoints')
@@ -57,6 +66,9 @@ def get_model_last_checkpoint(root_path: pathlib.Path, model_config, verbose=Tru
     if verbose:
         print("Loading epoch {} from {}".format(max(available_epochs), checkpoints_dir))
     return get_model_checkpoint(root_path, model_config, max(available_epochs), device)
+
+
+
 
 
 def get_tensorboard_run_directory(root_path, model_config):
@@ -198,16 +210,22 @@ class RunLogger:
                                                              int(1000.0 * self.minibatch_duration_running_avg)))
         self.last_minibatch_start_datetime = minibatch_end_time
 
-    # TODO move this to the models. Only retrieve the checkpoint Path? (known to this class).
-    def save_checkpoint(self, epoch, ae_model, optimizer, scheduler, reg_model=None):
-        checkpoint_dict = {'epoch': epoch, 'ae_model_state_dict': ae_model.state_dict(),
-                           'optimizer_state_dict': optimizer.state_dict(),
-                           'scheduler_state_dict': scheduler.state_dict()}
+    def save_checkpoint(self, epoch, ae_model: model.base.TrainableModel,
+                        reg_model: Optional[model.base.TrainableModel] = None):
+        # These keys will be re-used by model/base.py, TrainableModel::load_checkpoint(...)
+        checkpoint_dict = {'epoch': epoch,
+                           'ae': {'model_state_dict': ae_model.state_dict(),
+                                  'optimizer_state_dict': ae_model.optimizer.state_dict(),  # TODO maybe optional?
+                                  'scheduler_state_dict': ae_model.scheduler.state_dict()}}
         if reg_model is not None:
-            checkpoint_dict['reg_model_state_dict'] = reg_model
-        torch.save(checkpoint_dict, self.checkpoints_dir.joinpath('{:05d}.tar'.format(epoch)))
-
-    # TODO load checkpoint method????
+            checkpoint_dict['reg'] = {'model_state_dict': reg_model.state_dict(),
+                                      'optimizer_state_dict': reg_model.optimizer.state_dict(),
+                                      'scheduler_state_dict': reg_model.scheduler.state_dict()}
+        checkpoint_path = self.checkpoints_dir.joinpath('{:05d}.tar'.format(epoch))
+        torch.save(checkpoint_dict, checkpoint_path)
+        if self.verbosity >= 1:
+            print("[RunLogger] Saved epoch {} checkpoint (models, optimizers, schedulers) to {}"
+                  .format(epoch, checkpoint_path))
 
     def on_epoch_finished(self, epoch):
         self.epoch_start_datetimes.append(datetime.datetime.now())
