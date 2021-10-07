@@ -53,7 +53,6 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['kfold'] = self.train_config.current_k_fold
         self.hparams_domain_discrete['kfold'] = list(range(self.train_config.k_folds))
         self.hyper_params['wdecay'] = self.train_config.weight_decay
-        self.hyper_params['VAE_FCdrop'] = self.train_config.fc_dropout
         self.hyper_params['synth'] = self.model_config.synth
         self.hyper_params['syntargs'] = self.model_config.synth_args_str
         self.hyper_params['nmidi'] = '{}{}'.format(len(self.model_config.midi_notes),
@@ -63,6 +62,7 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         # Latent space hparams
         self.hyper_params['z_dim'] = self.model_config.dim_z
         self.hyper_params['latloss'] = self.train_config.latent_loss
+        self.hyper_params['latbeta'] = self.train_config.beta
         self.hyper_params['ncontrols'] = self.model_config.synth_params_count
         # self.hyper_params['contloss'] = self.model_config.controls_losses
         self.hyper_params['latfl_arch'] = self.model_config.latent_flow_arch
@@ -73,7 +73,9 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['regr_outsoftm'] = self.model_config.params_reg_softmax
         self.hyper_params['regr_catloss'] = 'BinCE' if self.train_config.params_cat_bceloss else 'CatCE'
         # Auto-Encoder hparams
+        self.hyper_params['VAE_FCdrop'] = self.train_config.fc_dropout
         self.hyper_params['enc_arch'] = self.model_config.encoder_architecture
+        self.hyper_params['recons_loss'] = self.train_config.reconstruction_loss
         # self.hyper_params['recloss'] = self.train_config.ae_reconstruction_loss
         self.hyper_params['specmindB'] = self.model_config.spectrogram_min_dB
         self.hyper_params['mel_nbins'] = self.model_config.mel_bins

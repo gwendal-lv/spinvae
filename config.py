@@ -25,7 +25,7 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "PreTrainVAE"
-model.run_name = 'chkpt_test'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'dev_tests_VAE'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
@@ -46,10 +46,11 @@ model.concat_midi_to_z = None  # See update_dynamic_config_params()
 model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
 # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
-#    - set to None to disable latent space flow transforms  # TODO properly reactivate
+#    - set to None to disable latent space flow transforms: will build a BasicVAE
 #    - options: _BNinternal (batch norm between hidden MLPs, to compute transform coefficients),
 #               _BNbetween (between flow layers), _BNoutput (BN on the last two layers, or not)
-model.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
+model.latent_flow_arch = None
+# model.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
 
 # ------------------------------------------------ Audio -------------------------------------------------
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
@@ -108,7 +109,7 @@ train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
 train.current_k_fold = 0
-train.start_epoch = 10  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
+train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 50  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
@@ -117,9 +118,11 @@ train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only
 train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
 
 # ------------------------------------------------ Losses -------------------------------------------------
-# Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
-# FIXME 'logprob' loss with flow-VAE
-train.latent_loss = 'Dkl'  # TODO implement checks: no Dkl loss for a flow-based latent transform, etc....
+# Reconstruction loss: 'MSE' corresponds to free-mean, fixed-variance per-pixel Gaussian probability distributions.
+# TODO 'WeightedMSE' allows to give a higher loss to some parts of spectrograms (e.g. attach, low freqs, ??)
+train.reconstruction_loss = 'MSE'
+# Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' loss with flow-VAE
+train.latent_loss = 'Dkl'
 train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
 train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
 # Losses normalization allow to get losses in the same order of magnitude, but does not optimize the true ELBO.
@@ -164,10 +167,10 @@ train.fc_dropout = 0.3
 train.reg_fc_dropout = 0.4
 train.latent_input_dropout = 0.0  # Should always remain zero... intended for tests (not tensorboard-logged)
 # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
-# TODO latent input batch-norm is a very strong constraint for the network, maybe remove it when using MMD-VAE regul.
-# 'BN' (on encoder output), 'Dkl' (on q_Z0 gaussian flow input) or 'None'
+# (warning: latent input batch-norm is a very strong constraint for the network)
+# 'BN' (on encoder output), 'Dkl' (on q_Z0 gaussian flow input) or 'None' (always use a str arg)
 train.latent_flow_input_regularization = 'None'
-train.latent_flow_input_regul_weight = 0.1
+train.latent_flow_input_regul_weight = 0.1  # Used for 'Dkl' only
 
 # -------------------------------------------- Logs, figures, ... ---------------------------------------------
 train.save_period = 500  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.

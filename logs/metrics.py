@@ -43,6 +43,9 @@ class SimpleMetric:
     def on_new_epoch(self):
         return None
 
+    def set(self, value):
+        self._value = value
+
     def get(self):
         return self._value
 

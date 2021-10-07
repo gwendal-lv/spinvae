@@ -21,24 +21,39 @@ class BasicVAE(model.base.TrainableModel):
     """ A standard VAE that uses some given encoder and decoder networks.
      The latent probability distribution is modeled as dim_z independent Gaussian distributions. """
 
-    def __init__(self, encoder, dim_z, decoder, normalize_latent_loss,
-                 concat_midi_to_z0=False,
-                 latent_loss_type: Optional[str] = None,
-                 train_config=None):
+    def __init__(self, encoder, dim_z, decoder, concat_midi_to_z0=False, train_config=None):
         super().__init__(train_config=train_config, model_type='ae')
         # No size checks performed. Encoder and decoder must have been properly designed
         self.encoder = encoder
         self.dim_z = dim_z
         self.decoder = decoder
-        self.normalize_latent_loss = normalize_latent_loss
         self.concat_midi_to_z0 = concat_midi_to_z0
 
-        if latent_loss_type is None:
-            self.latent_criterion = None  # must be assigned by child class
-        elif latent_loss_type.lower() == 'dkl':
-            self.latent_criterion = model.loss.GaussianDkl(normalize=self.normalize_latent_loss)
+        # if train_config is None: all losses have to be unavailable
+        if train_config is None:
+            self.normalize_losses = None
+            self._reconstruction_criterion = None
+            self.latent_loss_type = None
+            self.latent_criterion = None  # might be assigned by child class
         else:
-            raise NotImplementedError("Latent loss '{}' unavailable".format(latent_loss_type))
+            self.normalize_losses = train_config.normalize_losses
+            # reconstruction criterion
+            self._monitoring_recons_criterion = nn.MSELoss(reduction='mean')  # to compare models w/ different losses
+            if train_config.reconstruction_loss.lower() == "mse":
+                if self.normalize_losses:
+                    self._reconstruction_criterion = nn.MSELoss(reduction='mean')
+                else:
+                    self._reconstruction_criterion = model.loss.L2Loss()
+            elif train_config.reconstruction_loss.lower() == "weightedmse":
+                raise NotImplementedError()
+            else:
+                raise ValueError("Reconstruction loss '{}' is not available".format(train_config.reconstruction_loss))
+            # Latent criterion
+            self.latent_loss_type = train_config.latent_loss
+            if self.latent_loss_type.lower() == 'dkl':
+                self.latent_criterion = model.loss.GaussianDkl(normalize=self.normalize_losses)
+            else:  # Might be assigned by child class
+                self.latent_criterion = None
 
     def _encode_and_sample(self, x, sample_info=None):
         n_minibatch = x.size()[0]
@@ -88,9 +103,20 @@ class BasicVAE(model.base.TrainableModel):
         # Default: divergence or discrepancy vs. zero-mean unit-variance multivariate gaussian
         return self.latent_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
 
+    def monitoring_reconstruction_loss(self, x_out, x_in):
+        """ Returns the usual normalized MSE loss (to compare models with different backprop criteria). """
+        return self._monitoring_recons_criterion(x_out, x_in)
+
+    def reconstruction_loss(self, x_out, x_in):
+        return self._reconstruction_criterion(x_out, x_in)
+
     @property
     def is_flow_based_latent_space(self):
         return False
+
+    def additional_latent_regularization_loss(self, z_0_mu_logvar):
+        """ Returns an optional additional regularization loss, as configured using ctor args. """
+        return torch.zeros((1, ), device=z_0_mu_logvar.device)
 
 
 class FlowVAE(BasicVAE):
@@ -101,28 +127,24 @@ class FlowVAE(BasicVAE):
     The loss does not rely on a Kullback-Leibler divergence but on a direct log-likelihood computation.
     """
 
-    def __init__(self, encoder, dim_z, decoder, normalize_latent_loss: bool, flow_arch: str,
-                 concat_midi_to_z0=False, flows_internal_dropout_p=0.0,
-                 train_config=None):
+    def __init__(self, encoder, dim_z, decoder, flow_arch: str, concat_midi_to_z0=False, train_config=None):
         """
-
-        :param encoder:  CNN-based encoder, output might be smaller than dim_z (if concat MIDI pitch/vel)
-        :param dim_z: Latent vectors dimension, including possibly concatenated MIDI pitch and velocity.
-        :param decoder:
-        :param normalize_latent_loss:
         :param flow_arch: Full string-description of the flow, e.g. 'realnvp_4l200' (flow type, number of flows,
             hidden features count, and batch-norm options '_BNbetween' and '_BNinternal' ...)
         :param concat_midi_to_z0: If True, encoder output mu and log(var) vectors must be smaller than dim_z, for
             this model to append MIDI pitch and velocity (see corresponding mu and log(var) in forward() implementation)
         """
         # Latent loss will be init from this class' ctor
-        super().__init__(encoder, dim_z, decoder, normalize_latent_loss, concat_midi_to_z0=concat_midi_to_z0,
-                         latent_loss_type=None, train_config=train_config)
+        super().__init__(encoder, dim_z, decoder, concat_midi_to_z0=concat_midi_to_z0, train_config=train_config)
+        if train_config is None:  # This model won't be usable for training anyway (no loss computation)
+            self.flows_internal_dropout_p = 0.0
+        else:
+            self.flows_internal_dropout_p = train_config.fc_dropout
+
         # Latent flow setup
         self.flow_type, self.flow_num_layers, self.flow_num_hidden_units_per_layer, self.flow_bn_between_layers, \
             self.flow_bn_inside_layers, self.flow_output_bn = model.flows.parse_flow_args(flow_arch)
-        # TODO finir ça proprement
-        if self.flow_type.lower() == 'maf':
+        if self.flow_type.lower() == 'maf':  # TODO finir ça proprement
             transforms = []
             for _ in range(self.flow_layers_count):
                 transforms.append(ReversePermutation(features=self.dim_z))
@@ -131,15 +153,32 @@ class FlowVAE(BasicVAE):
                     features=self.dim_z, hidden_features=self.flow_num_hidden_units_per_layer))
             self.flow_transform = CompositeTransform(transforms)
         elif self.flow_type.lower() == 'realnvp':
-            # TODO use a custom RealNVP instance....
             # BN between flow layers prevents reversibility during training
             self.flow_transform = model.flows.CustomRealNVP(
                 features=self.dim_z, hidden_features=self.flow_num_hidden_units_per_layer,
-                num_layers=self.flow_num_layers, dropout_probability=flows_internal_dropout_p,
+                num_layers=self.flow_num_layers, dropout_probability=self.flows_internal_dropout_p,
                 bn_within_layers=self.flow_bn_inside_layers, bn_between_layers=self.flow_bn_between_layers,
                 output_bn=self.flow_output_bn)
         else:
             raise NotImplementedError("Unavailable flow '{}'".format(self.flow_type))
+
+        # Special (regularization) losses for flows
+        self.latent_flow_input_reg_criterion = None  # default values
+        self.latent_flow_input_regul_weight = 0.0
+        if train_config is not None:
+            if train_config.latent_flow_input_regularization.lower() == 'dkl':
+                self.latent_flow_input_reg_criterion = model.loss.GaussianDkl(normalize=self.normalize_losses)
+                self.latent_flow_input_regul_weight = train_config.latent_flow_input_regul_weight
+            else:  # Can be 'BN' (placed near encoder output) or 'None' - or train_config was not given at all
+                pass
+
+            # latent_loss already assigned by BasicVAE mother class
+            if self.latent_loss_type.lower() == 'dkl':
+                raise AssertionError("Dkl loss can't be computed using flow-based latent transforms.")
+            elif self.latent_loss_type.lower() == 'logprob':
+                self.latent_criterion = None  # unused - logprob directly implement in the latent loss method
+            else:
+                raise NotImplementedError("Unavailable latent loss '{}'".format(self.latent_loss_type))
 
     @property
     def is_flow_based_latent_space(self):
@@ -184,8 +223,15 @@ class FlowVAE(BasicVAE):
         # We model this prior as a zero-mean unit-variance multivariate gaussian
         log_p_theta_zK = standard_gaussian_log_probability(z_K_sampled)
         # Returned is the opposite of the ELBO terms
-        if not self.normalize_latent_loss:  # Default, which returns actual ELBO terms
+        if not self.normalize_losses:  # Default, which returns actual ELBO terms
             return -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean()  # Mean over batch dimension
         else:  # Mean over batch dimension and latent vector dimension (D)
             return -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean() / z_0_sampled.shape[1]
 
+    def additional_latent_regularization_loss(self, z_0_mu_logvar):
+        """ Returns an optional additional regularization loss, as configured using ctor args. """
+        if self.latent_flow_input_reg_criterion is not None:
+            return self.latent_flow_input_reg_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :]) \
+                   * self.latent_flow_input_regul_weight
+        else:
+            return torch.zeros((1, ), device=z_0_mu_logvar.device)

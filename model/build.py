@@ -4,6 +4,7 @@ or for building a previously trained model before loading state dicts.
 
 Decomposed into numerous small function for easier module-by-module debugging.
 """
+import warnings
 
 from model import VAE, encoder, decoder, extendedAE, regression
 
@@ -47,17 +48,17 @@ def build_ae_model(model_config, train_config):
     encoder_model, decoder_model = build_encoder_and_decoder_models(model_config, train_config)
     # Backward compatibility - recently added config args
     # Then build the full AE model
-    if model_config.latent_flow_arch is None:
-        # No additional input regularization is allowed for basic VAE (ELBO Dkl regularization term only)
-        assert train_config.latent_flow_input_regularization == 'None'
-        ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
-                                train_config.latent_loss,
-                                train_config=train_config)
-    else:
-        ae_model = VAE.FlowVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
-                               model_config.latent_flow_arch, concat_midi_to_z0=model_config.concat_midi_to_z,
-                               flows_internal_dropout_p=train_config.fc_dropout,
-                               train_config=train_config)
+    if model_config.latent_flow_arch is None or model_config.latent_flow_arch.lower() == 'none':  # Basic VAE
+        # Additional input regularization can't be required for basic VAE (ELBO Dkl regularization term only)
+        if train_config.latent_flow_input_regularization != 'None':
+            raise AssertionError("BasicVAE: flow input regularization must be 'None' (given arg: '{}')"
+                                 .format(train_config.latent_flow_input_regularization))
+        if train_config.latent_loss.lower() != 'dkl':
+            raise AssertionError("BasicVAE: the latent loss should be 'Dkl' (given: '{}')".format(train_config.latent_loss))
+        ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, train_config=train_config)
+    else:  # Flow VAE
+        ae_model = VAE.FlowVAE(encoder_model, model_config.dim_z, decoder_model, model_config.latent_flow_arch,
+                               concat_midi_to_z0=model_config.concat_midi_to_z,  train_config=train_config)
     return encoder_model, decoder_model, ae_model
 
 
