@@ -2,10 +2,46 @@
 """
 Defines some basic layer Classes to be integrated into bigger networks
 """
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+
+class ConvBase(nn.Module):
+    def __init__(self, out_ch, act=nn.ReLU(),
+                 norm_layer: Optional[str] = 'bn', adain_nb_features: Optional[int] = None):
+        """
+        Base class for any conv layer with act and norm (usable for Conv or Transpose Conv layers)
+
+        :param norm_layer: 'bn' (Batch Norm), 'adain' (Adaptive Instance Norm, requires w_style during forward) or None
+        """
+        super().__init__()
+        self.conv = None  # must be assigned by child class
+        self.act = act
+        self.norm_layer_description = norm_layer
+        if self.norm_layer_description is None:
+            self.norm = None
+        elif self.norm_layer_description == 'bn':
+            self.norm = nn.BatchNorm2d(out_ch)
+        elif self.norm_layer_description == 'adain':
+            raise NotImplementedError()  # TODO adain
+        else:
+            raise AssertionError("Layer norm {} not available.".format(self.norm_layer_description))
+
+    def forward(self, x, w_style=None):
+        x = self.act(self.conv(x))
+        if self.norm_layer_description == 'bn':
+            return self.norm(x)
+        elif self.norm_layer_description == 'adain':
+            if w_style is None:
+                raise AssertionError("w_style cannot be None when using AdaIN")
+            return self.norm(x, w_style)
+        else:
+            return x
+
 
 
 class Conv2D(nn.Sequential):
@@ -26,23 +62,13 @@ class Conv2D(nn.Sequential):
             self.add_module(name_prefix + 'bn', nn.BatchNorm2d(out_ch))
 
 
-class TConv2D(nn.Sequential):
-    """ A basic Transposed conv layer with activation and batch-norm """
-    def __init__(self, in_ch, out_ch, kernel_size, stride, padding, output_padding=0, dilation=1,
-                 padding_mode='zeros', act=nn.ReLU(), name_prefix='', bn='after'):
-        """
-
-        :param bn: 'after' activation, 'before' activation, or None
-        """
-        super().__init__()
-        self.add_module(name_prefix + 'tconv', nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride,
-                                                                  padding, output_padding,
-                                                                  dilation=dilation, padding_mode=padding_mode))
-        if bn == 'before':
-            self.add_module(name_prefix + 'bn', nn.BatchNorm2d(out_ch))
-        self.add_module(name_prefix + 'act', act)
-        if bn == 'after':
-            self.add_module(name_prefix + 'bn', nn.BatchNorm2d(out_ch))
+class TConv2D(ConvBase):
+    """ A basic Transposed conv layer with activation and normalization layers """
+    def __init__(self, in_ch, out_ch, kernel_size, stride, padding, output_padding=0, dilation=1, padding_mode='zeros',
+                 act=nn.ReLU(), norm_layer: Optional[str] = 'bn', adain_nb_features: Optional[int] = None):
+        super().__init__(out_ch, act, norm_layer, adain_nb_features)
+        self.conv = nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride, padding, output_padding,
+                                       dilation=dilation, padding_mode=padding_mode)
 
 
 class DenseConv2D(nn.Module):

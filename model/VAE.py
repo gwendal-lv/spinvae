@@ -85,6 +85,13 @@ class BasicVAE(model.base.TrainableModel):
             z_0_sampled = mu0
         return z_0_mu_logvar, z_0_sampled
 
+    def _decode_latent_vector(self, z_sampled):
+        # TODO generate a style vector and pass it to the decoder
+
+        # TODO maybe return the intermediate style vector for a downstream (classification?) task
+
+        return self.decoder(z_sampled)
+
     def forward(self, x, sample_info=None):
         """ Encodes the given input into a q_phi(z|x) probability distribution,
         samples a latent vector from that distribution, and finally calls the decoder network.
@@ -95,7 +102,8 @@ class BasicVAE(model.base.TrainableModel):
         :returns: z_mu_logvar, z_sampled, zK_sampled=z_sampled, logabsdetjacT=0.0, x_out (reconstructed spectrogram)
         """
         z_mu_logvar, z_sampled = self._encode_and_sample(x, sample_info)
-        x_out = self.decoder(z_sampled)
+        x_out = self._decode_latent_vector(z_sampled)
+        # TODO also get and return the style vector?
         return z_mu_logvar, z_sampled, z_sampled, torch.zeros((z_sampled.shape[0], 1), device=x.device), x_out
 
     def latent_loss(self, z_0_mu_logvar, *args):
@@ -206,7 +214,8 @@ class FlowVAE(BasicVAE):
         """
         z_0_mu_logvar, z_0_sampled = self._encode_and_sample(x, sample_info)
         z_K_sampled, log_abs_det_jac = self.flow_transform(z_0_sampled)
-        x_out = self.decoder(z_K_sampled)
+        # TODO also get and return the style vector?
+        x_out = self._decode_latent_vector(z_K_sampled)
         return z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out
 
     def latent_loss(self, z_0_mu_logvar, *args):

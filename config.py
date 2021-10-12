@@ -25,13 +25,14 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "PreTrainVAE"
-model.run_name = 'dev_tests_VAE'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'dev_decstyle0'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-model.encoder_architecture = 'speccnn8l1'
+# Arch args: '_adain', .....
+model.encoder_architecture = 'speccnn8l1_adain'
 # Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'flow_realnvp_6l300'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
@@ -197,6 +198,10 @@ def update_dynamic_config_params():
     Updates some global attributes of this config.py module.
     This function should be called after any modification of this module's attributes.
     """
+
+    # Values set to None during pre-train
+    if train.pretrain_ae_only:
+        model.params_regression_architecture = 'None'
 
     # stack_spectrograms must be False for 1-note datasets - security check
     model.stack_spectrograms = model.stack_spectrograms and (len(model.midi_notes) > 1)

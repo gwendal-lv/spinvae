@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from typing import Tuple
 
-from model import layer
+from model import convlayer
 from model import encoder  # Contains an architecture parsing method
 
 
@@ -53,10 +53,10 @@ class SpectrogramDecoder(nn.Module):
                 self.mlp.add_module("decdrop{}".format(i), nn.Dropout(self.fc_dropout))
 
         # - - - - - - - - - - 2) Features "un-mixer" - - - - - - - - - -
-        self.features_unmixer_cnn = layer.TConv2D(self.mixer_1x1conv_ch,
-                                                  self.spectrogram_channels * self.last_4x4conv_ch,
-                                                  [1, 1], [1, 1], 0,
-                                                  act=nn.LeakyReLU(0.1), name_prefix='dec0')
+        self.features_unmixer_cnn = convlayer.TConv2D(self.mixer_1x1conv_ch,
+                                                      self.spectrogram_channels * self.last_4x4conv_ch,
+                                                      [1, 1], [1, 1], 0,
+                                                      act=nn.LeakyReLU(0.1))
         # - - - - - and 3) Main CNN decoder (applied once per spectrogram channel) - - - - -
         single_spec_output_size = list(self.output_tensor_size)
         single_spec_output_size[1] = 1  # Single-channel output
@@ -66,7 +66,7 @@ class SpectrogramDecoder(nn.Module):
             ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes are drastically reduced
             (especially the last, not so useful but very GPU-expensive layer on large images) '''
             for i in range(1, self.num_cnn_layers):  # 'normal' channels: (1024, ) 512, 256, ...., 8
-                act = nn.LeakyReLU(0.1)
+                name = 'dec{}'.format(i)
                 in_ch = self.last_4x4conv_ch if i == 1 else 2 ** (10 - i)
                 out_ch = 2 ** (10 - (i + 1)) if (i < (self.num_cnn_layers - 1)) else 1
                 padding, stride = (2, 2), 2
@@ -80,16 +80,16 @@ class SpectrogramDecoder(nn.Module):
                     output_padding = (1, 0)
                 else:  # last layer
                     output_padding = (0, 0)
-                name = 'dec{}'.format(i)
-                l = layer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, name_prefix=name,
-                                  bn=('after' if (0 <= i < (self.num_cnn_layers-1)) else None))
+                act = nn.LeakyReLU(0.1)  # FIXME last layer should provide HARDTANH activation
+                norm = ('bn' if (0 <= i < (self.num_cnn_layers-1)) else None)  # TODO allow adain norm
+                l = convlayer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm)
                 self.single_ch_cnn.add_module(name, l)
         # Final activation, for all architectures
         self.single_ch_cnn.add_module('decact', nn.Hardtanh())
 
         # TODO send a dummy input to retrieve output size (assert if CNN output is smaller than target)
 
-    def forward(self, z_sampled):
+    def forward(self, z_sampled):  # TODO add w input arg
         mixed_features = self.mlp(z_sampled)
         mixed_features = mixed_features.view(-1,  # batch size auto inferred
                                              self.cnn_input_shape[0], self.cnn_input_shape[1], self.cnn_input_shape[2])
@@ -124,66 +124,66 @@ class SpectrogramCNN(nn.Module):
             
             Issue: this architecture induces a huge number of ops within the 2 last layers.
             Unusable with reducing the spectrogram or getting 8 or 16 GPUs. '''
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
-                                        layer.TConv2D(512, 512, [4, 4], [2, 1], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
-                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
-                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec8'),
-                                        layer.TConv2D(128, 128, [5, 5], [2, 2], 2, output_padding=[0, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec9'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1 , 1], [1 , 1], 0,
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
+                                        convlayer.TConv2D(512, 512, [4, 4], [2, 1], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
+                                        convlayer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
+                                        convlayer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
+                                        convlayer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
+                                        convlayer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
+                                        convlayer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
+                                        convlayer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec8'),
+                                        convlayer.TConv2D(128, 128, [5, 5], [2, 2], 2, output_padding=[0, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec9'),
                                         nn.ConvTranspose2d(128, 1, [5, 5], [2, 2], 2)  # TODO bounded activation
                                         )
 
         elif self.architecture == 'wavenet_baseline_lighter':
             ''' Lighter decoder compared to wavenet baseline, but keeps an acceptable number
             of GOPs for last transpose-conv layers '''
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
-                                        layer.TConv2D(512, 512, [4, 4], [2, 1], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec8'),
-                                        layer.TConv2D(32, 16, [5, 5], [2, 2], 2, output_padding=[0, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec9'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1 , 1], [1 , 1], 0,
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
+                                        convlayer.TConv2D(512, 512, [4, 4], [2, 1], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
+                                        convlayer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
+                                        convlayer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
+                                        convlayer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
+                                        convlayer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
+                                        convlayer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
+                                        convlayer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec8'),
+                                        convlayer.TConv2D(32, 16, [5, 5], [2, 2], 2, output_padding=[0, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec9'),
                                         nn.ConvTranspose2d(16, 1, [5, 5], [2, 2], 2)  # TODO bounded activation
                                         )
 
         elif self.architecture == 'wavenet_baseline_shallow':  # Inspired from wavenet_baseline
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
-                                        layer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
-                                        layer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1 , 1], [1 , 1], 0,
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
+                                        convlayer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
+                                        convlayer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
+                                        convlayer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
+                                        convlayer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
+                                        convlayer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
+                                        convlayer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
                                         nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2)  # TODO bounded activation
                                         )
 
@@ -197,14 +197,14 @@ class SpectrogramCNN(nn.Module):
             elif self.output_tensor_size == (257, 347):  # 7.7 GB (RAM), 6.0 GMultAdd (batch 256) (inc. linear layers)
                 pads = [3, 3, 3, 3, 2]
                 out_pads = [0, [1, 0], [0, 1], [1, 0]]  # No output padding on last layer
-            self.dec_nn = nn.Sequential(layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[0], out_pads[0], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec1'),
-                                        layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[1], out_pads[1], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec2'),
-                                        layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[2], out_pads[2], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec3'),
-                                        layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[3], out_pads[3], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec4'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[0], out_pads[0], [2, 2],
+                                                          activation=nn.ELU(), name_prefix='dec1'),
+                                        convlayer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[1], out_pads[1], [2, 2],
+                                                          activation=nn.ELU(), name_prefix='dec2'),
+                                        convlayer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[2], out_pads[2], [2, 2],
+                                                          activation=nn.ELU(), name_prefix='dec3'),
+                                        convlayer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[3], out_pads[3], [2, 2],
+                                                          activation=nn.ELU(), name_prefix='dec4'),
                                         nn.ConvTranspose2d(n_lay, 1, k7, [2, 2], pads[4]),
                                         output_activation
                                         )
@@ -215,45 +215,45 @@ class SpectrogramCNN(nn.Module):
             (especially the last, not so useful but very GPU-expensive layers on large images) '''
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.dec_nn = nn.Sequential(layer.TConv2D((512 if not force_bigger_network else 1800),
-                                                      256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec3'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec7'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D((512 if not force_bigger_network else 1800),
+                                                          256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec2'),
+                                        convlayer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec3'),
+                                        convlayer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec4'),
+                                        convlayer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec5'),
+                                        convlayer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec6'),
+                                        convlayer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec7'),
                                         nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2),
                                         output_activation
                                         )
             if append_1x1_conv:  # 1x1 "un-mixing" conv inserted as first conv layer
                 assert False  # FIXME 1024ch should not be constant
-                self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                          activation=act(act_p), name_prefix='dec1'),
+                self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1 , 1], [1 , 1], 0,
+                                                              activation=act(act_p), name_prefix='dec1'),
                                             self.dec_nn)
 
         elif self.architecture == 'speccnn8l1_2':  # 5.8 GB (RAM) ; 2.4 GMultAdd  (batch 256)
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1, 1], [1, 1], 0,
-                                                      activation=act(act_p), name_prefix='dec1'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec3'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec7'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1, 1], [1, 1], 0,
+                                                          activation=act(act_p), name_prefix='dec1'),
+                                        convlayer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec2'),
+                                        convlayer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec3'),
+                                        convlayer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec4'),
+                                        convlayer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec5'),
+                                        convlayer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec6'),
+                                        convlayer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec7'),
                                         nn.ConvTranspose2d(32, 1, [5, 5], [2, 2], 2),
                                         output_activation
                                         )
@@ -262,20 +262,20 @@ class SpectrogramCNN(nn.Module):
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
             ker = [5, 5]
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1, 1], [1, 1], 0,
-                                                      activation=act(act_p), name_prefix='dec1'),
-                                        layer.TConv2D(512, 256, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.TConv2D(256, 128, ker, [2, 2], 2, output_padding=[0, 0],
-                                                      activation=act(act_p), name_prefix='dec3'),
-                                        layer.TConv2D(128, 64, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(64, 32, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(32, 16, ker, [2, 2], 2, output_padding=[0, 0],
-                                                      activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(16, 8, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec7'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1, 1], [1, 1], 0,
+                                                          activation=act(act_p), name_prefix='dec1'),
+                                        convlayer.TConv2D(512, 256, ker, [2, 2], 2, output_padding=[0, 1],
+                                                          activation=act(act_p), name_prefix='dec2'),
+                                        convlayer.TConv2D(256, 128, ker, [2, 2], 2, output_padding=[0, 0],
+                                                          activation=act(act_p), name_prefix='dec3'),
+                                        convlayer.TConv2D(128, 64, ker, [2, 2], 2, output_padding=[0, 1],
+                                                          activation=act(act_p), name_prefix='dec4'),
+                                        convlayer.TConv2D(64, 32, ker, [2, 2], 2, output_padding=[0, 1],
+                                                          activation=act(act_p), name_prefix='dec5'),
+                                        convlayer.TConv2D(32, 16, ker, [2, 2], 2, output_padding=[0, 0],
+                                                          activation=act(act_p), name_prefix='dec6'),
+                                        convlayer.TConv2D(16, 8, ker, [2, 2], 2, output_padding=[0, 1],
+                                                          activation=act(act_p), name_prefix='dec7'),
                                         nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2),
                                         output_activation
                                         )
@@ -284,50 +284,50 @@ class SpectrogramCNN(nn.Module):
             # TODO description and implementation
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.dec_nn = nn.Sequential(layer.TConv2D((512 if not force_bigger_network else 1800),
-                                                      256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec3'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(128, 96, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(96, 48, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec7'),
-                                        layer.TConv2D(48, 24, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec8'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D((512 if not force_bigger_network else 1800),
+                                                          256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec2'),
+                                        convlayer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec3'),
+                                        convlayer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                          activation=act(act_p), name_prefix='dec4'),
+                                        convlayer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec5'),
+                                        convlayer.TConv2D(128, 96, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec6'),
+                                        convlayer.TConv2D(96, 48, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec7'),
+                                        convlayer.TConv2D(48, 24, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec8'),
                                         nn.ConvTranspose2d(24, 1, (5, 5), (2, 2), (2, 1)),
                                         output_activation
                                         )
             if append_1x1_conv:  # 1x1 "un-mixing" conv inserted as first conv layer
                 assert False  # FIXME 1024ch should not be constant
-                self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                          activation=act(act_p), name_prefix='dec1'),
+                self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1 , 1], [1 , 1], 0,
+                                                              activation=act(act_p), name_prefix='dec1'),
                                             self.dec_nn)
 
         elif self.architecture == 'rescnn':  # XXX GB (RAM) ; XXX GMultAdd  (batch 256)
             # TODO description and implementation
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.dec_nn = nn.Sequential(layer.TConv2D((512 if not force_bigger_network else 1800),
-                                                      256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.ResTConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                         activation=act(act_p), name_prefix='dec34'),
-                                        layer.DenseTConv2D(256, 128, 32, 96, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                           activation=act(act_p), name_prefix='dec56'),
-                                        layer.DenseTConv2D(96, 48, 8, 32, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                           activation=act(act_p), name_prefix='dec78'),
+            self.dec_nn = nn.Sequential(convlayer.TConv2D((512 if not force_bigger_network else 1800),
+                                                          256, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                          activation=act(act_p), name_prefix='dec2'),
+                                        convlayer.ResTConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                                             activation=act(act_p), name_prefix='dec34'),
+                                        convlayer.DenseTConv2D(256, 128, 32, 96, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                               activation=act(act_p), name_prefix='dec56'),
+                                        convlayer.DenseTConv2D(96, 48, 8, 32, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                                               activation=act(act_p), name_prefix='dec78'),
                                         nn.ConvTranspose2d(32, 1, (5, 5), (2, 2), (2, 1)),
                                         output_activation
                                         )
             if append_1x1_conv:  # 1x1 "un-mixing" conv inserted as first conv layer
                 assert False  # FIXME 1024ch should not be constant
-                self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                          activation=act(act_p), name_prefix='dec1'),
+                self.dec_nn = nn.Sequential(convlayer.TConv2D(1024, 512, [1 , 1], [1 , 1], 0,
+                                                              activation=act(act_p), name_prefix='dec1'),
                                             self.dec_nn)
 
         else:

@@ -230,7 +230,7 @@ def train_config():
                 v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
                 # Losses
                 super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
-                recons_loss = ae_model.reconstruction_criterion(x_out, x_in)
+                recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
                 # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
@@ -272,7 +272,7 @@ def train_config():
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)
                 super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
-                recons_loss = ae_model.reconstruction_criterion(x_out, x_in)
+                recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
                 scalars['LatLoss/Valid'].append(lat_loss)

@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 
-from model import layer
+from model import convlayer
 
 
 def parse_architecture(full_architecture: str):
@@ -17,7 +17,9 @@ def parse_architecture(full_architecture: str):
     num_fc_layers = layers_args[1]
     # Check arch args
     for arch_arg in arch_args:
-        if arch_arg == 'larger':
+        if arch_arg == 'adain':
+            pass  # Authorized arguments
+        elif arch_arg == 'larger':
             raise NotImplementedError("_larger encoder argument not implemented.")
         elif arch_arg == 'res':
             raise NotImplementedError("Res-connections encoder argument (_res) not implemented.")
@@ -90,8 +92,8 @@ class SpectrogramEncoder(nn.Module):
                 act = nn.LeakyReLU(0.1)  # New instance for each layer (maybe unnecessary?)
                 name = 'enc{}'.format(i)
                 # No BN on first and last layers
-                conv_layer = layer.Conv2D(in_ch, out_ch, kernel_size, stride, padding, act=act, name_prefix=name,
-                                          bn=('after' if (0 < i < (self.num_cnn_layers-1)) else None))
+                conv_layer = convlayer.Conv2D(in_ch, out_ch, kernel_size, stride, padding, act=act, name_prefix=name,
+                                              bn=('after' if (0 < i < (self.num_cnn_layers-1)) else None))
                 if i < (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
                     self.single_ch_cnn.add_module(name, conv_layer)
                 else:
@@ -170,46 +172,46 @@ class SpectrogramCNN(nn.Module):
              
              Issue: when using the paper's FFT size and hop, layers 8 and 9 seem less useful. The image size
               at this depth is < kernel size (much of the 4x4 kernel convolves with zeros) '''
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 128, [5,5], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc1'),
-                                        layer.Conv2D(128, 128, [4,4], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc2'),
-                                        layer.Conv2D(128, 128, [4,4], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc3'),
-                                        layer.Conv2D(128, 256, [4,4], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc4'),
-                                        layer.Conv2D(256, 256, [4,4], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc5'),
-                                        layer.Conv2D(256, 256, [4,4], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc6'),
-                                        layer.Conv2D(256, 512, [4,4], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc7'),
-                                        layer.Conv2D(512, 512, [4,4], [2,2], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc8'),
-                                        layer.Conv2D(512, 512, [4,4], [2,1], 2, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc9'),
-                                        layer.Conv2D(512, 1024, [1,1], [1,1], 0, [1,1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc10'),
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 128, [5, 5], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc1'),
+                                        convlayer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc2'),
+                                        convlayer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc3'),
+                                        convlayer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc4'),
+                                        convlayer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc5'),
+                                        convlayer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc6'),
+                                        convlayer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc7'),
+                                        convlayer.Conv2D(512, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc8'),
+                                        convlayer.Conv2D(512, 512, [4, 4], [2, 1], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc9'),
+                                        convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc10'),
                                         )
 
         elif self.architecture == 'wavenet_baseline_shallow':
             """ Inspired from wavenet_baseline, minus the two last layer, with less channels """
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc1'),
-                                        layer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc2'),
-                                        layer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc3'),
-                                        layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc4'),
-                                        layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc5'),
-                                        layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc6'),
-                                        layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc7'),
-                                        layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1],
-                                                     act=nn.LeakyReLU(0.1), name_prefix='enc8'),
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc1'),
+                                        convlayer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc2'),
+                                        convlayer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc3'),
+                                        convlayer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc4'),
+                                        convlayer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc5'),
+                                        convlayer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc6'),
+                                        convlayer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc7'),
+                                        convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1],
+                                                         act=nn.LeakyReLU(0.1), name_prefix='enc8'),
                                         )
 
         elif self.architecture == 'flow_synth':
@@ -225,38 +227,38 @@ class SpectrogramCNN(nn.Module):
             Potential issue: this dilation is extremely big for deep layers 4 and 5. Dilated kernel is applied
             mostly on zero-padded values. We should either stride-conv or 2^l dilate, but not both '''
             n_lay = 64  # 128/2 for paper's comparisons consistency. Could be larger
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, n_lay, [7,7], [2,2], 3, [1,1],
-                                                     act=nn.ELU(), name_prefix='enc1'),
-                                        layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     act=nn.ELU(), name_prefix='enc2'),
-                                        layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     act=nn.ELU(), name_prefix='enc3'),
-                                        layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     act=nn.ELU(), name_prefix='enc4'),
-                                        layer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
-                                                     act=nn.ELU(), name_prefix='enc5'))
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, n_lay, [7, 7], [2, 2], 3, [1, 1],
+                                                         act=nn.ELU(), name_prefix='enc1'),
+                                        convlayer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
+                                                         act=nn.ELU(), name_prefix='enc2'),
+                                        convlayer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
+                                                         act=nn.ELU(), name_prefix='enc3'),
+                                        convlayer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
+                                                         act=nn.ELU(), name_prefix='enc4'),
+                                        convlayer.Conv2D(n_lay, n_lay, [7, 7], [2, 2], 3, [2, 2],
+                                                         act=nn.ELU(), name_prefix='enc5'))
 
         elif self.architecture == 'speccnn8l1':  # 1.7 GB (RAM) ; 0.12 GMultAdd  (batch 256)
             ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes drastically reduced.
             Where to use BN? 'Super-Resolution GAN' generator does not use BN in the first and last conv layers.'''
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc1'),
-                                        layer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc2'),
-                                        layer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc3'),
-                                        layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc4'),
-                                        layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc5'),
-                                        layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc6'),
-                                        layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc7'),
-                                        layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1],
-                                                     act=act(act_p), name_prefix='enc8'),
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc1'),
+                                        convlayer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc2'),
+                                        convlayer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc3'),
+                                        convlayer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc4'),
+                                        convlayer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc5'),
+                                        convlayer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc6'),
+                                        convlayer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc7'),
+                                        convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1],
+                                                         act=act(act_p), name_prefix='enc8'),
                                         )
 
 
@@ -271,114 +273,114 @@ class SpectrogramCNN(nn.Module):
             '''
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     act=act(act_p), name_prefix='enc1'),
-                                        layer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc2'),
-                                        layer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc3'),
-                                        layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc4'),
-                                        layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc5'),
-                                        layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc6')
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
+                                                         act=act(act_p), name_prefix='enc1'),
+                                        convlayer.Conv2D(8, 16, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc2'),
+                                        convlayer.Conv2D(16, 32, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc3'),
+                                        convlayer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc4'),
+                                        convlayer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc5'),
+                                        convlayer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc6')
                                         )
             if last_layers_to_remove <= 1:
-                self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                               act=act(act_p), name_prefix='enc7'))
+                self.enc_nn.add_module('4x4conv', convlayer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                                   act=act(act_p), name_prefix='enc7'))
             if last_layers_to_remove == 0:
-                self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                               act=act(act_p), name_prefix='enc8'))
+                self.enc_nn.add_module('1x1conv', convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
+                                                                   act=act(act_p), name_prefix='enc8'))
         elif self.architecture == 'speccnn8l1_2':  # 5.8 GB (RAM) ; 0.65 GMultAdd  (batch 256)
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 32, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     act=act(act_p), name_prefix='enc1'),
-                                        layer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc2'),
-                                        layer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc3'),
-                                        layer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc4'),
-                                        layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc5'),
-                                        layer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc6'),
-                                        layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc7'),
-                                        layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                     act=act(act_p), name_prefix='enc8'),
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 32, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
+                                                         act=act(act_p), name_prefix='enc1'),
+                                        convlayer.Conv2D(32, 64, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc2'),
+                                        convlayer.Conv2D(64, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc3'),
+                                        convlayer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc4'),
+                                        convlayer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc5'),
+                                        convlayer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc6'),
+                                        convlayer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc7'),
+                                        convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
+                                                         act=act(act_p), name_prefix='enc8'),
                                         )
         elif self.architecture == 'speccnn8l1_3':  # XXX GB (RAM) ; XXX GMultAdd  (batch 256)
             ''' speeccnn8l1_bn with bigger conv kernels '''
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
             ker = [5, 5]  # TODO try bigger 1st ker?
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     act=act(act_p), name_prefix='enc1'),
-                                        layer.Conv2D(8, 16, ker, [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc2'),
-                                        layer.Conv2D(16, 32, ker, [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc3'),
-                                        layer.Conv2D(32, 64, ker, [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc4'),
-                                        layer.Conv2D(64, 128, ker, [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc5'),
-                                        layer.Conv2D(128, 256, ker, [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc6'),
-                                        layer.Conv2D(256, 512, ker, [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc7'),
-                                        layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                     act=act(act_p), name_prefix='enc8'),
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 8, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
+                                                         act=act(act_p), name_prefix='enc1'),
+                                        convlayer.Conv2D(8, 16, ker, [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc2'),
+                                        convlayer.Conv2D(16, 32, ker, [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc3'),
+                                        convlayer.Conv2D(32, 64, ker, [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc4'),
+                                        convlayer.Conv2D(64, 128, ker, [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc5'),
+                                        convlayer.Conv2D(128, 256, ker, [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc6'),
+                                        convlayer.Conv2D(256, 512, ker, [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc7'),
+                                        convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
+                                                         act=act(act_p), name_prefix='enc8'),
                                         )
 
         elif self.architecture == 'speccnn9l1':  # 6.5 GB (RAM) ; 0.8 GMultAdd  (batch 256)
             # TODO doc
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 24, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     act=act(act_p), name_prefix='enc1'),
-                                        layer.Conv2D(24, 48, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc2'),
-                                        layer.Conv2D(48, 96, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc3'),
-                                        layer.Conv2D(96, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc4'),
-                                        layer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc5'),
-                                        layer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc6'),
-                                        layer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                     act=act(act_p), name_prefix='enc7')
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 24, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
+                                                         act=act(act_p), name_prefix='enc1'),
+                                        convlayer.Conv2D(24, 48, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc2'),
+                                        convlayer.Conv2D(48, 96, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc3'),
+                                        convlayer.Conv2D(96, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc4'),
+                                        convlayer.Conv2D(128, 128, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc5'),
+                                        convlayer.Conv2D(128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc6'),
+                                        convlayer.Conv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                         act=act(act_p), name_prefix='enc7')
                                         )
             if last_layers_to_remove <= 1:
-                self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                               act=act(act_p), name_prefix='enc8'))
+                self.enc_nn.add_module('4x4conv', convlayer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                                   act=act(act_p), name_prefix='enc8'))
             if last_layers_to_remove == 0:
-                self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                               act=act(act_p), name_prefix='enc9'))
+                self.enc_nn.add_module('1x1conv', convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
+                                                                   act=act(act_p), name_prefix='enc9'))
 
         # TODO try reduce channels from all skip-connection layers (or the model overfits++), dense only (no add res)
         elif self.architecture == 'rescnn':  # 6.9 GB (RAM) ; 0.85 GMultAdd  (batch 256)
             # TODO doc
             act = nn.LeakyReLU
             act_p = 0.1  # Activation param
-            self.enc_nn = nn.Sequential(layer.Conv2D(1, 32, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
-                                                     act=act(act_p), name_prefix='enc1'),
-                                        layer.DenseConv2D(32, 48, 96, [4, 4], [2, 2], 2, [1, 1],
-                                                          activation=act(act_p), name_prefix='enc23'),
-                                        layer.DenseConv2D(96, 128, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                          activation=act(act_p), name_prefix='enc45'),
-                                        layer.ResConv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
-                                                        activation=act(act_p), name_prefix='enc67'),
+            self.enc_nn = nn.Sequential(convlayer.Conv2D(1, 32, [5, 5], [2, 2], 2, [1, 1], batch_norm=None,
+                                                         act=act(act_p), name_prefix='enc1'),
+                                        convlayer.DenseConv2D(32, 48, 96, [4, 4], [2, 2], 2, [1, 1],
+                                                              activation=act(act_p), name_prefix='enc23'),
+                                        convlayer.DenseConv2D(96, 128, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                              activation=act(act_p), name_prefix='enc45'),
+                                        convlayer.ResConv2D(256, 256, [4, 4], [2, 2], 2, [1, 1],
+                                                            activation=act(act_p), name_prefix='enc67'),
                                         )
             if last_layers_to_remove <= 1:
-                self.enc_nn.add_module('4x4conv', layer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
-                                                               act=act(act_p), name_prefix='enc8'))
+                self.enc_nn.add_module('4x4conv', convlayer.Conv2D(256, 512, [4, 4], [2, 2], 2, [1, 1],
+                                                                   act=act(act_p), name_prefix='enc8'))
             if last_layers_to_remove == 0:
-                self.enc_nn.add_module('1x1conv', layer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
-                                                               act=act(act_p), name_prefix='enc9'))
+                self.enc_nn.add_module('1x1conv', convlayer.Conv2D(512, 1024, [1, 1], [1, 1], 0, [1, 1], batch_norm=None,
+                                                                   act=act(act_p), name_prefix='enc9'))
 
         else:
             raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
