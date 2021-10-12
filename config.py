@@ -25,14 +25,17 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "PreTrainVAE"
-model.run_name = 'dev_decstyle0'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'dev_decstyle2'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 # Arch args: '_adain', .....
-model.encoder_architecture = 'speccnn8l1_adain'
+model.encoder_architecture = 'speccnn8l1'
+# Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
+# must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
+model.style_architecture = 'mlp_8_outputbn'  # internal batch norm layers are always added
 # Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'flow_realnvp_6l300'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE

@@ -56,7 +56,8 @@ class SpectrogramDecoder(nn.Module):
         self.features_unmixer_cnn = convlayer.TConv2D(self.mixer_1x1conv_ch,
                                                       self.spectrogram_channels * self.last_4x4conv_ch,
                                                       [1, 1], [1, 1], 0,
-                                                      act=nn.LeakyReLU(0.1))
+                                                      act=nn.LeakyReLU(0.1),
+                                                      )  # TODO adaIN  with all MIDI notes given to that layer
         # - - - - - and 3) Main CNN decoder (applied once per spectrogram channel) - - - - -
         single_spec_output_size = list(self.output_tensor_size)
         single_spec_output_size[1] = 1  # Single-channel output
@@ -80,26 +81,40 @@ class SpectrogramDecoder(nn.Module):
                     output_padding = (1, 0)
                 else:  # last layer
                     output_padding = (0, 0)
-                act = nn.LeakyReLU(0.1)  # FIXME last layer should provide HARDTANH activation
-                norm = ('bn' if (0 <= i < (self.num_cnn_layers-1)) else None)  # TODO allow adain norm
-                l = convlayer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm)
+                if 0 <= i < (self.num_cnn_layers-1):
+                    act = nn.LeakyReLU(0.1)
+                    try:
+                        self.arch_args.index('adain')  # Raises ValueError if index is not found
+                        norm = 'adain'
+                    except ValueError:
+                        norm = 'bn'
+                else:
+                    norm = None
+                    act = nn.Identity()
+                l = convlayer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
+                                      adain_nb_features=dim_z)  # TODO concatenate MIDI note ???
+                #self.single_ch_cnn.append(l)
                 self.single_ch_cnn.add_module(name, l)
         # Final activation, for all architectures
-        self.single_ch_cnn.add_module('decact', nn.Hardtanh())
+        self.single_ch_cnn_act = nn.Hardtanh()
 
         # TODO send a dummy input to retrieve output size (assert if CNN output is smaller than target)
 
-    def forward(self, z_sampled):  # TODO add w input arg
+    def forward(self, z_sampled, w_style=None):
+        if w_style is None:  # w_style can be omitted during summary writing
+            print("[decoder.py] w_style tensor is None; replaced by 0.0 (should happen during init only)")
+            w_style = z_sampled * 0.0
         mixed_features = self.mlp(z_sampled)
         mixed_features = mixed_features.view(-1,  # batch size auto inferred
                                              self.cnn_input_shape[0], self.cnn_input_shape[1], self.cnn_input_shape[2])
-        unmixed_features = self.features_unmixer_cnn(mixed_features)
+        unmixed_features, _ = self.features_unmixer_cnn((mixed_features, w_style))
         # This won't work on multi-channel spectrograms with force_bigger_network==True (don't do this anyway)
         single_ch_cnn_inputs = torch.split(unmixed_features, self.last_4x4conv_ch,  # actual multi-spec: 512ch-split
                                            dim=1)  # Split along channels dimension
-        single_ch_cnn_outputs = [self.single_ch_cnn(single_ch_in) for single_ch_in in single_ch_cnn_inputs]
-
-        # TODO automatic crop - try not to trig any warning...
+        single_ch_cnn_outputs = [self.single_ch_cnn((single_ch_in, w_style))
+                                 for single_ch_in in single_ch_cnn_inputs]
+        # Remove style and activate outputs
+        single_ch_cnn_outputs = [self.single_ch_cnn_act(x[0]) for x in single_ch_cnn_outputs]
 
         return torch.cat(single_ch_cnn_outputs, dim=1)  # Concatenate all single-channel spectrograms
 

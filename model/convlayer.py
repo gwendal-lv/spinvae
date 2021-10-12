@@ -31,16 +31,18 @@ class ConvBase(nn.Module):
         else:
             raise AssertionError("Layer norm {} not available.".format(self.norm_layer_description))
 
-    def forward(self, x, w_style=None):
+    def forward(self, x_and_w_style):
+        """ Always returns a tuple (x, w) for the style to be passed to the next layer in the sequence. """
+        x, w_style = x_and_w_style[0], x_and_w_style[1]
         x = self.act(self.conv(x))
         if self.norm_layer_description == 'bn':
-            return self.norm(x)
+            return self.norm(x), w_style
         elif self.norm_layer_description == 'adain':
             if w_style is None:
                 raise AssertionError("w_style cannot be None when using AdaIN")
-            return self.norm(x, w_style)
+            return self.norm(x, w_style), w_style
         else:
-            return x
+            return x, w_style
 
 
 

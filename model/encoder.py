@@ -53,7 +53,8 @@ class SpectrogramEncoder(nn.Module):
         self.full_architecture = architecture
         self.deep_feat_mix_level = deep_features_mix_level
         self.fc_dropout = fc_dropout
-        assert force_bigger_network is False  # deactivated after refactoring
+        if force_bigger_network :  # deactivated after refactoring
+            raise NotImplementedError()
         self.base_arch_name, self.num_cnn_layers, self.num_fc_layers, self.arch_args \
             = parse_architecture(self.full_architecture)
 

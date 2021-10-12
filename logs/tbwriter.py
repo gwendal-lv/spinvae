@@ -63,11 +63,12 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['z_dim'] = self.model_config.dim_z
         self.hyper_params['latloss'] = self.train_config.latent_loss
         self.hyper_params['latbeta'] = self.train_config.beta
-        self.hyper_params['ncontrols'] = self.model_config.synth_params_count
-        # self.hyper_params['contloss'] = self.model_config.controls_losses
+        self.hyper_params['stylearch'] = self.model_config.style_architecture
         self.hyper_params['latfl_arch'] = self.model_config.latent_flow_arch
         self.hyper_params['latfl_in_regul'] = self.train_config.latent_flow_input_regularization
         # Synth controls regression
+        self.hyper_params['ncontrols'] = self.model_config.synth_params_count
+        # self.hyper_params['contloss'] = self.model_config.controls_losses
         self.hyper_params['regr_arch'] = self.model_config.params_regression_architecture
         self.hyper_params['regr_FCdrop'] = self.train_config.reg_fc_dropout
         self.hyper_params['regr_outsoftm'] = self.model_config.params_reg_softmax

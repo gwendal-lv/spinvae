@@ -349,7 +349,7 @@ def train_config():
     del reg_model_parallel, ae_model_parallel
     del extended_ae_model, ae_model
     del reg_model
-    del controls_criterion, controls_num_eval_criterion, controls_accuracy_criterion, reconstruction_criterion
+    del controls_criterion, controls_num_eval_criterion, controls_accuracy_criterion
     del logger
     del dataloader, dataset
     del train_audio_dataset, validation_audio_dataset

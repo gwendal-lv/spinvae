@@ -18,16 +18,24 @@ from utils.probability import gaussian_log_probability, standard_gaussian_log_pr
 
 
 class BasicVAE(model.base.TrainableModel):
-    """ A standard VAE that uses some given encoder and decoder networks.
-     The latent probability distribution is modeled as dim_z independent Gaussian distributions. """
+    """
+    A standard VAE that uses some given encoder and decoder networks.
+     The latent probability distribution is modeled as dim_z independent Gaussian distributions.
 
-    def __init__(self, encoder, dim_z, decoder, concat_midi_to_z0=False, train_config=None):
+    A style vector w is always computed from z0_sampled using an 8-layer MLP (StyleGAN).
+     """
+
+    def __init__(self, encoder, dim_z, decoder, style_arch: str,
+                 concat_midi_to_z0=False,  # FIXME remove that arg - midi note should be concat to style vectors w
+                 train_config=None):
         super().__init__(train_config=train_config, model_type='ae')
         # No size checks performed. Encoder and decoder must have been properly designed
         self.encoder = encoder
         self.dim_z = dim_z
         self.decoder = decoder
         self.concat_midi_to_z0 = concat_midi_to_z0
+        if concat_midi_to_z0:
+            raise AssertionError("MIDI note should not be concatenated to z0, but to style vector w.")
 
         # if train_config is None: all losses have to be unavailable
         if train_config is None:
@@ -54,6 +62,24 @@ class BasicVAE(model.base.TrainableModel):
                 self.latent_criterion = model.loss.GaussianDkl(normalize=self.normalize_losses)
             else:  # Might be assigned by child class
                 self.latent_criterion = None
+
+        # TODO parse style arch
+        style_args = style_arch.split('_')
+        if style_args[0] != 'mlp':
+            raise AssertionError("Style network must be 'mlp'")
+        n_layers = int(style_args[1])
+        output_bn = False
+        if len(style_args) >= 3:
+            if style_args[2].lower() == 'outputbn':
+                output_bn = True
+            else:
+                raise AssertionError("Unrecognized style network argument '{}'".format(style_args[2]))
+        self.style_mlp = nn.Sequential()
+        for i in range(n_layers):
+            self.style_mlp.add_module('fc{}'.format(i), nn.Linear(dim_z, dim_z))
+            self.style_mlp.add_module('act{}'.format(i), nn.ReLU())
+            if i < (n_layers-1) or (i == (n_layers-1) and output_bn):
+                self.style_mlp.add_module('bn{}'.format(i), nn.BatchNorm1d(dim_z))
 
     def _encode_and_sample(self, x, sample_info=None):
         n_minibatch = x.size()[0]
@@ -86,11 +112,8 @@ class BasicVAE(model.base.TrainableModel):
         return z_0_mu_logvar, z_0_sampled
 
     def _decode_latent_vector(self, z_sampled):
-        # TODO generate a style vector and pass it to the decoder
-
-        # TODO maybe return the intermediate style vector for a downstream (classification?) task
-
-        return self.decoder(z_sampled)
+        w_style = self.style_mlp(z_sampled)
+        return w_style, self.decoder(z_sampled, w_style)
 
     def forward(self, x, sample_info=None):
         """ Encodes the given input into a q_phi(z|x) probability distribution,
@@ -102,8 +125,8 @@ class BasicVAE(model.base.TrainableModel):
         :returns: z_mu_logvar, z_sampled, zK_sampled=z_sampled, logabsdetjacT=0.0, x_out (reconstructed spectrogram)
         """
         z_mu_logvar, z_sampled = self._encode_and_sample(x, sample_info)
-        x_out = self._decode_latent_vector(z_sampled)
-        # TODO also get and return the style vector?
+        w_style, x_out = self._decode_latent_vector(z_sampled)
+        # TODO also get and return the style vector? for downstream tasks
         return z_mu_logvar, z_sampled, z_sampled, torch.zeros((z_sampled.shape[0], 1), device=x.device), x_out
 
     def latent_loss(self, z_0_mu_logvar, *args):
@@ -135,7 +158,8 @@ class FlowVAE(BasicVAE):
     The loss does not rely on a Kullback-Leibler divergence but on a direct log-likelihood computation.
     """
 
-    def __init__(self, encoder, dim_z, decoder, flow_arch: str, concat_midi_to_z0=False, train_config=None):
+    def __init__(self, encoder, dim_z, decoder,  style_arch: str, flow_arch: str,
+                 concat_midi_to_z0=False, train_config=None):
         """
         :param flow_arch: Full string-description of the flow, e.g. 'realnvp_4l200' (flow type, number of flows,
             hidden features count, and batch-norm options '_BNbetween' and '_BNinternal' ...)
@@ -143,7 +167,8 @@ class FlowVAE(BasicVAE):
             this model to append MIDI pitch and velocity (see corresponding mu and log(var) in forward() implementation)
         """
         # Latent loss will be init from this class' ctor
-        super().__init__(encoder, dim_z, decoder, concat_midi_to_z0=concat_midi_to_z0, train_config=train_config)
+        super().__init__(encoder, dim_z, decoder, style_arch,
+                         concat_midi_to_z0=concat_midi_to_z0, train_config=train_config)
         if train_config is None:  # This model won't be usable for training anyway (no loss computation)
             self.flows_internal_dropout_p = 0.0
         else:
@@ -215,7 +240,7 @@ class FlowVAE(BasicVAE):
         z_0_mu_logvar, z_0_sampled = self._encode_and_sample(x, sample_info)
         z_K_sampled, log_abs_det_jac = self.flow_transform(z_0_sampled)
         # TODO also get and return the style vector?
-        x_out = self._decode_latent_vector(z_K_sampled)
+        w_style, x_out = self._decode_latent_vector(z_K_sampled)
         return z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out
 
     def latent_loss(self, z_0_mu_logvar, *args):

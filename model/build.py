@@ -55,10 +55,14 @@ def build_ae_model(model_config, train_config):
                                  .format(train_config.latent_flow_input_regularization))
         if train_config.latent_loss.lower() != 'dkl':
             raise AssertionError("BasicVAE: the latent loss should be 'Dkl' (given: '{}')".format(train_config.latent_loss))
-        ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, train_config=train_config)
+        ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, model_config.style_architecture,
+                                concat_midi_to_z0=model_config.concat_midi_to_z,  # FIXME deprecated
+                                train_config=train_config)
     else:  # Flow VAE
-        ae_model = VAE.FlowVAE(encoder_model, model_config.dim_z, decoder_model, model_config.latent_flow_arch,
-                               concat_midi_to_z0=model_config.concat_midi_to_z,  train_config=train_config)
+        ae_model = VAE.FlowVAE(encoder_model, model_config.dim_z, decoder_model, model_config.style_architecture,
+                               model_config.latent_flow_arch,
+                               concat_midi_to_z0=model_config.concat_midi_to_z,  # FIXME deprecated
+                               train_config=train_config)
     return encoder_model, decoder_model, ae_model
 
 
@@ -72,13 +76,15 @@ def build_extended_ae_model(model_config, train_config, idx_helper):
         model_config.params_reg_softmax = True  # Default value is True (legacy behavior)
     # Regression model - extension of the VAE model
     if model_config.params_regression_architecture.startswith("mlp_"):
-        assert model_config.forward_controls_loss is True  # Non-invertible MLP cannot inverse target values
+        if not model_config.forward_controls_loss:
+            raise AssertionError()   # Non-invertible MLP cannot inverse target values
         reg_arch = model_config.params_regression_architecture.replace("mlp_", "")
         reg_model = regression.MLPControlsRegression(reg_arch, model_config.dim_z, idx_helper, train_config.reg_fc_dropout,
                                                      cat_softmax_activation=model_config.params_reg_softmax,
                                                      train_config=train_config)
     elif model_config.params_regression_architecture.startswith("flow_"):
-        assert model_config.learnable_params_tensor_length > 0  # Flow models require dim_z to be equal to this length
+        if model_config.learnable_params_tensor_length <= 0:  # Flow models require dim_z to be equal to this length
+            raise AssertionError()
         reg_arch = model_config.params_regression_architecture.replace("flow_", "")
         reg_model = regression.FlowControlsRegression(reg_arch, model_config.dim_z, idx_helper,
                                                       fast_forward_flow=model_config.forward_controls_loss,
