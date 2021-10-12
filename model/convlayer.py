@@ -10,9 +10,29 @@ import torch.nn.functional as F
 
 
 
+class AdaIN(nn.Module):
+    def __init__(self, num_style_features, num_conv_ch):
+        """ Adaptive Instance Normalization, inspired by the StyleGAN generator architecture. """
+        super().__init__()
+        self.norm = nn.InstanceNorm2d(num_conv_ch, affine=False)  # No learnable params
+        # Affine transforms (through basic affine FC layers) to compute normalization bias and scale
+        self.bias_nn = nn.Linear(num_style_features, num_conv_ch)
+        self.scale_nn = nn.Linear(num_style_features, num_conv_ch)
+
+    def forward(self, x, w_style):
+        """ Normalizes and rescales/re-biases the 2D feature maps x using style vectors w. """
+        x = self.norm(x)
+        b, s = self.bias_nn(w_style), self.scale_nn(w_style)
+        # x shape : N x C x H x W  (W: time ; H: frequency)
+        # w shape : N x C
+        b = torch.unsqueeze(torch.unsqueeze(b, 2), 3).expand(-1, -1, x.shape[2], x.shape[3])
+        s = torch.unsqueeze(torch.unsqueeze(s, 2), 3).expand(-1, -1, x.shape[2], x.shape[3])
+        return x * s + b
+
+
 class ConvBase(nn.Module):
     def __init__(self, out_ch, act=nn.ReLU(),
-                 norm_layer: Optional[str] = 'bn', adain_nb_features: Optional[int] = None):
+                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
         """
         Base class for any conv layer with act and norm (usable for Conv or Transpose Conv layers)
 
@@ -27,7 +47,7 @@ class ConvBase(nn.Module):
         elif self.norm_layer_description == 'bn':
             self.norm = nn.BatchNorm2d(out_ch)
         elif self.norm_layer_description == 'adain':
-            raise NotImplementedError()  # TODO adain
+            self.norm = AdaIN(adain_num_style_features, out_ch)
         else:
             raise AssertionError("Layer norm {} not available.".format(self.norm_layer_description))
 
@@ -67,8 +87,8 @@ class Conv2D(nn.Sequential):
 class TConv2D(ConvBase):
     """ A basic Transposed conv layer with activation and normalization layers """
     def __init__(self, in_ch, out_ch, kernel_size, stride, padding, output_padding=0, dilation=1, padding_mode='zeros',
-                 act=nn.ReLU(), norm_layer: Optional[str] = 'bn', adain_nb_features: Optional[int] = None):
-        super().__init__(out_ch, act, norm_layer, adain_nb_features)
+                 act=nn.ReLU(), norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
+        super().__init__(out_ch, act, norm_layer, adain_num_style_features)
         self.conv = nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride, padding, output_padding,
                                        dilation=dilation, padding_mode=padding_mode)
 
@@ -194,4 +214,3 @@ class ResTConv2D(nn.Module):
         # Residuals obtained from automatic average pool
         return self.bn2(self.act2(x_before_add +
                                   F.interpolate(x, output_feature_maps_size, mode='bilinear', align_corners=False)))
-

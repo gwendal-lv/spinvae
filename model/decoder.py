@@ -1,3 +1,4 @@
+import warnings
 
 import numpy as np
 import torch
@@ -62,7 +63,6 @@ class SpectrogramDecoder(nn.Module):
         single_spec_output_size = list(self.output_tensor_size)
         single_spec_output_size[1] = 1  # Single-channel output
         self.single_ch_cnn = nn.Sequential()
-        # TODO remove copié de puis autre classe DEC
         if self.base_arch_name == 'speccnn8l1':
             ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes are drastically reduced
             (especially the last, not so useful but very GPU-expensive layer on large images) '''
@@ -70,6 +70,10 @@ class SpectrogramDecoder(nn.Module):
                 name = 'dec{}'.format(i)
                 in_ch = self.last_4x4conv_ch if i == 1 else 2 ** (10 - i)
                 out_ch = 2 ** (10 - (i + 1)) if (i < (self.num_cnn_layers - 1)) else 1
+                if self.arch_args['big']:
+                    in_ch = max(in_ch, 128)
+                    if out_ch > 1:
+                        out_ch = max(out_ch, 128)
                 padding, stride = (2, 2), 2
                 if i < self.num_cnn_layers - 1:
                     kernel = (4, 4)
@@ -83,16 +87,12 @@ class SpectrogramDecoder(nn.Module):
                     output_padding = (0, 0)
                 if 0 <= i < (self.num_cnn_layers-1):
                     act = nn.LeakyReLU(0.1)
-                    try:
-                        self.arch_args.index('adain')  # Raises ValueError if index is not found
-                        norm = 'adain'
-                    except ValueError:
-                        norm = 'bn'
+                    norm = 'adain' if self.arch_args['adain'] else 'bn'
                 else:
                     norm = None
                     act = nn.Identity()
                 l = convlayer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
-                                      adain_nb_features=dim_z)  # TODO concatenate MIDI note ???
+                                      adain_num_style_features=dim_z)  # TODO concatenate MIDI note ???
                 #self.single_ch_cnn.append(l)
                 self.single_ch_cnn.add_module(name, l)
         # Final activation, for all architectures
@@ -100,7 +100,7 @@ class SpectrogramDecoder(nn.Module):
 
         # TODO send a dummy input to retrieve output size (assert if CNN output is smaller than target)
 
-    def forward(self, z_sampled, w_style=None):
+    def forward(self, z_sampled, w_style=None):  # TODO add midi_notes as arg
         if w_style is None:  # w_style can be omitted during summary writing
             print("[decoder.py] w_style tensor is None; replaced by 0.0 (should happen during init only)")
             w_style = z_sampled * 0.0
@@ -111,8 +111,10 @@ class SpectrogramDecoder(nn.Module):
         # This won't work on multi-channel spectrograms with force_bigger_network==True (don't do this anyway)
         single_ch_cnn_inputs = torch.split(unmixed_features, self.last_4x4conv_ch,  # actual multi-spec: 512ch-split
                                            dim=1)  # Split along channels dimension
-        single_ch_cnn_outputs = [self.single_ch_cnn((single_ch_in, w_style))
-                                 for single_ch_in in single_ch_cnn_inputs]
+        # TODO concat midi notes to w_style
+        single_ch_cnn_outputs = list()
+        for single_ch_in in single_ch_cnn_inputs:
+            single_ch_cnn_outputs.append(self.single_ch_cnn((single_ch_in, w_style)))
         # Remove style and activate outputs
         single_ch_cnn_outputs = [self.single_ch_cnn_act(x[0]) for x in single_ch_cnn_outputs]
 

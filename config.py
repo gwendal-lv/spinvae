@@ -24,18 +24,20 @@ model = _Config()
 # ----------------------------------------------- Data ---------------------------------------------------
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "PreTrainVAE"
-model.run_name = 'dev_decstyle2'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "VAE_AdaIN"
+model.run_name = 'dec_adain_bigencdec'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-# Arch args: '_adain', .....
-model.encoder_architecture = 'speccnn8l1'
+# 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
+# 
+# Arch args: '_adain', '_big', .....
+model.encoder_architecture = 'speccnn8l1_adain_big'
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
-model.style_architecture = 'mlp_8_outputbn'  # internal batch norm layers are always added
+model.style_architecture = 'mlp_8_outputbn'  # batch norm layers are always added inside the mlp
 # Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'flow_realnvp_6l300'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
@@ -137,7 +139,7 @@ train.normalize_losses = True  # Normalize all losses over the vector-dimension 
 train.beta = 0.2  # latent loss factor - use much lower value (e-2) to get closer the ELBO
 train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very unstable training)
 # Epochs of warmup increase from start_value to beta
-train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). 16k samples dataset: set to 40
+train.beta_warmup_epochs = 25  # See update_dynamic_config_params().
 train.beta_cycle_epochs = -1  # beta cyclic annealing (https://arxiv.org/abs/1903.10145). -1 deactivates TODO do
 
 # ------------------------------------------- Optimizer + scheduler -------------------------------------------
@@ -146,7 +148,7 @@ train.optimizer = 'Adam'
 # Maximal learning rate (reached after warmup, then reduced on plateaus)
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
 # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
-train.initial_learning_rate = {'ae': 2e-4, 'reg': 2e-4}
+train.initial_learning_rate = {'ae': 1e-4, 'reg': 2e-4}
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
 train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
 train.lr_warmup_start_factor = 0.1

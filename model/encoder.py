@@ -1,3 +1,4 @@
+import warnings
 
 import torch
 import torch.nn as nn
@@ -6,7 +7,7 @@ from model import convlayer
 
 
 def parse_architecture(full_architecture: str):
-    """ Parses an argument used to describe the encoder and decoder architectures (e.g. speccnn8l1_larger_res) """
+    """ Parses an argument used to describe the encoder and decoder architectures (e.g. speccnn8l1_big_res) """
     # Decompose architecture to retrieve number of cnn and fc layer, options, ...
     arch_args = full_architecture.split('_')
     base_arch_name = arch_args[0]  # type: str
@@ -15,19 +16,18 @@ def parse_architecture(full_architecture: str):
     layers_args = [int(s) for s in base_arch_name.replace('speccnn', '').split('l')]
     num_cnn_layers = layers_args[0]
     num_fc_layers = layers_args[1]
-    # Check arch args
+    # Check arch args, transform
+    arch_args_dict = {'adain': False, 'big': False, 'res': False, 'att': False}
     for arch_arg in arch_args:
-        if arch_arg == 'adain':
-            pass  # Authorized arguments
-        elif arch_arg == 'larger':
-            raise NotImplementedError("_larger encoder argument not implemented.")
+        if arch_arg == 'adain' or arch_arg == 'big':
+            arch_args_dict[arch_arg] = True  # Authorized arguments
         elif arch_arg == 'res':
             raise NotImplementedError("Res-connections encoder argument (_res) not implemented.")
         elif arch_arg == 'att':
             raise NotImplementedError("Self-attention encoder argument (_att) not implemented.")
         else:
             raise ValueError("Unvalid encoder argument '{}' from architecture '{}'".format(arch_arg, full_architecture))
-    return base_arch_name, num_cnn_layers, num_fc_layers, arch_args
+    return base_arch_name, num_cnn_layers, num_fc_layers, arch_args_dict
 
 
 class SpectrogramEncoder(nn.Module):
@@ -66,13 +66,29 @@ class SpectrogramEncoder(nn.Module):
             ''' Where to use BN? 'ESRGAN' generator does not use BN in the first and last conv layers.
             DCGAN: no BN on discriminator in out generator out.
             Our experiments seem to show: more stable latent loss with no BN before the FC that regresses mu/logvar,
-            consistent training runs 
-            TODO try BN before act (see DCGAN arch)
-            '''
-            for i in range(0, self.num_cnn_layers):  # for all 4x4 conv layers
+            consistent training runs  '''
+            if self.arch_args['adain']:
+                print("[encoder.py] 'adain' arch arg (MIDI notes provided to layers) not implemented")
+            for i in range(0, self.num_cnn_layers):
+                # num ch, kernel size, stride and padding depend on the layer number
+                if i == 0:
+                    kernel_size, stride, padding = [5, 5], [2, 2], 2
+                    in_ch = 1
+                    out_ch = 2**(i+3)
+                    if self.arch_args['big']:
+                        out_ch = max(out_ch, 128)
+                elif 1 <= i <= 6:
+                    kernel_size, stride, padding = [4, 4], [2, 2], 2
+                    in_ch = 2**(i+2)
+                    out_ch = 2**(i+3)
+                    if self.arch_args['big']:
+                        in_ch, out_ch = max(in_ch, 128), max(out_ch, 128)
+                else:  # i == 7
+                    kernel_size, stride, padding = [1, 1], [1, 1], 0
+                    in_ch = 2**(i+2)
+                    out_ch = 2**(i+3)
                 # base number of channels: 1, 8, 16, ... 512, 1024
-                in_ch = 2**(i+2) if i > 0 else 1
-                out_ch = 2**(i+3)
+                # Increased number of layers - sequential encoder
                 if self.spectrogram_channels > 1:
                     # Does this layer receive the stacked feature maps? (much larger input, 50% larger output)
                     if i == (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
@@ -81,14 +97,6 @@ class SpectrogramEncoder(nn.Module):
                     # Is this layer the one that is after the stacking layer? (50% larger input)
                     elif i == (self.num_cnn_layers + self.deep_feat_mix_level + 1):  # negative mix level
                         in_ch = in_ch * 3 // 2
-                # TODO allow _large option and set a max threshold (e.g. 2048? 3000+?)
-                # Kernel size, stride and padding depend on the layer number
-                if i == 0:
-                    kernel_size, stride, padding = [5, 5], [2, 2], 2
-                elif 1 <= i <= 6:
-                    kernel_size, stride, padding = [4, 4], [2, 2], 2
-                else:  # i == 7
-                    kernel_size, stride, padding = [1, 1], [1, 1], 0
                 # Build layer and append to the appropriate sequence module
                 act = nn.LeakyReLU(0.1)  # New instance for each layer (maybe unnecessary?)
                 name = 'enc{}'.format(i)
