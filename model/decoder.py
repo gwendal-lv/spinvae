@@ -66,8 +66,8 @@ class SpectrogramDecoder(nn.Module):
         if self.base_arch_name == 'speccnn8l1':
             ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes are drastically reduced
             (especially the last, not so useful but very GPU-expensive layer on large images) '''
+            _in_ch, _out_ch = -1, -1  # backup for res blocks
             for i in range(1, self.num_cnn_layers):  # 'normal' channels: (1024, ) 512, 256, ...., 8
-                name = 'dec{}'.format(i)
                 in_ch = self.last_4x4conv_ch if i == 1 else 2 ** (10 - i)
                 out_ch = 2 ** (10 - (i + 1)) if (i < (self.num_cnn_layers - 1)) else 1
                 if self.arch_args['big']:
@@ -91,10 +91,16 @@ class SpectrogramDecoder(nn.Module):
                 else:
                     norm = None
                     act = nn.Identity()
-                l = convlayer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
-                                      adain_num_style_features=dim_z)  # TODO concatenate MIDI note ???
-                #self.single_ch_cnn.append(l)
-                self.single_ch_cnn.add_module(name, l)
+                if self.arch_args['res'] and i in [1, 3]:
+                    _in_ch, _out_ch = in_ch, out_ch
+                elif self.arch_args['res'] and i in [2, 4]:
+                    l = convlayer.ResTConv2D(_in_ch, in_ch, out_ch, kernel, stride, padding, output_padding, act=act,
+                                             norm_layer=norm, adain_num_style_features=dim_z)  # TODO concat MIDI note ?
+                    self.single_ch_cnn.add_module('dec_{}_{}'.format(i-1, i), l)
+                else:
+                    l = convlayer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act,
+                                          norm_layer=norm, adain_num_style_features=dim_z)  # TODO concat MIDI note ?
+                    self.single_ch_cnn.add_module('dec{}'.format(i), l)
         # Final activation, for all architectures
         self.single_ch_cnn_act = nn.Hardtanh()
 

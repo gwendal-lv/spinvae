@@ -19,10 +19,8 @@ def parse_architecture(full_architecture: str):
     # Check arch args, transform
     arch_args_dict = {'adain': False, 'big': False, 'res': False, 'att': False}
     for arch_arg in arch_args:
-        if arch_arg == 'adain' or arch_arg == 'big':
+        if arch_arg in ['adain', 'big', 'res']:
             arch_args_dict[arch_arg] = True  # Authorized arguments
-        elif arch_arg == 'res':
-            raise NotImplementedError("Res-connections encoder argument (_res) not implemented.")
         elif arch_arg == 'att':
             raise NotImplementedError("Self-attention encoder argument (_att) not implemented.")
         else:
@@ -69,8 +67,19 @@ class SpectrogramEncoder(nn.Module):
             consistent training runs  '''
             if self.arch_args['adain']:
                 print("[encoder.py] 'adain' arch arg (MIDI notes provided to layers) not implemented")
+            _in_ch, _out_ch = -1, -1  # backup for res blocks
+            building_res_block = False  # if True, the current layer will be added from the next iteration
+            finish_res_block = False  # if True, the current layer will include the previous one (res block)
             for i in range(0, self.num_cnn_layers):
+                if self.arch_args['res']:
+                    if i == 1 or i == 3 or (i == 5 and self.deep_feat_mix_level > -2):
+                        building_res_block, finish_res_block = True, False
+                    elif i == 2 or i == 4 or (i == 6 and self.deep_feat_mix_level > -2):
+                        building_res_block, finish_res_block = False, True
+                    else:
+                        building_res_block, finish_res_block = False, False
                 # num ch, kernel size, stride and padding depend on the layer number
+                # base number of channels: 1, 8, 16, ... 512, 1024
                 if i == 0:
                     kernel_size, stride, padding = [5, 5], [2, 2], 2
                     in_ch = 1
@@ -87,7 +96,6 @@ class SpectrogramEncoder(nn.Module):
                     kernel_size, stride, padding = [1, 1], [1, 1], 0
                     in_ch = 2**(i+2)
                     out_ch = 2**(i+3)
-                # base number of channels: 1, 8, 16, ... 512, 1024
                 # Increased number of layers - sequential encoder
                 if self.spectrogram_channels > 1:
                     # Does this layer receive the stacked feature maps? (much larger input, 50% larger output)
@@ -99,14 +107,27 @@ class SpectrogramEncoder(nn.Module):
                         in_ch = in_ch * 3 // 2
                 # Build layer and append to the appropriate sequence module
                 act = nn.LeakyReLU(0.1)  # New instance for each layer (maybe unnecessary?)
-                name = 'enc{}'.format(i)
-                # No BN on first and last layers
-                conv_layer = convlayer.Conv2D(in_ch, out_ch, kernel_size, stride, padding, act=act, name_prefix=name,
-                                              bn=('after' if (0 < i < (self.num_cnn_layers-1)) else None))
-                if i < (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
-                    self.single_ch_cnn.add_module(name, conv_layer)
+                # No normalization on first and last layers
+                if 0 < i < (self.num_cnn_layers - 1):
+                    # TODO activate AdaIn?
+                    norm = 'bn'
                 else:
-                    self.features_mixer_cnn.add_module(name, conv_layer)
+                    norm = None
+                if building_res_block:
+                    _in_ch, _out_ch = in_ch, out_ch
+                else:
+                    if finish_res_block:
+                        name = 'enc_{}_{}'.format(i-1, i)
+                        conv_layer = convlayer.ResConv2D(_in_ch, in_ch, out_ch, kernel_size, stride, padding,
+                                                         act=act, norm_layer=norm, adain_num_style_features=None)
+                    else:
+                        name = 'enc{}'.format(i)
+                        conv_layer = convlayer.Conv2D(in_ch, out_ch, kernel_size, stride, padding,
+                                                      act=act, norm_layer=norm, adain_num_style_features=None)
+                    if i < (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
+                        self.single_ch_cnn.add_module(name, conv_layer)
+                    else:
+                        self.features_mixer_cnn.add_module(name, conv_layer)
 
         # - - - - - 3) MLP for extracting properly-sized latent vector - - - - -
         # Automatic CNN output tensor size inference
@@ -135,11 +156,15 @@ class SpectrogramEncoder(nn.Module):
             self.mlp.add_module('lat_in_drop', nn.Dropout(output_dropout_p))
 
     def _forward_cnns(self, x_spectrograms):
+        # TODO use MIDI notes (through AdaIN style?)
         # apply main cnn multiple times
-        single_channel_cnn_out = [self.single_ch_cnn(torch.unsqueeze(x_spectrograms[:, ch, :, :], dim=1))
+        single_channel_cnn_out = [self.single_ch_cnn((torch.unsqueeze(x_spectrograms[:, ch, :, :], dim=1), None))
                                   for ch in range(self.spectrogram_channels)]
-        # Then mix features from different input channels - and flatten the result
-        return self.features_mixer_cnn(torch.cat(single_channel_cnn_out, dim=1))
+        # Remove w output (sequential module: conditioning passed to all layers)
+        single_channel_cnn_out = [x[0] for x in single_channel_cnn_out]
+        # Then mix features from different input channels
+        x_out, w = self.features_mixer_cnn((torch.cat(single_channel_cnn_out, dim=1), None))
+        return x_out
 
     def forward(self, x_spectrograms):
         n_minibatch = x_spectrograms.size()[0]

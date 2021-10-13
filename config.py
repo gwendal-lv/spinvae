@@ -24,17 +24,17 @@ model = _Config()
 # ----------------------------------------------- Data ---------------------------------------------------
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "VAE_AdaIN"
-model.run_name = 'dec_adain_bigencdec'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "VAE_CNNs"
+model.run_name = 'speccnn8l1_res_2'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
-# 
+# ''
 # Arch args: '_adain', '_big', .....
-model.encoder_architecture = 'speccnn8l1_adain_big'
+model.encoder_architecture = 'speccnn8l1_res'
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 model.style_architecture = 'mlp_8_outputbn'  # batch norm layers are always added inside the mlp

@@ -30,16 +30,17 @@ class AdaIN(nn.Module):
         return x * s + b
 
 
-class ConvBase(nn.Module):
+class ActAndNorm(nn.Module):
     def __init__(self, out_ch, act=nn.ReLU(),
                  norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
         """
-        Base class for any conv layer with act and norm (usable for Conv or Transpose Conv layers)
+        Base class for any conv layer with act and norm (usable a base class for Conv or Transpose Conv layers,
+        or as main class). The forward function returns a batch of features maps, and a batch of w conditioning vectors.
 
         :param norm_layer: 'bn' (Batch Norm), 'adain' (Adaptive Instance Norm, requires w_style during forward) or None
         """
         super().__init__()
-        self.conv = None  # must be assigned by child class
+        self.conv = None  # can be assigned by child class - otherwise, not applied
         self.act = act
         self.norm_layer_description = norm_layer
         if self.norm_layer_description is None:
@@ -54,7 +55,9 @@ class ConvBase(nn.Module):
     def forward(self, x_and_w_style):
         """ Always returns a tuple (x, w) for the style to be passed to the next layer in the sequence. """
         x, w_style = x_and_w_style[0], x_and_w_style[1]
-        x = self.act(self.conv(x))
+        if self.conv is not None:
+            x = self.conv(x)
+        x = self.act(x)
         if self.norm_layer_description == 'bn':
             return self.norm(x), w_style
         elif self.norm_layer_description == 'adain':
@@ -65,26 +68,16 @@ class ConvBase(nn.Module):
             return x, w_style
 
 
-
-class Conv2D(nn.Sequential):
-    """ A basic conv layer with activation and batch-norm """
+class Conv2D(ActAndNorm):
+    """ A basic conv layer with activation and normalization layers """
     def __init__(self, in_ch, out_ch, kernel_size, stride, padding, dilation=(1, 1),
-                 padding_mode='zeros', act=nn.ReLU(), name_prefix='', bn='after'):
-        """
-
-        :param bn: 'after' activation, 'before' activation, or None
-        """
-        super().__init__()
-        self.add_module(name_prefix + 'conv', nn.Conv2d(in_ch, out_ch, kernel_size, stride,
-                                                        padding, dilation, padding_mode=padding_mode))
-        if bn == 'before':
-            self.add_module(name_prefix + 'bn', nn.BatchNorm2d(out_ch))
-        self.add_module(name_prefix + 'act', act)
-        if bn == 'after':
-            self.add_module(name_prefix + 'bn', nn.BatchNorm2d(out_ch))
+                 padding_mode='zeros', act=nn.ReLU(),
+                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
+        super().__init__(out_ch, act, norm_layer, adain_num_style_features)
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
 
 
-class TConv2D(ConvBase):
+class TConv2D(ActAndNorm):
     """ A basic Transposed conv layer with activation and normalization layers """
     def __init__(self, in_ch, out_ch, kernel_size, stride, padding, output_padding=0, dilation=1, padding_mode='zeros',
                  act=nn.ReLU(), norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
@@ -105,8 +98,9 @@ class DenseConv2D(nn.Module):
         :param batch_norm: 'after' activation, 'before' activation, or None
         """
         super().__init__()
+        raise AssertionError("deprecated")
         self.conv1 = Conv2D(in_ch, hidden_ch, kernel_size, stride, padding, dilation,
-                            padding_mode, activation, name_prefix, batch_norm)
+                            padding_mode, activation, batch_norm)
         pre_concat_num_ch = out_ch - in_ch
         self.conv2 = Conv2D(hidden_ch, pre_concat_num_ch, kernel_size, stride, padding, dilation,
                             padding_mode, activation, name_prefix, batch_norm)
@@ -131,6 +125,7 @@ class DenseTConv2D(nn.Module):
         :param batch_norm: 'after' activation, 'before' activation, or None
         """
         super().__init__()
+        raise AssertionError("deprecated")
         self.conv1_act_bn = TConv2D(in_ch, hidden_ch, kernel_size, stride, padding, output_padding, dilation,
                                     padding_mode, activation, name_prefix, batch_norm)
         pre_concat_num_ch = out_ch - res_ch
@@ -153,35 +148,36 @@ class DenseTConv2D(nn.Module):
         return self.bn2(self.act2(x_cat))
 
 
-
 class ResConv2D(nn.Module):
-    """ 2 convolutional layers with input added to the output. Out ch will be equal to in ch count.
-    An automatic average pooling is performed if the conv are strided are reduce the size of the feature maps.
+    """ 2 convolutional layers with input added to the output
+    (if necessary: number of channels adapted using a 1x1 conv).
+    An automatic average pooling is performed on the residuals if necessary,
+    in order to reduce the size of the feature maps.
 
-    Activation and BN are performed after the add operation. """
-    def __init__(self, in_ch, hidden_ch,
-                 kernel_size, stride, padding, dilation, padding_mode='zeros',
-                 activation=nn.ReLU(), name_prefix='', batch_norm='after',
-                 pool_type='avg'):
-        """
+    TODO use 1x1 conv to adapt residual's size
 
-        :param batch_norm: 'after' activation, 'before' activation, or None
-        """
+    Final activation and norm are performed after the add operation. """
+    def __init__(self, in_ch, hidden_ch, out_ch,
+                 kernel_size, stride, padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
+                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
         super().__init__()
-        out_ch = in_ch
         self.conv1_act_bn = Conv2D(in_ch, hidden_ch, kernel_size, stride, padding, dilation,
-                                   padding_mode, activation, name_prefix, batch_norm)
+                                   padding_mode, act, norm_layer, adain_num_style_features)
         self.conv2 = nn.Conv2d(hidden_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
-        # TODO sequence, choose BN/act ordering
-        self.act2 = activation
-        self.bn2 = nn.BatchNorm2d(out_ch)
+        self.residuals_conv = nn.Conv2d(in_ch, out_ch, (1, 1)) if (in_ch != out_ch) else None
+        self.act_norm_2 = ActAndNorm(out_ch, act, norm_layer, adain_num_style_features)
 
-    def forward(self, x):
-        x_hidden = self.conv1_act_bn(x)
+    def forward(self, x_and_w):
+        x, w = x_and_w[0], x_and_w[1]  # conditioning w is always passed with x
+        x_hidden, _ = self.conv1_act_bn((x, w))
         x_before_add = self.conv2(x_hidden)
         output_feature_maps_size = x_before_add.shape[2:4]
-        # Residuals obtained from automatic average pool
-        return self.bn2(self.act2(x_before_add + F.adaptive_avg_pool2d(x, output_feature_maps_size)))
+        # Residuals - automatic average pool if necessary
+        res = self.residuals_conv(x) if self.residuals_conv is not None else x
+        if res.shape[2:4] != output_feature_maps_size:
+            res = F.adaptive_avg_pool2d(res, output_feature_maps_size)
+        # TODO bien tester ça
+        return self.act_norm_2((x_before_add + res, w))
 
 
 class ResTConv2D(nn.Module):
@@ -189,28 +185,29 @@ class ResTConv2D(nn.Module):
     An automatic upsampling bilinear interpolation is performed to increase the size of the feature maps.
 
     Activation and BN are performed after the add operation. """
-    def __init__(self, in_ch, hidden_ch,
-                 kernel_size, stride, padding, output_padding, dilation=1, padding_mode='zeros',
-                 activation=nn.ReLU(), name_prefix='', batch_norm='after',
-                 pool_type='avg'):
+    def __init__(self, in_ch, hidden_ch, out_ch,
+                 kernel_size, stride, padding, output_padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
+                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
         """
 
         :param batch_norm: 'after' activation, 'before' activation, or None
         """
         super().__init__()
-        out_ch = in_ch
         self.conv1_act_bn = TConv2D(in_ch, hidden_ch, kernel_size, stride, padding, output_padding, dilation,
-                                    padding_mode, activation, name_prefix, batch_norm)
-        self.conv2 = nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride, padding, output_padding,
+                                    padding_mode, act, norm_layer, adain_num_style_features)
+        self.conv2 = nn.ConvTranspose2d(hidden_ch, out_ch, kernel_size, stride, padding, output_padding,
                                         dilation=dilation, padding_mode=padding_mode)
-        # TODO sequence, choose BN/act ordering
-        self.act2 = activation
-        self.bn2 = nn.BatchNorm2d(out_ch)
+        self.residuals_conv = nn.Conv2d(in_ch, out_ch, (1, 1)) if (in_ch != out_ch) else None
+        self.act_norm_2 = ActAndNorm(out_ch, act, norm_layer, adain_num_style_features)
 
-    def forward(self, x):
-        x_hidden = self.conv1_act_bn(x)
+    def forward(self, x_and_w):
+        x, w = x_and_w[0], x_and_w[1]  # conditioning w is always passed with x
+        x_hidden, _ = self.conv1_act_bn((x, w))
         x_before_add = self.conv2(x_hidden)
         output_feature_maps_size = x_before_add.shape[2:4]
-        # Residuals obtained from automatic average pool
-        return self.bn2(self.act2(x_before_add +
-                                  F.interpolate(x, output_feature_maps_size, mode='bilinear', align_corners=False)))
+        # Residuals - automatic average pool if necessary
+        res = self.residuals_conv(x) if self.residuals_conv is not None else x
+        if res.shape[2:4] != output_feature_maps_size:
+            res = F.interpolate(res, output_feature_maps_size, mode='bilinear', align_corners=False)
+        # TODO bien tester ça
+        return self.act_norm_2((x_before_add + res, w))
