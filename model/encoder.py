@@ -12,8 +12,10 @@ def parse_architecture(full_architecture: str):
     arch_args = full_architecture.split('_')
     base_arch_name = arch_args[0]  # type: str
     del arch_args[0]
-    assert base_arch_name.startswith('speccnn')  # Constrained arch at the moment
-    layers_args = [int(s) for s in base_arch_name.replace('speccnn', '').split('l')]
+    if base_arch_name.startswith('speccnn'):
+        layers_args = [int(s) for s in base_arch_name.replace('speccnn', '').split('l')]
+    else:
+        raise AssertionError("Base architecture not available for given arch '{}'".format(base_arch_name))
     num_cnn_layers = layers_args[0]
     num_fc_layers = layers_args[1]
     # Check arch args, transform
@@ -60,6 +62,35 @@ class SpectrogramEncoder(nn.Module):
         # - - - - - - - - - - and 2) Features mixer - - - - - - - - - -
         self.single_ch_cnn = nn.Sequential()
         self.features_mixer_cnn = nn.Sequential()
+        self._build_cnns()
+
+        # - - - - - 3) MLP for extracting properly-sized latent vector - - - - -
+        # Automatic CNN output tensor size inference
+        with torch.no_grad():
+            single_element_input_tensor_size = list(input_tensor_size)
+            single_element_input_tensor_size[0] = 1  # single-element batch
+            dummy_spectrogram = torch.zeros(single_element_input_tensor_size)
+            self.cnn_out_size = self._forward_cnns(dummy_spectrogram).size()
+        cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
+        # Number of linear layers as configured in the arch arg (e.g. speccnn8l1 -> 1 FC layer).
+        # Default: no final batch-norm (maybe added after this for loop). Always 1024 hidden units
+        self.mlp = nn.Sequential()
+        for i in range(self.num_fc_layers):
+            if self.fc_dropout > 0.0:
+                self.mlp.add_module("encdrop{}".format(i), nn.Dropout(self.fc_dropout))
+            in_units = cnn_out_items if (i == 0) else 1024
+            out_units = 1024 if (i < (self.num_fc_layers - 1)) else 2 * self.dim_z
+            self.mlp.add_module("encfc{}".format(i), nn.Linear(in_units, out_units))
+            if i < (self.num_fc_layers - 1):  # No final activation - outputs are latent mu/logvar
+                self.mlp.add_module("act{}".format(i), nn.ReLU())
+        # Batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
+        # Dropout to help prevent VAE posterior collapse --> should be zero
+        if output_bn:
+            self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(2 * self.dim_z))
+        if output_dropout_p > 0.0:
+            self.mlp.add_module('lat_in_drop', nn.Dropout(output_dropout_p))
+
+    def _build_cnns(self):
         if self.base_arch_name == 'speccnn8l1':
             ''' Where to use BN? 'ESRGAN' generator does not use BN in the first and last conv layers.
             DCGAN: no BN on discriminator in out generator out.
@@ -128,32 +159,8 @@ class SpectrogramEncoder(nn.Module):
                         self.single_ch_cnn.add_module(name, conv_layer)
                     else:
                         self.features_mixer_cnn.add_module(name, conv_layer)
-
-        # - - - - - 3) MLP for extracting properly-sized latent vector - - - - -
-        # Automatic CNN output tensor size inference
-        with torch.no_grad():
-            single_element_input_tensor_size = list(input_tensor_size)
-            single_element_input_tensor_size[0] = 1  # single-element batch
-            dummy_spectrogram = torch.zeros(single_element_input_tensor_size)
-            self.cnn_out_size = self._forward_cnns(dummy_spectrogram).size()
-        cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
-        # Number of linear layers as configured in the arch arg (e.g. speccnn8l1 -> 1 FC layer).
-        # Default: no final batch-norm (maybe added after this for loop). Always 1024 hidden units
-        self.mlp = nn.Sequential()
-        for i in range(self.num_fc_layers):
-            if self.fc_dropout > 0.0:
-                self.mlp.add_module("encdrop{}".format(i), nn.Dropout(self.fc_dropout))
-            in_units = cnn_out_items if (i == 0) else 1024
-            out_units = 1024 if (i < (self.num_fc_layers - 1)) else 2 * self.dim_z
-            self.mlp.add_module("encfc{}".format(i), nn.Linear(in_units, out_units))
-            if i < (self.num_fc_layers - 1):  # No final activation - outputs are latent mu/logvar
-                self.mlp.add_module("act{}".format(i), nn.ReLU())
-        # Batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
-        # Dropout to help prevent VAE posterior collapse --> should be zero
-        if output_bn:
-            self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(2 * self.dim_z))
-        if output_dropout_p > 0.0:
-            self.mlp.add_module('lat_in_drop', nn.Dropout(output_dropout_p))
+        else:
+            raise AssertionError("Architecture {} not available".format(self.base_arch_name))
 
     def _forward_cnns(self, x_spectrograms):
         # TODO use MIDI notes (through AdaIN style?)

@@ -25,7 +25,7 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "VAE_CNNs"
-model.run_name = 'speccnn8l1_res_2'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'speccnn8l1_res_3'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
@@ -33,7 +33,7 @@ model.allow_erase_run = True  # If True, a previous run with identical name will
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
 # ''
-# Arch args: '_adain', '_big', .....
+# Arch args: '_adain', '_big', '_res'
 model.encoder_architecture = 'speccnn8l1_res'
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
@@ -117,7 +117,7 @@ train.k_folds = 5
 train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
-train.n_epochs = 50  # See update_dynamic_config_params().  16k sample dataset: set to 700
+train.n_epochs = 500  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
 # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
 # more than 30x more instruments than NSynth). All available data will always be used for validation.

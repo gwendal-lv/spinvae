@@ -3,6 +3,7 @@
 Defines some basic layer Classes to be integrated into bigger networks
 """
 from typing import Optional
+from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
@@ -148,66 +149,62 @@ class DenseTConv2D(nn.Module):
         return self.bn2(self.act2(x_cat))
 
 
-class ResConv2D(nn.Module):
-    """ 2 convolutional layers with input added to the output
+class ResConv2DBase(nn.Module, ABC):
+    """ Base class for ResConv2D and ResTConv2D: 2 convolutional layers with input added to the output
     (if necessary: number of channels adapted using a 1x1 conv).
-    An automatic average pooling is performed on the residuals if necessary,
-    in order to reduce the size of the feature maps.
-
-    TODO use 1x1 conv to adapt residual's size
-
-    Final activation and norm are performed after the add operation. """
-    def __init__(self, in_ch, hidden_ch, out_ch,
-                 kernel_size, stride, padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
+    Final activation and norm are performed after the add operation.
+    """
+    def __init__(self, in_ch, out_ch, act=nn.ReLU(),
                  norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
         super().__init__()
-        self.conv1_act_bn = Conv2D(in_ch, hidden_ch, kernel_size, stride, padding, dilation,
-                                   padding_mode, act, norm_layer, adain_num_style_features)
-        self.conv2 = nn.Conv2d(hidden_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
+        self.conv1_act_bn = None  # to be set by child class
+        self.conv2 = None
         self.residuals_conv = nn.Conv2d(in_ch, out_ch, (1, 1)) if (in_ch != out_ch) else None
         self.act_norm_2 = ActAndNorm(out_ch, act, norm_layer, adain_num_style_features)
+
+    @abstractmethod
+    def _resize_residuals(self, res, output_feature_maps_size):
+        pass
 
     def forward(self, x_and_w):
         x, w = x_and_w[0], x_and_w[1]  # conditioning w is always passed with x
         x_hidden, _ = self.conv1_act_bn((x, w))
         x_before_add = self.conv2(x_hidden)
         output_feature_maps_size = x_before_add.shape[2:4]
-        # Residuals - automatic average pool if necessary
+        # Residuals - conv, automatic average pool if necessary
         res = self.residuals_conv(x) if self.residuals_conv is not None else x
         if res.shape[2:4] != output_feature_maps_size:
-            res = F.adaptive_avg_pool2d(res, output_feature_maps_size)
-        # TODO bien tester ça
+            res = self._resize_residuals(res, output_feature_maps_size)
         return self.act_norm_2((x_before_add + res, w))
 
 
-class ResTConv2D(nn.Module):
-    """ 2 transpose convolution layers with input added to the output. Out ch will be equal to in ch count.
-    An automatic upsampling bilinear interpolation is performed to increase the size of the feature maps.
+class ResConv2D(ResConv2DBase):
+    """ An automatic average pooling is performed on the residuals if necessary,
+    in order to reduce the size of the feature maps."""
+    def __init__(self, in_ch, hidden_ch, out_ch,
+                 kernel_size, stride, padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
+                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
+        super().__init__(in_ch, out_ch, act, norm_layer, adain_num_style_features)
+        self.conv1_act_bn = Conv2D(in_ch, hidden_ch, kernel_size, stride, padding, dilation,
+                                   padding_mode, act, norm_layer, adain_num_style_features)
+        self.conv2 = nn.Conv2d(hidden_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
 
-    Activation and BN are performed after the add operation. """
+    def _resize_residuals(self, res, output_feature_maps_size):
+        return F.adaptive_avg_pool2d(res, output_feature_maps_size)
+
+
+class ResTConv2D(ResConv2DBase):
+    """  An automatic upsampling bilinear interpolation is performed to increase the size of the feature maps. """
     def __init__(self, in_ch, hidden_ch, out_ch,
                  kernel_size, stride, padding, output_padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
                  norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
-        """
-
-        :param batch_norm: 'after' activation, 'before' activation, or None
-        """
-        super().__init__()
+        super().__init__(in_ch, out_ch, act, norm_layer, adain_num_style_features)
         self.conv1_act_bn = TConv2D(in_ch, hidden_ch, kernel_size, stride, padding, output_padding, dilation,
                                     padding_mode, act, norm_layer, adain_num_style_features)
         self.conv2 = nn.ConvTranspose2d(hidden_ch, out_ch, kernel_size, stride, padding, output_padding,
                                         dilation=dilation, padding_mode=padding_mode)
-        self.residuals_conv = nn.Conv2d(in_ch, out_ch, (1, 1)) if (in_ch != out_ch) else None
-        self.act_norm_2 = ActAndNorm(out_ch, act, norm_layer, adain_num_style_features)
 
-    def forward(self, x_and_w):
-        x, w = x_and_w[0], x_and_w[1]  # conditioning w is always passed with x
-        x_hidden, _ = self.conv1_act_bn((x, w))
-        x_before_add = self.conv2(x_hidden)
-        output_feature_maps_size = x_before_add.shape[2:4]
-        # Residuals - automatic average pool if necessary
-        res = self.residuals_conv(x) if self.residuals_conv is not None else x
-        if res.shape[2:4] != output_feature_maps_size:
-            res = F.interpolate(res, output_feature_maps_size, mode='bilinear', align_corners=False)
-        # TODO bien tester ça
-        return self.act_norm_2((x_before_add + res, w))
+    def _resize_residuals(self, res, output_feature_maps_size):
+        return F.interpolate(res, output_feature_maps_size, mode='bilinear', align_corners=False)
+
+
