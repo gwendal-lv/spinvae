@@ -3,7 +3,7 @@
 Defines some basic layer Classes to be integrated into bigger networks
 """
 import copy
-from typing import Optional
+from typing import Optional, Tuple
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -221,13 +221,31 @@ class ResTConv2D(ResConv2DBase):
         return F.interpolate(x_skip, output_feature_maps_size, mode='bilinear', align_corners=False)
 
 
+class Upsampling2d(nn.Module):
+    def __init__(self, scale_factor: Tuple[int, int], w_input_exists=True):
+        """ Upsampling module that can be used inside a sequence of conv modules with conditioning vector w. """
+        super().__init__()
+        self.w_input_exists = w_input_exists
+        self.scale_factor = scale_factor
+
+    def forward(self, x_and_w):
+        x, w = (x_and_w[0], x_and_w[1]) if self.w_input_exists else (x_and_w, None)
+        output_feature_maps_size = list(x.shape[2:4])
+        output_feature_maps_size[0] *= self.scale_factor[0]
+        output_feature_maps_size[1] *= self.scale_factor[1]
+        x = F.interpolate(x, output_feature_maps_size, mode='bicubic', align_corners=False)
+        return (x, w) if self.w_input_exists else x
+
 
 class ResBlock3Layers(nn.Module):
-    def __init__(self, in_ch, internal_3x3_ch, out_ch, internal_stride=(1, 1), act=nn.ReLU(),
+    def __init__(self, in_ch, internal_3x3_ch, out_ch, act=nn.ReLU(),
+                 upsample=(False, False), downsample=(False, False), extra_padding=(0, 0),
                  norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
         """
         The reduced number of channels to perform the actual 3x3 conv is inspired by ResNeXt.
 
+        :param extra_padding: Tuple of height and width padding (applied on both sides). The H x W ordering corresponds
+            to Nbatch x C x H x W for PyTorch convolutional modules.
         :param norm_layer: If 'bn' or 'adain', is applied to all norm layers. If 'bn+adain', the middle residual
             layers uses AdaIN, the 2 others use BN.
         """
@@ -245,12 +263,13 @@ class ResBlock3Layers(nn.Module):
             raise ValueError("'{}' norm layer: unrecognized string argument.".format(norm_layer))
         if adain and adain_num_style_features is None:
             raise AssertionError("AdaIN requires adain_num_style_features not to be None.")
+        if (upsample[0] or upsample[1]) and (downsample[0] or downsample[1]):
+            raise AssertionError("Cannot simultaneously upsample and downsample. Please check input args.")
+        self.resize_module = nn.Sequential()
         # Residual network: reduces the nb of channels, applies a 3x3 conv, then increases the nb of ch before add
-        # TODO adapter taille residuals si strided conv (taille feature maps diminue)
-        # TODO adapter nb ch residuals si nb channels diminue
-        #    si nb channels augmente: ajouter résidus sur une partie seulement des ch?
         self.res_convs = nn.Sequential()
         # allow a mix of adain and bn --> 1 adain first, all the rest is BN
+
         norm_name = 'bn' if bn else ('adain' if adain else None)  # 1st layer: BN has the priority over AdaIN
         self.res_convs.add_module('redu1x1',
                                   Conv2D(in_ch, internal_3x3_ch, (1, 1), (1, 1), (0, 0),  # kernel, stride, padding
@@ -258,11 +277,29 @@ class ResBlock3Layers(nn.Module):
                                          norm_layer=norm_name, adain_num_style_features=adain_num_style_features))
 
         norm_name = 'adain' if adain else ('bn' if bn else None)  # 2nd layer: AdaIN has the priority over BN
-        # Strided convolution (downsampling)
-        # TODO bicubic upsampling (3x3 tconv leads to artifacts: https://distill.pub/2016/deconv-checkerboard/)
-        # TODO allow custom input padding (to increase size more)
+        # Strided convolution (downsampling),
+        # or bicubic upsampling (3x3 tconv leads to artifacts: https://distill.pub/2016/deconv-checkerboard/)
+        conv_stride = (1, 1)
+        conv_padding = (1 + extra_padding[0], 1 + extra_padding[1])
+        if upsample[0] or upsample[1]:
+            upsampling_size_factor = (2 if upsample[0] else 1, 2 if upsample[1] else 1)
+            self.resize_module.add_module('upsmp', Upsampling2d(upsampling_size_factor, w_input_exists=False))
+            self.res_convs.add_module('upsmp', Upsampling2d(upsampling_size_factor))
+        # allow custom input padding (to increase size more). left/right, top/bottom
+        if extra_padding != (0, 0) and not (downsample[0] or downsample[1]):  # extra padding
+            self.resize_module.add_module('pad', nn.ZeroPad2d((extra_padding[1], extra_padding[1],
+                                                               extra_padding[0], extra_padding[0])))
+        if downsample[0] or downsample[1]:
+            conv_stride = (2 if downsample[0] else 1, 2 if downsample[1] else 1)
+            pool_padding = (conv_padding[0]-1 if downsample[0] else extra_padding[0],
+                            conv_padding[1]-1 if downsample[1] else extra_padding[1])
+            self.resize_module.add_module('pad', nn.ZeroPad2d((pool_padding[1], pool_padding[1],
+                                                               pool_padding[0], pool_padding[0])))
+            self.resize_module.add_module('pool', nn.AvgPool2d(conv_stride, ceil_mode=True,
+                                                               padding=(0, 0)))
+                                                               #padding=(conv_stride[0] - 1, conv_stride[1] - 1)))
         self.res_convs.add_module('conv3x3',
-                                  Conv2D(internal_3x3_ch, internal_3x3_ch, (3, 3), internal_stride, (1, 1),
+                                  Conv2D(internal_3x3_ch, internal_3x3_ch, (3, 3), conv_stride, conv_padding,
                                          act=copy.deepcopy(act), reverse_order=True,
                                          norm_layer=norm_name, adain_num_style_features=adain_num_style_features))
 
@@ -271,6 +308,10 @@ class ResBlock3Layers(nn.Module):
                                   Conv2D(internal_3x3_ch, out_ch, (1, 1), (1, 1), (0, 0),
                                          act=copy.deepcopy(act), reverse_order=True,
                                          norm_layer=norm_name, adain_num_style_features=adain_num_style_features))
+
+        if len(self.resize_module) == 0:
+            del self.resize_module
+            self.resize_module = None
 
     def forward(self, x_and_w):
         """
@@ -284,7 +325,9 @@ class ResBlock3Layers(nn.Module):
         #  (https://arxiv.org/abs/1707.05847) -> bilinear (or bicubic) upsampling and add some channels (non-learnable)
         # Upsampling and decreasing ch count should happen simultaneously, but this is not a constraint
 
-        # upsampling or downsampling
+        # upsampling or downsampling (possibly padding also)
+        if self.resize_module is not None:
+            x = self.resize_module(x)
 
         # Addition of residuals (number of in/out channels can be different)
         if self.in_ch == self.out_ch:
