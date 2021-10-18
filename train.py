@@ -42,6 +42,7 @@ def train_config():
 
     Some attributes from config.py might be dynamically changed by train_queue.py (or this script,
     after loading the datasets) - so they can be different from what's currently written in config.py. """
+    torch.manual_seed(0)
 
 
     # ========== Datasets and DataLoaders ==========
@@ -83,8 +84,8 @@ def train_config():
         _, _, ae_model, reg_model, extended_ae_model = model.build.build_extended_ae_model(config.model, config.train,
                                                                                            preset_indexes_helper)
     extended_ae_model.eval()
-    # will write tensorboard graph and torchinfo txt summary. model must not be parallel
-    logger.init_with_model(ae_model, config.model.input_tensor_size)  # main model: autoencoder
+    # will torchinfo txt summary. model must not be parallel (graph not written anymore: too complicated, unreadable)
+    logger.init_with_model(ae_model, config.model.input_tensor_size, write_graph=False)  # main model: autoencoder
     if not isinstance(reg_model, model.base.DummyModel):
         logger.write_model_summary(reg_model, (config.train.minibatch_size, config.model.dim_z), "reg")  # Other model
 

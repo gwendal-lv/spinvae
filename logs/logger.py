@@ -174,7 +174,7 @@ class RunLogger:
         os.makedirs(self.run_dir)
         os.makedirs(self.checkpoints_dir)
 
-    def init_with_model(self, main_model, input_tensor_size):
+    def init_with_model(self, main_model, input_tensor_size, write_graph=True):
         """ Finishes to initialize this logger given the fully-build model. This function must be called
          after all checks (configuration consistency, etc...) have been performed, because it overwrites files. """
         # Write config file on startup only - any previous config file will be erased
@@ -184,7 +184,8 @@ class RunLogger:
             json.dump(config_dict, f)
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
             self.write_model_summary(main_model, input_tensor_size, 'VAE')
-            self.tensorboard.add_graph(main_model, torch.zeros(input_tensor_size))
+            if write_graph:
+                self.tensorboard.add_graph(main_model, torch.zeros(input_tensor_size))
         self.epoch_start_datetimes = [datetime.datetime.now()]
 
     def write_model_summary(self, model, input_tensor_size, model_name):

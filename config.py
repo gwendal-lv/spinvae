@@ -25,16 +25,16 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "VAE_CNNs"
-model.run_name = 'speccnn8l1_res_3'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'sprescnn'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
-# ''
-# Arch args: '_adain', '_big', '_res'
-model.encoder_architecture = 'speccnn8l1_res'
+# 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
+# Arch args: '_adain', '_big', '_res', '_time+' (increases time resolution in the deepest layers)
+model.encoder_architecture = 'sprescnn'
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 model.style_architecture = 'mlp_8_outputbn'  # batch norm layers are always added inside the mlp
@@ -70,7 +70,7 @@ model.mel_bins = -1  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 #   (513, 347): audio 4.0s, fft size 1024 (no mel), fft hop 256
 # Sizes @ 16 kHz:
 #   (257, 251): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
-model.spectrogram_size = (257, 251)  # see data/dataset.py to retrieve this from audio/stft params
+model.spectrogram_size = (257, 251)  # H x W. see data/dataset.py to retrieve this from audio/stft params
 model.mel_f_limits = (0, 8000)  # min/max Mel-spectrogram frequencies (librosa default 0:Fs/2)
 # All the notes that must be available for each instrument (even if we currently use only a subset of those notes)
 model.required_dataset_midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
@@ -136,7 +136,7 @@ train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied 
 # bigger than other losses. Train does not work with normalize=False at the moment - use train.beta to compensate
 train.normalize_losses = True  # Normalize all losses over the vector-dimension (e.g. spectrogram pixels count, D, ...)
 # (beta<1, normalize=True) corresponds to (beta>>1, normalize=False) in the beta-VAE formulation (ICLR 2017)
-train.beta = 0.2  # latent loss factor - use much lower value (e-2) to get closer the ELBO
+train.beta = 0.2  # latent loss factor (base value: 0.2) - use much lower value (e-2) to get closer the ELBO
 train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very unstable training)
 # Epochs of warmup increase from start_value to beta
 train.beta_warmup_epochs = 25  # See update_dynamic_config_params().
@@ -164,7 +164,7 @@ train.scheduler_cooldown = {'ae': 15, 'reg': 6}
 train.scheduler_threshold = 1e-4
 # Training considered "dead" when dynamic LR reaches this value (or the initial LR multiplied by the following ratios)
 # Early stop is currently used for the regression loss only
-train.early_stop_lr_ratio = {'ae': 1e-3, 'reg': 1e-3}
+train.early_stop_lr_ratio = {'ae': 1e-10, 'reg': 1e-3}  # early stop not implement for the ae model
 train.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 
 # ----------------------------------------------- Regularization --------------------------------------------------

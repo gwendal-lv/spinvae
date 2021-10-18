@@ -1,9 +1,11 @@
 import warnings
 
+import numpy as np
 import torch
 import torch.nn as nn
 
 from model import convlayer
+from model.convlayer import ResBlock3Layers, Conv2D, TConv2D
 
 
 def parse_architecture(full_architecture: str):
@@ -14,14 +16,15 @@ def parse_architecture(full_architecture: str):
     del arch_args[0]
     if base_arch_name.startswith('speccnn'):
         layers_args = [int(s) for s in base_arch_name.replace('speccnn', '').split('l')]
+        num_cnn_layers, num_fc_layers = layers_args[0], layers_args[1]
+    elif base_arch_name.startswith('sprescnn'):
+        num_cnn_layers, num_fc_layers = None, 1
     else:
         raise AssertionError("Base architecture not available for given arch '{}'".format(base_arch_name))
-    num_cnn_layers = layers_args[0]
-    num_fc_layers = layers_args[1]
     # Check arch args, transform
-    arch_args_dict = {'adain': False, 'big': False, 'res': False, 'att': False}
+    arch_args_dict = {'adain': False, 'big': False, 'res': False, 'att': False, 'time+': False}
     for arch_arg in arch_args:
-        if arch_arg in ['adain', 'big', 'res']:
+        if arch_arg in ['adain', 'big', 'res', 'time+']:
             arch_args_dict[arch_arg] = True  # Authorized arguments
         elif arch_arg == 'att':
             raise NotImplementedError("Self-attention encoder argument (_att) not implemented.")
@@ -70,7 +73,7 @@ class SpectrogramEncoder(nn.Module):
             single_element_input_tensor_size = list(input_tensor_size)
             single_element_input_tensor_size[0] = 1  # single-element batch
             dummy_spectrogram = torch.zeros(single_element_input_tensor_size)
-            self.cnn_out_size = self._forward_cnns(dummy_spectrogram).size()
+            self.cnn_out_size = self._forward_cnns(dummy_spectrogram, None).size()  # FIXME use dummy style
         cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
         # Number of linear layers as configured in the arch arg (e.g. speccnn8l1 -> 1 FC layer).
         # Default: no final batch-norm (maybe added after this for loop). Always 1024 hidden units
@@ -97,7 +100,9 @@ class SpectrogramEncoder(nn.Module):
             Our experiments seem to show: more stable latent loss with no BN before the FC that regresses mu/logvar,
             consistent training runs  '''
             if self.arch_args['adain']:
-                print("[encoder.py] 'adain' arch arg (MIDI notes provided to layers) not implemented")
+                raise NotImplementedError("'adain' arch arg (MIDI notes provided to layers) not implemented")
+            if self.arch_args['time+']:
+                raise NotImplementedError("_time+ (increased time resolution) arch arg not implemented")
             _in_ch, _out_ch = -1, -1  # backup for res blocks
             building_res_block = False  # if True, the current layer will be added from the next iteration
             finish_res_block = False  # if True, the current layer will include the previous one (res block)
@@ -159,23 +164,67 @@ class SpectrogramEncoder(nn.Module):
                         self.single_ch_cnn.add_module(name, conv_layer)
                     else:
                         self.features_mixer_cnn.add_module(name, conv_layer)
+
+        elif self.base_arch_name.startswith("sprescnn"):
+            if self.arch_args['res']:
+                print("[encoder.py] useless '_res' arch arg for architecture '{}'".format(self.base_arch_name))
+            norm = 'bn+adain' if self.arch_args['adain'] else 'bn'
+            # This network is based on a several 'main' blocks. Inside each 'main' block, the resolution is constant.
+            # Each 'main' block is made of several res conv blocks. Resolution decreases at the end of each block.
+            main_blocks_indices = [0, 1, 2, 3, 4, 5]
+            if self.arch_args['big']:
+                res_blocks_counts = [1, 1, 2, 3, 4, 3]
+                res_blocks_ch = [64, 128, 128, 256, 512, 1024]
+            else:
+                res_blocks_counts = [1, 1, 2, 2, 3, 2]
+                res_blocks_ch = [8, 32, 128, 256, 512, 1024]
+            layer_idx = -1
+            self.num_cnn_layers = sum(res_blocks_counts)
+            for main_block_idx in main_blocks_indices:
+                for res_block_idx in range(res_blocks_counts[main_block_idx]):
+                    layer_idx += 1
+                    if layer_idx == 0:  # Kernel 7, stride 2, padding 3
+                        self.single_ch_cnn.add_module('conv0', Conv2D(1, res_blocks_ch[0], (7, 7), (2, 2), (3, 3),
+                                                                      act=nn.Identity(), norm_layer=None))
+                    else:  # All other layers: kernel 3, variable stride (through downsample arg) and padding
+                        out_ch = res_blocks_ch[main_block_idx]
+                        # First block of a main block adapts the size
+                        in_ch = res_blocks_ch[main_block_idx - 1] if res_block_idx == 0 else out_ch
+                        if res_block_idx > 0:
+                            downsample = (False, False)
+                        else:
+                            if main_block_idx >= 4 and self.arch_args['time+']:
+                                downsample = (True, False)  # Option: no temporal stride for last layers
+                            else:
+                                downsample = (True, True)
+                        l = ResBlock3Layers(in_ch, out_ch//4, out_ch, act=nn.LeakyReLU(0.1), downsample=downsample,
+                                            norm_layer=norm, adain_num_style_features=None)  # TODO num style features
+                        if layer_idx < (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
+                            self.single_ch_cnn.add_module('resblk{}'.format(layer_idx), l)
+                        else:
+                            self.features_mixer_cnn.add_module('resblk{}'.format(layer_idx), l)
+            # A final 1x1 must be used to reduce the huge number of channels (w/ large feat maps) before the FC layer
+            self.features_mixer_cnn.add_module('1x1', Conv2D(res_blocks_ch[-1], 64 if self.arch_args['time+'] else 128,
+                                                             (1, 1), (1, 1), (0, 0),
+                                                             act=nn.Identity(), norm_layer=None))
+
         else:
             raise AssertionError("Architecture {} not available".format(self.base_arch_name))
 
-    def _forward_cnns(self, x_spectrograms):
-        # TODO use MIDI notes (through AdaIN style?)
+    def _forward_cnns(self, x_spectrograms, w_style):
+        # TODO split style (MIDI notes??) before passing it to the single ch CNNs
         # apply main cnn multiple times
-        single_channel_cnn_out = [self.single_ch_cnn((torch.unsqueeze(x_spectrograms[:, ch, :, :], dim=1), None))
+        single_channel_cnn_out = [self.single_ch_cnn((torch.unsqueeze(x_spectrograms[:, ch, :, :], dim=1), w_style))
                                   for ch in range(self.spectrogram_channels)]
         # Remove w output (sequential module: conditioning passed to all layers)
         single_channel_cnn_out = [x[0] for x in single_channel_cnn_out]
         # Then mix features from different input channels
-        x_out, w = self.features_mixer_cnn((torch.cat(single_channel_cnn_out, dim=1), None))
+        x_out, w = self.features_mixer_cnn((torch.cat(single_channel_cnn_out, dim=1), w_style))
         return x_out
 
-    def forward(self, x_spectrograms):
+    def forward(self, x_spectrograms, w_style=None):
         n_minibatch = x_spectrograms.size()[0]
-        cnn_out = self._forward_cnns(x_spectrograms).view(n_minibatch, -1)  # 2nd dim automatically inferred
+        cnn_out = self._forward_cnns(x_spectrograms, w_style).view(n_minibatch, -1)  # 2nd dim automatically inferred
         # print("Forward CNN out size = {}".format(cnn_out.size()))
         z_mu_logvar = self.mlp(cnn_out)
         # Last dim contains a latent proba distribution value, last-1 dim is 2 (to retrieve mu or logs sigma2)

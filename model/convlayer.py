@@ -233,7 +233,7 @@ class Upsampling2d(nn.Module):
         output_feature_maps_size = list(x.shape[2:4])
         output_feature_maps_size[0] *= self.scale_factor[0]
         output_feature_maps_size[1] *= self.scale_factor[1]
-        x = F.interpolate(x, output_feature_maps_size, mode='bicubic', align_corners=False)
+        x = F.interpolate(x, output_feature_maps_size, mode='bilinear', align_corners=False)
         return (x, w) if self.w_input_exists else x
 
 
@@ -293,8 +293,9 @@ class ResBlock3Layers(nn.Module):
             conv_stride = (2 if downsample[0] else 1, 2 if downsample[1] else 1)
             pool_padding = (conv_padding[0]-1 if downsample[0] else extra_padding[0],
                             conv_padding[1]-1 if downsample[1] else extra_padding[1])
-            self.resize_module.add_module('pad', nn.ZeroPad2d((pool_padding[1], pool_padding[1],
-                                                               pool_padding[0], pool_padding[0])))
+            if pool_padding[0] > 0 or pool_padding[1] > 0:
+                self.resize_module.add_module('pad', nn.ZeroPad2d((pool_padding[1], pool_padding[1],
+                                                                   pool_padding[0], pool_padding[0])))
             self.resize_module.add_module('pool', nn.AvgPool2d(conv_stride, ceil_mode=True,
                                                                padding=(0, 0)))
                                                                #padding=(conv_stride[0] - 1, conv_stride[1] - 1)))
