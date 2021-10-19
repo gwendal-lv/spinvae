@@ -156,6 +156,7 @@ class FlowVAE(BasicVAE):
     q_ZK(z_k) is a complex distribution and does not have a closed-form expression.
 
     The loss does not rely on a Kullback-Leibler divergence but on a direct log-likelihood computation.
+    TODO also allow MMD loss
     """
 
     def __init__(self, encoder, dim_z, decoder,  style_arch: str, flow_arch: str,
