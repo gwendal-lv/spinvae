@@ -161,9 +161,14 @@ def plot_spectrograms(specs_GT, specs_recons=None,
     return fig, axes
 
 
-def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, figsize=None):
+def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, figsize=None, eps=1e-7):
     """ Uses boxplots to represent the distribution of the mu and/or sigma parameters of
-    latent gaussian distributions. Also plots a general histogram of all samples"""
+    latent gaussian distributions. Also plots a general histogram of all samples.
+
+    :param latent_metric:
+    :param figsize:
+    :param eps: Value added to bounds for numerical stability (when a latent value is constant).
+    """
     metrics_names = ['mu', 'sigma', 'zK']
     data = dict()
     # - - - stats on all metrics - - -
@@ -175,6 +180,7 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
             data[k] = np.log10(data[k])
         metrics_flat[k] = data[k].flatten()
         outlier_limits[k] = utils.stat.get_outliers_bounds(metrics_flat[k])
+        outlier_limits[k] = (outlier_limits[k][0] - eps, outlier_limits[k][1] + eps)
     # - - - box plots (general and per component) - - -
     general_plots_eq_num_items = 10  # equivalent number of "small component boxplots", to properly divide fig width
     if figsize is None:
