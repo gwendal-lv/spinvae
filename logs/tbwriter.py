@@ -66,6 +66,7 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['stylearch'] = self.model_config.style_architecture
         self.hyper_params['latfl_arch'] = self.model_config.latent_flow_arch
         self.hyper_params['latfl_in_regul'] = self.train_config.latent_flow_input_regularization
+        self.hyper_params['mmd_n_est'] = self.train_config.mmd_num_estimates
         # Synth controls regression
         self.hyper_params['ncontrols'] = self.model_config.synth_params_count
         # self.hyper_params['contloss'] = self.model_config.controls_losses

@@ -13,7 +13,7 @@ from nflows.transforms.permutations import ReversePermutation
 import model.base
 import model.loss
 import model.flows
-from utils.probability import gaussian_log_probability, standard_gaussian_log_probability
+from utils.probability import gaussian_log_probability, standard_gaussian_log_probability, MMD
 
 
 
@@ -39,12 +39,21 @@ class BasicVAE(model.base.TrainableModel):
 
         # if train_config is None: all losses have to be unavailable
         if train_config is None:
+            self.deterministic_encoder = True
             self.normalize_losses = None
             self._reconstruction_criterion = None
             self.latent_loss_type = None
+            self.latent_loss_compensation_factor = None
             self.latent_criterion = None  # might be assigned by child class
+            self.mmd_num_estimates = None
+            self.mmd_criterion = None
         else:
+            self.deterministic_encoder = False  # MMD might reset this to True
+            self.latent_loss_compensation_factor = 1.0  # Default value, may be written below
             self.normalize_losses = train_config.normalize_losses
+            self.mmd_num_estimates = train_config.mmd_num_estimates
+            if not isinstance(self.mmd_num_estimates, int) or self.mmd_num_estimates < 1:
+                raise ValueError("train.config.mmd_num_estimates must be a > 1 integer value.")
             # reconstruction criterion
             self._monitoring_recons_criterion = nn.MSELoss(reduction='mean')  # to compare models w/ different losses
             if train_config.reconstruction_loss.lower() == "mse":
@@ -60,8 +69,20 @@ class BasicVAE(model.base.TrainableModel):
             self.latent_loss_type = train_config.latent_loss
             if self.latent_loss_type.lower() == 'dkl':
                 self.latent_criterion = model.loss.GaussianDkl(normalize=self.normalize_losses)
+            elif self.latent_loss_type[0:3].lower() == 'mmd':
+                if self.latent_loss_type.lower() == 'mmd_determ_enc':
+                    self.deterministic_encoder = True
+                elif self.latent_loss_type.lower() != 'mmd':
+                    raise ValueError("Invalid latent loss '{}'".format(self.latent_loss_type))
+                self.latent_loss_type = 'mmd'
+                self.latent_loss_compensation_factor = train_config.mmd_compensation_factor
+                # No need to assign self.latent_criterion (proper function will be called directly)
             else:  # Might be assigned by child class
                 self.latent_criterion = None
+            self.mmd_criterion = MMD()
+
+        if not self.normalize_losses:
+            raise AssertionError("MMD criterion (used for monitoring all VAEs) cannot be un-normalized.")
 
         # TODO parse style arch
         style_args = style_arch.split('_')
@@ -101,8 +122,8 @@ class BasicVAE(model.base.TrainableModel):
         # Separate mean and standard deviation
         mu0 = z_0_mu_logvar[:, 0, :]
         sigma0 = torch.exp(z_0_mu_logvar[:, 1, :] / 2.0)
-        # Sampling in training mode only
-        if self.training:
+        # Sampling in training mode only, and when using a stochastic encoder
+        if self.training and not self.deterministic_encoder:
             # Sampling from the q_phi(z|x) probability distribution - with re-parametrization trick
             eps = Normal(torch.zeros(n_minibatch, self.dim_z, device=mu0.device),
                          torch.ones(n_minibatch, self.dim_z, device=mu0.device)).sample()
@@ -129,10 +150,22 @@ class BasicVAE(model.base.TrainableModel):
         # TODO also get and return the style vector? for downstream tasks
         return z_mu_logvar, z_sampled, z_sampled, torch.zeros((z_sampled.shape[0], 1), device=x.device), x_out
 
-    def latent_loss(self, z_0_mu_logvar, *args):
-        """ *args are not used (they exist for compatibility with flow-based latent spaces). """
+    def latent_loss(self, z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac):
+        """ Some args might be useless - they exist for compatibility with flow-based latent spaces. """
         # Default: divergence or discrepancy vs. zero-mean unit-variance multivariate gaussian
-        return self.latent_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
+        if self.latent_loss_type.lower() == 'dkl':
+            loss = self.latent_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
+        elif self.latent_loss_type.lower() == 'mmd':
+            loss = self.mmd(z_K_sampled)
+        else:
+            raise AssertionError("Cannot compute loss - this class was probably instantiated with a train config.")
+        return loss * self.latent_loss_compensation_factor
+
+    def mmd(self, z_samples):
+        """ Returns the estimated Maximum Mean Discrepancy between the given samples, and samples drawn for a
+        multivariate standard normal distribution. Multiple MMDs may be computed and averaged (see train.config). """
+        mmds = [self.mmd_criterion(z_samples) for _ in range(self.mmd_num_estimates)]
+        return sum(mmds) / len(mmds)
 
     def monitoring_reconstruction_loss(self, x_out, x_in):
         """ Returns the usual normalized MSE loss (to compare models with different backprop criteria). """
@@ -209,6 +242,8 @@ class FlowVAE(BasicVAE):
             # latent_loss already assigned by BasicVAE mother class
             if self.latent_loss_type.lower() == 'dkl':
                 raise AssertionError("Dkl loss can't be computed using flow-based latent transforms.")
+            elif self.latent_loss_type.lower() == 'mmd':
+                pass  # Assigned by mother class
             elif self.latent_loss_type.lower() == 'logprob':
                 self.latent_criterion = None  # unused - logprob directly implement in the latent loss method
             else:
@@ -244,24 +279,21 @@ class FlowVAE(BasicVAE):
         w_style, x_out = self._decode_latent_vector(z_K_sampled)
         return z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out
 
-    def latent_loss(self, z_0_mu_logvar, *args):
-        """
-
-        :param z_0_mu_logvar:
-        :param args: z_0_sampled, z_K_sampled, log_abs_det_jac (must be provided in that specific order)
-        :return:
-        """
-        z_0_sampled, z_K_sampled, log_abs_det_jac = args
-        # log-probability of z_0 is evaluated knowing the gaussian distribution it was sampled from
-        log_q_Z0_z0 = gaussian_log_probability(z_0_sampled, z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
-        # log-probability of z_K in the prior p_theta distribution
-        # We model this prior as a zero-mean unit-variance multivariate gaussian
-        log_p_theta_zK = standard_gaussian_log_probability(z_K_sampled)
-        # Returned is the opposite of the ELBO terms
-        if not self.normalize_losses:  # Default, which returns actual ELBO terms
-            return -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean()  # Mean over batch dimension
-        else:  # Mean over batch dimension and latent vector dimension (D)
-            return -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean() / z_0_sampled.shape[1]
+    def latent_loss(self, z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac):
+        if self.latent_loss_type.lower() == 'mmd':
+            return super().latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
+        else:  # Flow-specific loss
+            # log-probability of z_0 is evaluated knowing the gaussian distribution it was sampled from
+            log_q_Z0_z0 = gaussian_log_probability(z_0_sampled, z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
+            # log-probability of z_K in the prior p_theta distribution
+            # We model this prior as a zero-mean unit-variance multivariate gaussian
+            log_p_theta_zK = standard_gaussian_log_probability(z_K_sampled)
+            # Returned is the opposite of the ELBO terms
+            if not self.normalize_losses:  # Default, which returns actual ELBO terms
+                loss = -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean()  # Mean over batch dimension
+            else:  # Mean over batch dimension and latent vector dimension (D)
+                loss = -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean() / z_0_sampled.shape[1]
+            return loss * self.latent_loss_compensation_factor
 
     def additional_latent_regularization_loss(self, z_0_mu_logvar):
         """ Returns an optional additional regularization loss, as configured using ctor args. """

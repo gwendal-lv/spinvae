@@ -163,14 +163,14 @@ def train_config():
     scalars = {  # Reconstruction loss (variable scale) + monitoring metrics comparable across all models
                'ReconsLoss/Backprop/Train': EpochMetric(), 'ReconsLoss/Backprop/Valid': EpochMetric(),
                'ReconsLoss/MSE/Train': EpochMetric(), 'ReconsLoss/MSE/Valid': EpochMetric(),
-                # TODO maybe don't add controls losses ?
                # 'ReconsLoss/SC/Train': EpochMetric(), 'ReconsLoss/SC/Valid': EpochMetric(),  # TODO
                # Controls losses used for backprop + monitoring metrics (quantized numerical loss, categorical accuracy)
                'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),
                'Controls/QLoss/Train': EpochMetric(), 'Controls/QLoss/Valid': EpochMetric(),
                'Controls/Accuracy/Train': EpochMetric(), 'Controls/Accuracy/Valid': EpochMetric(),
                # Latent-space and VAE losses
-               'LatLoss/Train': EpochMetric(), 'LatLoss/Valid': EpochMetric(),
+               'Latent/BackpropLoss/Train': EpochMetric(), 'Latent/BackpropLoss/Valid': EpochMetric(),
+               'Latent/MMD/Train': EpochMetric(), 'Latent/MMD/Valid': EpochMetric(),
                'VAELoss/Train': SimpleMetric(), 'VAELoss/Valid': SimpleMetric(),
                'LatCorr/z0/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'z0'),
                'LatCorr/z0/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'z0'),
@@ -187,10 +187,9 @@ def train_config():
                                                     current_epoch=config.train.start_epoch) }
     # Validation metrics have a '_' suffix to be different from scalars (tensorboard mixes them)
     metrics = {'ReconsLoss/MSE/Valid_': logs.metrics.BufferedMetric(),
-               'LatLoss/Valid_': logs.metrics.BufferedMetric(),
+               'Latent/MMD/Valid_': logs.metrics.BufferedMetric(),
                'LatCorr/z0/Valid_': logs.metrics.BufferedMetric(),
                'LatCorr/zK/Valid_': logs.metrics.BufferedMetric(),
-                # TODO maybe don't add controls losses ?
                'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
                'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
                'epochs': config.train.start_epoch}
@@ -235,10 +234,11 @@ def train_config():
                 scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
                 # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
-                scalars['LatLoss/Train'].append(lat_loss)
+                scalars['Latent/BackpropLoss/Train'].append(lat_loss)
                 lat_loss *= scalars['Sched/VAE/beta'].get(epoch)
                 with torch.no_grad():  # Monitoring-only losses
                     scalars['ReconsLoss/MSE/Train'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
+                    scalars['Latent/MMD/Train'].append(ae_model.mmd(z_K_sampled))
                     if not pretrain_vae:
                         scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
                         scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
@@ -260,7 +260,8 @@ def train_config():
                 logger.on_minibatch_finished(i)
                 if prof is not None:
                     prof.step()
-        scalars['VAELoss/Train'].set(scalars['ReconsLoss/Backprop/Train'].get() + scalars['LatLoss/Train'].get())
+        scalars['VAELoss/Train'].set(scalars['ReconsLoss/Backprop/Train'].get()
+                                     + scalars['Latent/BackpropLoss/Train'].get())
 
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
         with torch.no_grad():
@@ -276,10 +277,11 @@ def train_config():
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
-                scalars['LatLoss/Valid'].append(lat_loss)
+                scalars['Latent/BackpropLoss/Valid'].append(lat_loss)
                 # lat_loss *= scalars['Sched/beta'].get(epoch)  # Warmup factor: useless for monitoring
                 # Monitoring losses
                 scalars['ReconsLoss/MSE/Valid'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
+                scalars['Latent/MMD/Valid'].append(ae_model.mmd(z_K_sampled))
                 if not pretrain_vae:
                     scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
                     scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
@@ -298,7 +300,8 @@ def train_config():
                                                     config.model, config.train)
                         logger.tensorboard.add_figure('Spectrogram', fig, epoch, close=True)
 
-        scalars['VAELoss/Valid'].set(scalars['ReconsLoss/Backprop/Valid'].get() + scalars['LatLoss/Valid'].get())
+        scalars['VAELoss/Valid'].set(scalars['ReconsLoss/Backprop/Valid'].get()
+                                     + scalars['Latent/BackpropLoss/Valid'].get())
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
         ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
@@ -324,7 +327,7 @@ def train_config():
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
-        metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
+        metrics['Latent/MMD/Valid_'].append(scalars['Latent/MMD/Valid'].get())
         metrics['LatCorr/z0/Valid_'].append(scalars['LatCorr/z0/Valid'].get())
         metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
         if not pretrain_vae:  # TODO handle properly

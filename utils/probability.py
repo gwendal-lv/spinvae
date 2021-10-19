@@ -31,17 +31,15 @@ def gaussian_log_probability(samples, mu, log_var):
 
 
 class MMD:
-    def __init__(self, kernel='inverse_quadratic', sigma=1.0, unbiased=True, normalize=False):
+    def __init__(self, kernel='inverse_quadratic', sigma=1.0, unbiased=True):
         """
 
         :param kernel: 'inverse_multiquadratic' or 'gaussian_RBF'
         :param sigma: Expected standard deviation of each 1d distribution
         :param unbiased: If True, used an unbiased estimator for expectancies, but the estimated MMD can be negative.
-        :param normalize: If True, divides the resulting MMD by the length of given random vectors.
         """
         self.sigma = sigma
         self.unbiased = unbiased
-        self.normalize = normalize
         if kernel.lower() == 'inverse_quadratic':
             self.kernel_function = self._inverse_quadratic_kernel
         elif kernel.lower() == 'gaussian_rbf':
@@ -68,7 +66,7 @@ class MMD:
             mmd = k_x_x.sum() / (N * (N-1)) - 2 * k_x_y.sum() / (N * N) + k_y_y.sum() / (N * (N-1))
         else:
             mmd = (k_x_x.sum() - 2 * k_x_y.sum() + k_y_y.sum()) / (N * N)
-        return mmd if not self.normalize else mmd / D
+        return mmd
 
     def _compute_kernel_values(self, x, y):
         N, D = x.shape[0], x.shape[1]  # minibatch size, length of random vector

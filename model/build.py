@@ -10,17 +10,11 @@ from model import VAE, encoder, decoder, extendedAE, regression
 
 
 def build_encoder_and_decoder_models(model_config, train_config):
-    # Backward compatibility - recently added config args
-    if not hasattr(model_config, 'stack_specs_deepest_features_mix'):
-        model_config.stack_specs_deepest_features_mix = True  # Default: multi-spec features mixed by 1x1 conv layer
-    if not hasattr(train_config, 'latent_input_dropout'):
-        train_config.latent_input_dropout = 0.0  # No dropout before this config arg was added
     # Multi-MIDI notes but single-ch spectrogram model must be bigger (to perform a fairer comparison w/ multi-ch)
     force_bigger_network = ((len(model_config.midi_notes) > 1) and not model_config.stack_spectrograms)
     # Encoder and decoder with the same architecture
     enc_z_length = (model_config.dim_z - 2 if model_config.concat_midi_to_z else model_config.dim_z)
 
-    # print("FORCE BIGGER ENC/DEC NETWORKS = {}".format(force_bigger_network))  # TODO remove
     print("MIDI NOTES = {}".format(model_config.midi_notes))  # TODO remove
     encoder_model = \
         encoder.SpectrogramEncoder(model_config.encoder_architecture, enc_z_length,
@@ -53,8 +47,9 @@ def build_ae_model(model_config, train_config):
         if train_config.latent_flow_input_regularization != 'None':
             raise AssertionError("BasicVAE: flow input regularization must be 'None' (given arg: '{}')"
                                  .format(train_config.latent_flow_input_regularization))
-        if train_config.latent_loss.lower() != 'dkl':
-            raise AssertionError("BasicVAE: the latent loss should be 'Dkl' (given: '{}')".format(train_config.latent_loss))
+        if train_config.latent_loss.lower() != 'dkl' and train_config.latent_loss[0:3].lower() != 'mmd':
+            raise AssertionError("BasicVAE: the latent loss should be 'Dkl' or 'MMD' (given: '{}')"
+                                 .format(train_config.latent_loss))
         ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, model_config.style_architecture,
                                 concat_midi_to_z0=model_config.concat_midi_to_z,  # FIXME deprecated
                                 train_config=train_config)

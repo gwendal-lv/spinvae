@@ -127,10 +127,11 @@ train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the wei
 # Reconstruction loss: 'MSE' corresponds to free-mean, fixed-variance per-pixel Gaussian probability distributions.
 # TODO 'WeightedMSE' allows to give a higher loss to some parts of spectrograms (e.g. attach, low freqs, ??)
 train.reconstruction_loss = 'MSE'
-# Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' loss with flow-VAE
+# Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' or 'MMD' loss with flow-VAE
+# 'MMD_determ_enc' also available: use a deterministic encoder
 train.latent_loss = 'Dkl'
-train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
-train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
+train.mmd_compensation_factor = 5.0  # Loss factor applied to MMD backprop losses
+train.mmd_num_estimates = 1  # Number of MMD estimates per batch (maybe increase if small batch size)
 # Losses normalization allow to get losses in the same order of magnitude, but does not optimize the true ELBO.
 # When un-normalized, the reconstruction loss (log-probability of a multivariate gaussian) is orders of magnitude
 # bigger than other losses. Train does not work with normalize=False at the moment - use train.beta to compensate
@@ -139,8 +140,9 @@ train.normalize_losses = True  # Normalize all losses over the vector-dimension 
 train.beta = 0.2  # latent loss factor (base value: 0.2) - use much lower value (e-2) to get closer the ELBO
 train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very unstable training)
 # Epochs of warmup increase from start_value to beta
-train.beta_warmup_epochs = 25  # See update_dynamic_config_params().
-train.beta_cycle_epochs = -1  # beta cyclic annealing (https://arxiv.org/abs/1903.10145). -1 deactivates TODO do
+train.beta_warmup_epochs = 25  # See update_dynamic_config_params()
+train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
+train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
 
 # ------------------------------------------- Optimizer + scheduler -------------------------------------------
 # Different optimizers for the pre-trained AE and the regression networks ('ae_' or 'reg_' prefixes or dict keys)
