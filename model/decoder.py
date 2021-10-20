@@ -1,9 +1,11 @@
+
 import warnings
+from typing import Tuple, Dict
+from collections import OrderedDict
 
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Tuple
 
 from model.convlayer import Conv2D, TConv2D, ResBlock3Layers
 from model import convlayer
@@ -162,8 +164,6 @@ class SpectrogramDecoder(nn.Module):
         # Final activation, for all architectures
         self.single_ch_cnn_act = nn.Hardtanh()
 
-        # TODO send a dummy input to retrieve output size (assert if CNN output is smaller than target)
-
     def forward(self, z_sampled, w_style=None):  # TODO add midi_notes as arg
         if w_style is None:  # w_style can be omitted during summary writing
             print("[decoder.py] w_style tensor is None; replaced by 0.0 (should happen during init only)")
@@ -190,6 +190,22 @@ class SpectrogramDecoder(nn.Module):
         # Final activation
         return self.single_ch_cnn_act(single_ch_cnn_outputs)
 
+    def get_fc_layers_parameters(self) -> Dict[str, Dict[str, np.ndarray]]:
+        """ Returns a dict of dicts: weights and biases of all FC layers at the decoder's input.
+        1st dict keys are layers names, 2nd dict keys are 'weight' and 'bias'. To be used for Tensorboard hists.
+
+        Clones are returned (can be used in a different thread - don't need another copy). """
+        layers_params = OrderedDict()
+        fc_index = 0
+        for layer in self.mlp:
+            if isinstance(layer, nn.Linear):
+                w = layer.weight.clone().detach().cpu().numpy().flatten()
+                layers_params['FC{}'.format(fc_index)] \
+                    = {'weight': w, 'weight_abs': np.abs(w),
+                       'bias': layer.bias.clone().detach().cpu().numpy().flatten()}
+                fc_index += 1
+        return layers_params
+
 
 
 if __name__ == "__main__":
@@ -197,7 +213,15 @@ if __name__ == "__main__":
     import torchinfo
     output_size = (160, 1, 257, 251)
     dim_z = 200
-    dec = SpectrogramDecoder('sprescnn_time+', dim_z, output_size, 0.1)
-    out_test = dec(torch.zeros((160, dim_z)))
-    _ = torchinfo.summary(dec, input_size=(160, dim_z), depth=3)
+    dec = SpectrogramDecoder('speccnn8l1', dim_z, output_size, 0.1)  # sprescnn_time+
+    p = dec.get_fc_layers_parameters()
+
+    #out_test = dec(torch.zeros((160, dim_z)))
+    #_ = torchinfo.summary(dec, input_size=(160, dim_z), depth=3)
+
+    # test plot layers weights (matplotlib, not tensorboard)
+    from utils import figures
+    import matplotlib.pyplot as plt
+    figures.plot_network_parameters(p)
+    plt.show()
 

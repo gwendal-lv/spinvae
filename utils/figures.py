@@ -2,7 +2,7 @@
 Utilities for plotting various figures (spectrograms, ...)
 """
 
-from typing import Optional, Sequence, Iterable, List
+from typing import Optional, Sequence, Iterable, List, Dict
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -230,6 +230,38 @@ def plot_spearman_correlation(latent_metric: logs.metrics.LatentMetric):
     for ax in axes:
         for tick in ax.get_xticklabels():
             tick.set_rotation(90)
+    fig.tight_layout()
+    return fig, axes
+
+
+def plot_network_parameters(network_params: Dict[str, Dict[str, np.ndarray]]):
+    n_rows = 2 * len(network_params)
+    if n_rows == 0:
+        raise AssertionError("Network params should contain at least 1 key.")
+    param_names = None
+    for k, layer_params in network_params.items():
+        _param_names = list(layer_params.keys())
+        if param_names is not None and param_names != _param_names:
+            raise AssertionError("All network layers should contain the same parameters' names (found: {} and {}), "
+                                 "using the same order.".format(_param_names, param_names))
+        param_names = _param_names
+    # 2 rows / layer: with and without outliers
+    fig, axes = plt.subplots(n_rows, len(param_names), figsize=(len(param_names) * 2, n_rows * 2))
+    layer_idx = 0
+    for layer_name, layer_params in network_params.items():
+        param_idx = 0
+        for param_name, param_values in layer_params.items():
+            color = 'C{}'.format(layer_idx % 10)
+            sns.violinplot(x=param_values, ax=axes[layer_idx*2, param_idx], color=color)
+            sns.violinplot(x=utils.stat.remove_outliers(param_values), ax=axes[layer_idx*2 + 1, param_idx], color=color)
+            axes[layer_idx * 2, param_idx].grid(axis='x', linestyle='-')
+            axes[layer_idx * 2 + 1, param_idx].grid(axis='x', linestyle='-')
+            if layer_idx == 0:
+                axes[layer_idx * 2, param_idx].set_title(param_name)
+            param_idx += 1
+        axes[layer_idx * 2, 0].set_ylabel('{} - raw data'.format(layer_name))
+        axes[layer_idx * 2 + 1, 0].set_ylabel('{} - no outliers'.format(layer_name))
+        layer_idx += 1
     fig.tight_layout()
     return fig, axes
 

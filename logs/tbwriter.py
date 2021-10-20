@@ -126,11 +126,9 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         zK = latent_metric.get_z('zK').flatten()
         self.add_histogram("z0/{}".format(dataset_type), z0, global_step=global_step, bins=bins)
         self.add_histogram("zK/{}".format(dataset_type), zK, global_step=global_step, bins=bins)
-        # also add no-outlier histograms
-        z0_limits = utils.stat.get_outliers_bounds(z0)
-        zK_limits = utils.stat.get_outliers_bounds(zK)
-        z0 = z0[(z0_limits[0] <= z0) & (z0 <= z0_limits[1])]
-        zK = zK[(zK_limits[0] <= zK) & (zK <= zK_limits[1])]
-        self.add_histogram("z0/{}_nooutlier".format(dataset_type), z0, global_step=global_step, bins=bins)
-        self.add_histogram("zK/{}_nooutlier".format(dataset_type), zK, global_step=global_step, bins=bins)
+        # also add no-outlier histograms (the other ones are actually unreadable...)
+        self.add_histogram("z0/{}_no_outlier".format(dataset_type), utils.stat.remove_outliers(z0),
+                           global_step=global_step, bins=bins)
+        self.add_histogram("zK/{}_no_outlier".format(dataset_type), utils.stat.remove_outliers(zK),
+                           global_step=global_step, bins=bins)
 

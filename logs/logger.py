@@ -18,8 +18,10 @@ import humanize
 
 from data.abstractbasedataset import AudioDataset
 import model.base
+import model.VAE
 import utils
 import utils.figures
+import utils.stat
 from .tbwriter import TensorboardSummaryWriter  # Custom modified summary writer
 
 _erase_security_time_s = 5.0
@@ -257,38 +259,60 @@ class RunLogger:
 
     # - - - - - Multi threaded + multiprocessing plots to tensorboard - - - - -
 
-    def plot_latent_stats_tensorboard(self, epoch, super_metrics):
+    def plot_stats_tensorboard__threaded(self, train_config, epoch, super_metrics, ae_model):
         if self.figures_threads[0] is not None:
             self.figures_threads[0].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
-        self.figures_threads[0] = threading.Thread(target=self._plot_latent_stats_thread,
+        networks_layers_params = dict()  # If remains empty: no plot
+        if epoch > train_config.beta_warmup_epochs - 1000: # FIXME  # Don't plot ae_model weights histograms during first epochs
+            # returns clones of layers' parameters
+            networks_layers_params['Decoder'] = ae_model.decoder.get_fc_layers_parameters()
+        # Launch thread using copied data
+        self.figures_threads[0] = threading.Thread(target=self._plot_stats_thread,
                                                    args=(copy.deepcopy(epoch),
-                                                         copy.deepcopy(super_metrics)))
+                                                         copy.deepcopy(super_metrics),
+                                                         networks_layers_params))
         self.figures_threads[0].start()
 
-    def _get_latent_stats_figures(self, epoch, super_metrics):
-        fig0, _ = utils.figures.plot_latent_distributions_stats(latent_metric=super_metrics['LatentMetric/Valid'])
-        fig1, _ = utils.figures.plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])
-        return [fig0, fig1]
+    @staticmethod
+    def _get_stats_figures(epoch, super_metrics, networks_layers_params):
+        figs_dict = {'LatentStats': utils.figures.
+                        plot_latent_distributions_stats(latent_metric=super_metrics['LatentMetric/Valid'])[0],
+                    'LatentRhoCorr': utils.figures.
+                        plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])[0]}
+        for network_name, layers_params in networks_layers_params.items():  # key: e.g. 'Decoder'
+            figs_dict['{}ParamsStats'.format(network_name)] = \
+                utils.figures.plot_network_parameters(layers_params)[0]  # Retrieve fig only, not the axes
+        return figs_dict
 
-    def _plot_latent_stats_thread(self, epoch, super_metrics):
+    def _plot_stats_thread(self, epoch, super_metrics, networks_layers_params):
         if not self.use_multiprocessing:
-            figs = self._get_latent_stats_figures(epoch, super_metrics)
+            figs_dict = self._get_stats_figures(epoch, super_metrics, networks_layers_params)
         else:
             q = multiprocessing.Queue()
-            p = multiprocessing.Process(target=self._get_latent_figs_multiproc, args=(q, epoch, super_metrics))
+            p = multiprocessing.Process(target=self._get_stats_figs__multiproc,
+                                        args=(q, epoch, super_metrics, networks_layers_params))
             p.start()
-            figs = q.get()  # Will block until an item is available
+            figs_dict = q.get()  # Will block until an item is available
             p.join()
 
-        self.tensorboard.add_figure('LatentStats', figs[0], epoch)
-        self.tensorboard.add_figure('LatentRhoCorr', figs[1], epoch)
+        for fig_name, fig in figs_dict.items():
+            self.tensorboard.add_figure(fig_name, fig, epoch)
+
         # Those plots do not need to be here, but multi threading might help improve perfs a bit...
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+        for network_name, network_layers in networks_layers_params.items():  # key: e.g. 'Decoder'
+            for layer_name, layer_params in network_layers.items():  # key: e.g. 'FC0'
+                for param_name, param_values in layer_params.items():  # key: e.g. 'weight_abs'
+                    # Default bins estimator: 'tensorflow'. Other estimator: 'fd' (robust for outliers)
+                    self.tensorboard.add_histogram('{}/{}/{}'.format(network_name, layer_name, param_name),
+                                                   param_values, epoch)
+                    self.tensorboard.add_histogram('{}_no_outlier/{}/{}'.format(network_name, layer_name, param_name),
+                                                   utils.stat.remove_outliers(param_values), epoch)
 
-    def _get_latent_figs_multiproc(self, q: multiprocessing.Queue, epoch, super_metrics):
-        q.put(self._get_latent_stats_figures(epoch, super_metrics))
+    def _get_stats_figs__multiproc(self, q: multiprocessing.Queue, epoch, super_metrics, networks_layers_params):
+        q.put(self._get_stats_figures(epoch, super_metrics, networks_layers_params))
 
 
 

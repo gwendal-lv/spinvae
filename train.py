@@ -321,7 +321,7 @@ def train_config():
             except ValueError:  # unused scalars with buffer (e.g. during pretrain) will raise that exception
                 pass
         if should_plot or early_stop:
-            logger.plot_latent_stats_tensorboard(epoch, super_metrics)  # separate thread and process (-9s / plot epoch)
+            logger.plot_stats_tensorboard__threaded(config.train, epoch, super_metrics, ae_model)  # non-blocking
             if v_error.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(), dataset.preset_indexes_helper)
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
