@@ -6,6 +6,7 @@ from typing import Optional, Sequence, Iterable, List, Dict
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mpl_colors
 import seaborn as sns
 import pandas as pd
 import librosa.display
@@ -158,6 +159,79 @@ def plot_spectrograms(specs_GT, specs_recons=None,
     elif not multichannel_spectrograms and midi_notes is not None:
         fig.suptitle("note ({},{})".format(midi_notes[0][0], midi_notes[0][1]))
     fig.tight_layout()
+    return fig, axes
+
+
+def remove_axes_spines_and_ticks(ax):
+    for spine in ['top', 'bottom', 'right', 'left']:
+        ax.spines[spine].set_visible(False)
+    ax.get_xaxis().set_ticks([])
+    ax.get_yaxis().set_ticks([])
+
+
+def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO allow MFCCs
+                             z: Optional[torch.Tensor] = None, num_z_coords_to_show=40,
+                             subplot_w_h=(1.5, 1.5)):
+    """ Plots a "batch" of interpolated spectrograms. The number of spectrograms must be the same as the number of
+    interpolation abscissae u. """
+    if u.shape[0] != spectrograms.shape[0] or u.shape[0] != z.shape[0]:  # TODO all tests
+        raise AssertionError("All input arrays/tensor must have the same length along dimension 0.")
+    if u.shape[0] < 2:
+        raise ValueError("This function requires 2 spectrograms or more")
+    if spectrograms.shape[1] > 1:
+        raise ValueError("This function supports single-channel spectrograms only.")
+    n_rows = 2 + (1 if z is not None else 0)
+    # TODO add rows for other plots
+    fig, axes = plt.subplots(n_rows, u.shape[0], figsize=(u.shape[0]*subplot_w_h[0], n_rows*subplot_w_h[1]),
+                             sharey='row')
+    # Data converted to numpy, compute deltas
+    specs_np = spectrograms[:, 0, :, :].clone().detach().cpu().numpy()
+    delta_specs_np = np.zeros_like(specs_np)
+    for u_idx in range(1, u.shape[0]):  # First delta will remain zero
+        delta_specs_np[u_idx, :, :] = (specs_np[u_idx, :, :] - specs_np[u_idx-1, :, :]) / (u[u_idx] - u[u_idx-1])
+    z_np = z.clone().detach().cpu().numpy() if z is not None else None
+    z_indices_range = None
+    if z_np is not None:
+        if 0 < num_z_coords_to_show < z_np.shape[1]:
+            z_indices_range = np.arange(z_np.shape[1] - num_z_coords_to_show, z_np.shape[1])
+            z_np = z_np[:, z_indices_range]
+        else:
+            z_indices_range = np.arange(z_np.shape[1])
+    delta_z_np = np.zeros_like(z_np) if z_np is not None else None
+    if z_np is not None:
+        for u_idx in range(1, u.shape[0]):  # First delta will remain zero
+            delta_z_np[u_idx, :] = (z_np[u_idx, :] - z_np[u_idx-1, :]) / (u[u_idx] - u[u_idx-1])
+    # Plots
+    delta_specs_cbar_ax = None
+    for u_idx in range(u.shape[0]):
+        _u = u[u_idx]
+        axes[0, u_idx].set_title(r'$u=$' + '{:.2f}'.format(_u))
+        # Spectrograms
+        im = librosa.display.specshow(specs_np[u_idx, :, :], shading='flat', ax=axes[0, u_idx], cmap='magma',
+                                      vmin=specs_np.min(), vmax=specs_np.max())
+        if u_idx > 0:
+            im = librosa.display.specshow(delta_specs_np[u_idx, :, :], shading='flat', ax=axes[1, u_idx], cmap='bwr',
+                                          vmin=delta_specs_np.min(), vmax=delta_specs_np.max())
+            if u_idx == 1:
+                delta_specs_cbar_ax = fig.add_axes(axes[1, 0].get_position())
+                clb = fig.colorbar(im, cax=delta_specs_cbar_ax)
+        # Latent vectors
+        if z_np is not None:
+            colors = [mpl_colors.hsv_to_rgb([((c * 63.2) % 100)/100.0, 1.0, 0.85]) for c in z_indices_range]
+            axes[2, u_idx].scatter(z_indices_range, z_np[u_idx, :], s=1, c=colors)
+            axes[2, u_idx].grid(axis='y')
+    # Display: labels, ...
+    axes[0, 0].set_ylabel(r'Spectrogram $\mathbf{s}$')
+    remove_axes_spines_and_ticks(axes[1, 0])
+    axes[1, 0].set_ylabel(r'$\frac{\Delta \mathbf{s}}{\Delta u}$', fontsize=14.0).set_rotation(0.0)
+    if z_np is not None:
+        axes[2, 0].set_ylabel(r'Latent vector $\mathbf{z}$')
+    fig.tight_layout()
+    # Re-set colorbar axes positions, after layout has been tightened
+    axes_to_reposition = [(delta_specs_cbar_ax, axes[1, 0])]  # TODO ajouter autres axes à repos (si non-None)
+    for cb_ax, original_ax in axes_to_reposition:
+        pos = original_ax.get_position().bounds  # (x0, y0, width, height)
+        cb_ax.set_position([pos[0] + pos[2]*0.45, pos[1], pos[2]*0.1, pos[3]])
     return fig, axes
 
 

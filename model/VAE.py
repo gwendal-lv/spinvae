@@ -39,7 +39,7 @@ class BasicVAE(model.base.TrainableModel):
 
         # if train_config is None: all losses have to be unavailable
         if train_config is None:
-            self.deterministic_encoder = True
+            self.is_encoder_deterministic = True
             self.normalize_losses = None
             self._reconstruction_criterion = None
             self.latent_loss_type = None
@@ -48,7 +48,7 @@ class BasicVAE(model.base.TrainableModel):
             self.mmd_num_estimates = None
             self.mmd_criterion = None
         else:
-            self.deterministic_encoder = False  # MMD might reset this to True
+            self.is_encoder_deterministic = False  # MMD might reset this to True
             self.latent_loss_compensation_factor = 1.0  # Default value, may be written below
             self.normalize_losses = train_config.normalize_losses
             self.mmd_num_estimates = train_config.mmd_num_estimates
@@ -71,7 +71,7 @@ class BasicVAE(model.base.TrainableModel):
                 self.latent_criterion = model.loss.GaussianDkl(normalize=self.normalize_losses)
             elif self.latent_loss_type[0:3].lower() == 'mmd':
                 if self.latent_loss_type.lower() == 'mmd_determ_enc':
-                    self.deterministic_encoder = True
+                    self.is_encoder_deterministic = True
                 elif self.latent_loss_type.lower() != 'mmd':
                     raise ValueError("Invalid latent loss '{}'".format(self.latent_loss_type))
                 self.latent_loss_type = 'mmd'
@@ -123,7 +123,7 @@ class BasicVAE(model.base.TrainableModel):
         mu0 = z_0_mu_logvar[:, 0, :]
         sigma0 = torch.exp(z_0_mu_logvar[:, 1, :] / 2.0)
         # Sampling in training mode only, and when using a stochastic encoder
-        if self.training and not self.deterministic_encoder:
+        if self.training and not self.is_encoder_deterministic:
             # Sampling from the q_phi(z|x) probability distribution - with re-parametrization trick
             eps = Normal(torch.zeros(n_minibatch, self.dim_z, device=mu0.device),
                          torch.ones(n_minibatch, self.dim_z, device=mu0.device)).sample()
@@ -135,6 +135,9 @@ class BasicVAE(model.base.TrainableModel):
     def _decode_latent_vector(self, z_sampled):
         w_style = self.style_mlp(z_sampled)
         return w_style, self.decoder(z_sampled, w_style)
+
+    def generate_from_latent_vector(self, z):
+        return self._decode_latent_vector(z)[1]  # Don't return style
 
     def forward(self, x, sample_info=None):
         """ Encodes the given input into a q_phi(z|x) probability distribution,

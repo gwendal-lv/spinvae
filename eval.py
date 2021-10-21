@@ -72,7 +72,8 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
     # Special forced multi-note eval?
     if '__MULTI_NOTE__' in path_to_model_dir.name:
-        forced_midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
+        forced_midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))  # FIXME
+        raise AssertionError()
         # We'll load the original model - quite dirty path modification
         path_to_model_dir = Path(path_to_model_dir.__str__().replace('__MULTI_NOTE__', ''))
         if eval_config.verbosity >= 1:
@@ -112,6 +113,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     checkpoint = logs.logger.get_model_last_checkpoint(root_path, model_config, device=device)
     _, _, _, extended_ae_model = model.build.build_extended_ae_model(model_config, train_config,
                                                                      dataset.preset_indexes_helper)
+    raise AssertionError()  # FIXME models should load their own checkpoints
     extended_ae_model.load_state_dict(checkpoint['ae_model_state_dict'])
     extended_ae_model = extended_ae_model.to(device).eval()
     ae_model, reg_model = extended_ae_model.ae_model, extended_ae_model.reg_model

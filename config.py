@@ -170,6 +170,8 @@ train.early_stop_lr_ratio = {'ae': 1e-10, 'reg': 1e-3}  # early stop not impleme
 train.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 
 # ----------------------------------------------- Regularization --------------------------------------------------
+# WD definitely helps for regularization but significantly impairs results. 1e-4 seems to be a good compromise
+# for both Basic and MMD VAEs (without regression net). 3e-6 allows for the lowest reconstruction error.
 train.weight_decay = 1e-4
 train.fc_dropout = 0.3
 train.reg_fc_dropout = 0.4
