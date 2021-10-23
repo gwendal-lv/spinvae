@@ -257,6 +257,27 @@ class RunLogger:
         if self.train_config.verbosity >= 1:
             print("[RunLogger] Training has finished")
 
+    # - - - - - - - - - - Non-threaded plots to tensorbard - - - - - - - - - -
+
+    def plot_train_spectrograms(self, epoch, x_in, x_out, sample_info, dataset: AudioDataset,
+                                model_config, train_config):
+        fig, _ = utils.figures.plot_train_spectrograms(x_in, x_out, sample_info, dataset, model_config, train_config)
+        self.tensorboard.add_figure('Spectrogram', fig, epoch)
+
+    def plot_decoder_interpolation(self, epoch, generative_model, z_minibatch, sample_info, dataset: AudioDataset,
+                                   output_channel_to_plot=0):
+        from evaluation.interp import LatentInterpolationEval  # local import to prevent circular import
+        interpolator = LatentInterpolationEval(generative_model, device=z_minibatch.device)
+        # z start/end tensors must be be provided as 1 x D vectors
+        u, z, x = interpolator.interpolate_spectrograms_from_latent(z_minibatch[0:1, :], z_minibatch[1:2, :])
+        if x.shape[1] > 1:
+            x = x[:, output_channel_to_plot:output_channel_to_plot+1, :, :]
+        preset_UIDs = [sample_info[i, 0].item() for i in range(2)]
+        preset_names = [dataset.get_name_from_preset_UID(UID) for UID in preset_UIDs]
+        title = "{} '{}' ----> {} '{}'".format(preset_UIDs[0], preset_names[0], preset_UIDs[1], preset_names[1])
+        fig, _ = utils.figures.plot_spectrograms_interp(u, x, z, title=title)
+        self.tensorboard.add_figure("DecoderInterpolation", fig, epoch)
+
     # - - - - - Multi threaded + multiprocessing plots to tensorboard - - - - -
 
     def plot_stats_tensorboard__threaded(self, train_config, epoch, super_metrics, ae_model):
@@ -264,7 +285,7 @@ class RunLogger:
             self.figures_threads[0].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
         networks_layers_params = dict()  # If remains empty: no plot
-        if epoch > train_config.beta_warmup_epochs - 1000: # FIXME  # Don't plot ae_model weights histograms during first epochs
+        if epoch > train_config.beta_warmup_epochs:  # Don't plot ae_model weights histograms during first epochs
             # returns clones of layers' parameters
             networks_layers_params['Decoder'] = ae_model.decoder.get_fc_layers_parameters()
         # Launch thread using copied data
@@ -297,7 +318,7 @@ class RunLogger:
             p.join()
 
         for fig_name, fig in figs_dict.items():
-            self.tensorboard.add_figure(fig_name, fig, epoch)
+            self.tensorboard.add_figure(fig_name, fig, epoch, close=True)
 
         # Those plots do not need to be here, but multi threading might help improve perfs a bit...
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)

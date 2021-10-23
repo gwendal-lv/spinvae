@@ -188,6 +188,7 @@ def train_config():
     # Validation metrics have a '_' suffix to be different from scalars (tensorboard mixes them)
     metrics = {'ReconsLoss/MSE/Valid_': logs.metrics.BufferedMetric(),
                'Latent/MMD/Valid_': logs.metrics.BufferedMetric(),
+               'Latent/MaxAbsVal/Valid_': logs.metrics.BufferedMetric(),
                'LatCorr/z0/Valid_': logs.metrics.BufferedMetric(),
                'LatCorr/zK/Valid_': logs.metrics.BufferedMetric(),
                'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
@@ -294,12 +295,12 @@ def train_config():
                 if should_plot:
                     v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage - will be used later
                     if i == 0:  # tensorboard samples for minibatch 'eval' [0] only
-                        fig, _ = utils.figures.\
-                            plot_train_spectrograms(x_in, x_out, sample_info,
-                                                    dataset if dataset is not None else validation_audio_dataset,
-                                                    config.model, config.train)
-                        logger.tensorboard.add_figure('Spectrogram', fig, epoch, close=True)
-
+                        logger.plot_train_spectrograms(epoch, x_in, x_out, sample_info,
+                                                       dataset if dataset is not None else validation_audio_dataset,
+                                                       config.model, config.train)
+                        logger.plot_decoder_interpolation(epoch, ae_model, z_K_sampled, sample_info,
+                                                          dataset if dataset is not None else validation_audio_dataset)
+        metrics['Latent/MaxAbsVal/Valid_'].append(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
         scalars['VAELoss/Valid'].set(scalars['ReconsLoss/Backprop/Valid'].get()
                                      + scalars['Latent/BackpropLoss/Valid'].get())
         # Dynamic LR scheduling depends on validation performance

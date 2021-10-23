@@ -54,8 +54,6 @@ class LatentInterpolationEval:
         u_interpolated = np.linspace(0.0, 1.0, self.num_steps, endpoint=True)
         return u_interpolated, torch.tensor(interp_f(u_interpolated), device=self.device, dtype=torch.float32)
 
-    # TODO affichage du batch de spectrogrammes calculés
-
 
 
 if __name__ == "__main__":
@@ -66,7 +64,6 @@ if __name__ == "__main__":
     interpolator = LatentInterpolationEval(model_loader.ae_model, device=_device)
     _z_start, _z_end = torch.ones((1, interpolator.dim_z)) * 0.0, torch.ones((1, interpolator.dim_z)) * 1.0
     #_z_start, _z_end = torch.normal(0.0, 1.0, (1, interpolator.dim_z)), torch.normal(0.0, 1.0, (1, interpolator.dim_z))
-    _u, _z = interpolator.interpolate_latent(_z_start, _z_end)
-    _u, _x = interpolator.interpolate_spectrograms_from_latent(_z_start, _z_end)
+    _u, _z, _x = interpolator.interpolate_spectrograms_from_latent(_z_start, _z_end)
 
     print(model_loader.model_config)

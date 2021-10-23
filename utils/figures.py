@@ -1,7 +1,7 @@
 """
 Utilities for plotting various figures (spectrograms, ...)
 """
-
+import warnings
 from typing import Optional, Sequence, Iterable, List, Dict
 
 import numpy as np
@@ -171,7 +171,7 @@ def remove_axes_spines_and_ticks(ax):
 
 def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO allow MFCCs
                              z: Optional[torch.Tensor] = None, num_z_coords_to_show=40,
-                             subplot_w_h=(1.5, 1.5)):
+                             subplot_w_h=(1.5, 1.5), title: Optional[str] = None):
     """ Plots a "batch" of interpolated spectrograms. The number of spectrograms must be the same as the number of
     interpolation abscissae u. """
     if u.shape[0] != spectrograms.shape[0] or u.shape[0] != z.shape[0]:  # TODO all tests
@@ -180,11 +180,12 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
         raise ValueError("This function requires 2 spectrograms or more")
     if spectrograms.shape[1] > 1:
         raise ValueError("This function supports single-channel spectrograms only.")
-    n_rows = 2 + (1 if z is not None else 0)
-    # TODO add rows for other plots
-    fig, axes = plt.subplots(n_rows, u.shape[0], figsize=(u.shape[0]*subplot_w_h[0], n_rows*subplot_w_h[1]),
-                             sharey='row')
+    n_rows = 2 + (1 if z is not None else 0)  # TODO add rows for other plots
+    fig, axes = plt.subplots(n_rows, u.shape[0], sharey='row',
+                             figsize=(u.shape[0]*subplot_w_h[0], n_rows*subplot_w_h[1] + (0 if title is None else 0.3)))
     # Data converted to numpy, compute deltas
+    if spectrograms.shape[1] > 1:
+        raise AssertionError("Input spectrograms must be single-channel.")
     specs_np = spectrograms[:, 0, :, :].clone().detach().cpu().numpy()
     delta_specs_np = np.zeros_like(specs_np)
     for u_idx in range(1, u.shape[0]):  # First delta will remain zero
@@ -210,8 +211,9 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
         im = librosa.display.specshow(specs_np[u_idx, :, :], shading='flat', ax=axes[0, u_idx], cmap='magma',
                                       vmin=specs_np.min(), vmax=specs_np.max())
         if u_idx > 0:
+            max_abs_error = max(np.abs(delta_specs_np.min()), np.abs(delta_specs_np.max()))
             im = librosa.display.specshow(delta_specs_np[u_idx, :, :], shading='flat', ax=axes[1, u_idx], cmap='bwr',
-                                          vmin=delta_specs_np.min(), vmax=delta_specs_np.max())
+                                          vmin=-max_abs_error, vmax=max_abs_error)
             if u_idx == 1:
                 delta_specs_cbar_ax = fig.add_axes(axes[1, 0].get_position())
                 clb = fig.colorbar(im, cax=delta_specs_cbar_ax)
@@ -226,7 +228,11 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
     axes[1, 0].set_ylabel(r'$\frac{\Delta \mathbf{s}}{\Delta u}$', fontsize=14.0).set_rotation(0.0)
     if z_np is not None:
         axes[2, 0].set_ylabel(r'Latent vector $\mathbf{z}$')
-    fig.tight_layout()
+    if title is not None:
+        fig.suptitle(title)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fig.tight_layout()  # 'UserWarning: This figure includes Axes that are not compatible with tight_layout, ...'
     # Re-set colorbar axes positions, after layout has been tightened
     axes_to_reposition = [(delta_specs_cbar_ax, axes[1, 0])]  # TODO ajouter autres axes à repos (si non-None)
     for cb_ax, original_ax in axes_to_reposition:

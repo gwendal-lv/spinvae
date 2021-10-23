@@ -24,8 +24,8 @@ model = _Config()
 # ----------------------------------------------- Data ---------------------------------------------------
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "VAE_CNNs"
-model.run_name = 'sprescnn'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "MMD_tests"
+model.run_name = 'dev_test'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # TODO add path to pre-trained ae model
 
@@ -34,7 +34,7 @@ model.allow_erase_run = True  # If True, a previous run with identical name will
 # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
 # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
 # Arch args: '_adain', '_big', '_res', '_time+' (increases time resolution in the deepest layers)
-model.encoder_architecture = 'sprescnn'
+model.encoder_architecture = 'speccnn8l1_res'
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 model.style_architecture = 'mlp_8_outputbn'  # batch norm layers are always added inside the mlp
@@ -129,7 +129,7 @@ train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the wei
 train.reconstruction_loss = 'MSE'
 # Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' or 'MMD' loss with flow-VAE
 # 'MMD_determ_enc' also available: use a deterministic encoder
-train.latent_loss = 'Dkl'
+train.latent_loss = 'MMD_determ_enc'
 train.mmd_compensation_factor = 5.0  # Loss factor applied to MMD backprop losses
 train.mmd_num_estimates = 1  # Number of MMD estimates per batch (maybe increase if small batch size)
 # Losses normalization allow to get losses in the same order of magnitude, but does not optimize the true ELBO.
@@ -166,14 +166,14 @@ train.scheduler_cooldown = {'ae': 15, 'reg': 6}
 train.scheduler_threshold = 1e-4
 # Training considered "dead" when dynamic LR reaches this value (or the initial LR multiplied by the following ratios)
 # Early stop is currently used for the regression loss only
-train.early_stop_lr_ratio = {'ae': 1e-10, 'reg': 1e-3}  # early stop not implement for the ae model
+train.early_stop_lr_ratio = {'ae': 1e-10, 'reg': 1e-3}  # early stop not implemented for the ae model
 train.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 
 # ----------------------------------------------- Regularization --------------------------------------------------
 # WD definitely helps for regularization but significantly impairs results. 1e-4 seems to be a good compromise
 # for both Basic and MMD VAEs (without regression net). 3e-6 allows for the lowest reconstruction error.
 train.weight_decay = 1e-4
-train.fc_dropout = 0.3
+train.fc_dropout = 0.0  # 0.3 without MMD, to try to help prevent VAE posterior collapse
 train.reg_fc_dropout = 0.4
 train.latent_input_dropout = 0.0  # Should always remain zero... intended for tests (not tensorboard-logged)
 # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
