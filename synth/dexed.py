@@ -459,6 +459,14 @@ if __name__ == "__main__":
     print("numerical VSTi params: {}".format(Dexed.get_numerical_params_indexes()))
     print("categorical VSTi params: {}".format(Dexed.get_categorical_params_indexes()))
 
+    # Compute the total number of logits, if all param are learned as categorical (full-resolution)
+    logits_count = 0
+    for _ in Dexed.get_numerical_params_indexes():
+        logits_count += 100
+    for i in Dexed.get_categorical_params_indexes():
+        logits_count += Dexed.get_param_cardinality(i)
+    print("{} logits, if all param are learned as categorical (full-resolution)".format(logits_count))
+
     # ***** RE-WRITE ALL PRESETS TO SEPARATE PICKLE/TXT FILES *****
     if False:
         # Approx. 360Mo (yep, the SQLite DB is much lighter...) for all params values + names + labels
