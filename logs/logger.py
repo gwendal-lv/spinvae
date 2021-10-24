@@ -285,7 +285,7 @@ class RunLogger:
             self.figures_threads[0].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
         networks_layers_params = dict()  # If remains empty: no plot
-        if epoch > train_config.beta_warmup_epochs:  # Don't plot ae_model weights histograms during first epochs
+        if epoch > 2 * train_config.beta_warmup_epochs:  # Don't plot ae_model weights histograms during first epochs
             # returns clones of layers' parameters
             networks_layers_params['Decoder'] = ae_model.decoder.get_fc_layers_parameters()
         # Launch thread using copied data

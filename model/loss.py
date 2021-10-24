@@ -200,7 +200,7 @@ class QuantizedNumericalParamsLoss:
 
         :param idx_helper:
         :param numerical_loss:
-        :param limited_vst_params_indexes: List of VST params to include into to the loss computation. Can be uses
+        :param limited_vst_params_indexes: List of VST params to include into to the loss computation. Can be used
             to measure performance of specific groups of params. Set to None to include all numerical parameters.
         """
         self.idx_helper = idx_helper

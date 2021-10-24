@@ -66,26 +66,22 @@ def build_extended_ae_model(model_config, train_config, idx_helper):
     latent vectors as input. Both models are integrated into an ExtendedAE model. """
     # Spectral VAE
     encoder_model, decoder_model, ae_model = build_ae_model(model_config, train_config)
-    # Config checks - for backward compatibility
-    if not hasattr(model_config, 'params_reg_softmax'):
-        model_config.params_reg_softmax = True  # Default value is True (legacy behavior)
     # Regression model - extension of the VAE model
     if model_config.params_regression_architecture.startswith("mlp_"):
         if not model_config.forward_controls_loss:
             raise AssertionError()   # Non-invertible MLP cannot inverse target values
         reg_arch = model_config.params_regression_architecture.replace("mlp_", "")
-        reg_model = regression.MLPControlsRegression(reg_arch, model_config.dim_z, idx_helper, train_config.reg_fc_dropout,
+        reg_model = regression.MLPControlsRegression(reg_arch, model_config.dim_z, idx_helper,
                                                      cat_softmax_activation=model_config.params_reg_softmax,
-                                                     train_config=train_config)
+                                                     model_config=model_config, train_config=train_config)
     elif model_config.params_regression_architecture.startswith("flow_"):
         if model_config.learnable_params_tensor_length <= 0:  # Flow models require dim_z to be equal to this length
             raise AssertionError()
         reg_arch = model_config.params_regression_architecture.replace("flow_", "")
         reg_model = regression.FlowControlsRegression(reg_arch, model_config.dim_z, idx_helper,
                                                       fast_forward_flow=model_config.forward_controls_loss,
-                                                      dropout_p=train_config.reg_fc_dropout,
                                                       cat_softmax_activation=model_config.params_reg_softmax,
-                                                      train_config=train_config)
+                                                      model_config=model_config, train_config=train_config)
     else:
         raise NotImplementedError("Synth param regression arch '{}' not implemented"
                                   .format(model_config.params_regression_architecture))

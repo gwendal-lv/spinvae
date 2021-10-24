@@ -54,6 +54,9 @@ class LatentInterpolationEval:
         u_interpolated = np.linspace(0.0, 1.0, self.num_steps, endpoint=True)
         return u_interpolated, torch.tensor(interp_f(u_interpolated), device=self.device, dtype=torch.float32)
 
+    # TODO generate and save independent figure (easier to show in HTML tables // github pages)
+
+    # TODO compute 'interpolation smoothness' coefficients
 
 
 if __name__ == "__main__":

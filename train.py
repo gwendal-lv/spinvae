@@ -73,7 +73,7 @@ def train_config():
                                                             logger.get_previous_config_from_json())
 
 
-    # ========== Model definition (requires the full_dataset to be built) ==========
+    # ========== Model definition (requires the full_dataset to be built) + Losses included in models ==========
     # The extended_ae_model has all sub-models as attributes (even if some sub-models, e.g. synth controls regression,
     # are set to None during pre-training). Useful to change device or train/eval status of all models.
     if pretrain_vae:
@@ -114,44 +114,17 @@ def train_config():
     reg_model.init_optimizer_and_scheduler()
 
 
-    # ========== Load weights from pre-trained models? ==========
+    # ========== Restart from checkpoint, load weights from pre-trained models? ==========
     if pretrain_vae:
         if logger.restart_from_checkpoint:
             start_checkpoint = logs.logger.get_model_checkpoint(root_path, config.model, config.train.start_epoch - 1)
             ae_model.load_checkpoint(start_checkpoint)
     else:
-        if not logger.restart_from_checkpoint:
-            raise NotImplementedError()  # TODO load VAE from a different path (must be given)
-        else:
-            raise NotImplementedError()  # TODO  load ae+reg weights
-
-
-
-    # ========== Losses (criterion functions) ==========
-    # TODO move all of this into models themselves
-    # Training losses (for backprop) and Metrics (monitoring) losses and accuracies
-    # Some losses are defined in the models themselves
-    if not pretrain_vae:
-        # Controls backprop loss
-        if config.model.forward_controls_loss:  # usual straightforward loss - compares inference and target
-            if config.train.params_cat_bceloss:
-                assert (not config.model.params_reg_softmax)  # BCE loss requires no-softmax at reg model output
-            controls_criterion = model.loss.SynthParamsLoss(preset_indexes_helper,
-                                                            config.train.normalize_losses,
-                                                            cat_bce=config.train.params_cat_bceloss,
-                                                            cat_softmax=(not config.model.params_reg_softmax
-                                                                         and not config.train.params_cat_bceloss),
-                                                            cat_softmax_t=config.train.params_cat_softmax_temperature)
-        else:
-            raise ValueError("Backward-computed synth params regression loss: deprecated")
-        # Monitoring losses always remain the same
-        controls_num_eval_criterion = model.loss.QuantizedNumericalParamsLoss(preset_indexes_helper,
-                                                                              numerical_loss=nn.MSELoss(
-                                                                                  reduction='mean'))
-        controls_accuracy_criterion = model.loss.CategoricalParamsAccuracy(preset_indexes_helper,
-                                                                           reduce=True, percentage_output=True)
-    else:
-        controls_criterion, controls_num_eval_criterion, controls_accuracy_criterion = None, None, None
+        if logger.restart_from_checkpoint:  # TODO  load ae+reg weights
+            raise NotImplementedError()
+        else:  # load VAE from a different path (must be given)
+            pretrained_checkpoint = torch.load(config.model.pretrained_VAE_checkpoint, map_location=device)
+            ae_model.load_checkpoint(pretrained_checkpoint)
 
 
     # ========== Scalars, metrics, images and audio to be tracked in Tensorboard ==========
@@ -241,15 +214,16 @@ def train_config():
                     scalars['ReconsLoss/MSE/Train'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
                     scalars['Latent/MMD/Train'].append(ae_model.mmd(z_K_sampled))
                     if not pretrain_vae:
-                        scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
-                        scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
+                        scalars['Controls/QLoss/Train'].append(reg_model.num_eval_criterion(v_out, v_in))
+                        scalars['Controls/Accuracy/Train'].append(reg_model.accuracy_criterion(v_out, v_in))
                 extra_lat_reg_loss = ae_model.additional_latent_regularization_loss(z_0_mu_logvar)  # Might be 0.0
                 extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
                 if not pretrain_vae:
                     if config.model.forward_controls_loss:  # unused params might be modified by this criterion
-                        cont_loss = controls_criterion(v_out, v_in)
+                        cont_loss = reg_model.backprop_criterion(v_out, v_in)
                     else:
-                        cont_loss = controls_criterion(z_0_mu_logvar, v_in)
+                        cont_loss = reg_model.backprop_criterion(z_0_mu_logvar, v_in)
+                    cont_loss *= config.train.params_loss_compensation_factor
                     scalars['Controls/BackpropLoss/Train'].append(cont_loss)
                 else:
                     cont_loss = torch.zeros((1,), device=device)
@@ -284,12 +258,13 @@ def train_config():
                 scalars['ReconsLoss/MSE/Valid'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
                 scalars['Latent/MMD/Valid'].append(ae_model.mmd(z_K_sampled))
                 if not pretrain_vae:
-                    scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
-                    scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
+                    scalars['Controls/QLoss/Valid'].append(reg_model.num_eval_criterion(v_out, v_in))
+                    scalars['Controls/Accuracy/Valid'].append(reg_model.accuracy_criterion(v_out, v_in))
                     if config.model.forward_controls_loss:  # unused params might be modified by this criterion
-                        cont_loss = controls_criterion(v_out, v_in)
+                        cont_loss = reg_model.backprop_criterion(v_out, v_in)
                     else:
-                        cont_loss = controls_criterion(z_0_mu_logvar, v_in)
+                        cont_loss = reg_model.backprop_criterion(z_0_mu_logvar, v_in)
+                    cont_loss *= config.train.params_loss_compensation_factor
                     scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
                 # Validation plots
                 if should_plot:
@@ -305,8 +280,9 @@ def train_config():
                                      + scalars['Latent/BackpropLoss/Valid'].get())
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
-        ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
-                                     for loss_name in config.train.scheduler_losses['ae']]))
+        if pretrain_vae or (not pretrain_vae and config.train.enable_ae_scheduler_after_pretrain):
+            ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
+                                         for loss_name in config.train.scheduler_losses['ae']]))
         scalars['Sched/VAE/LR'].set(ae_model.learning_rate)
         if not pretrain_vae:
             reg_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()

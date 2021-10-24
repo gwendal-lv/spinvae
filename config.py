@@ -24,10 +24,11 @@ model = _Config()
 # ----------------------------------------------- Data ---------------------------------------------------
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "MMD_tests"
-model.run_name = 'dev_test'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "ControlsRegr_tests"
+model.run_name = 'dev_test_5'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
-# TODO add path to pre-trained ae model
+model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/MMD_tests/" \
+                                  "mmd_determ_enc_lossx5_drop0.0_wd_1e-4/checkpoints/00499.tar"
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
@@ -38,8 +39,9 @@ model.encoder_architecture = 'speccnn8l1_res'
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 model.style_architecture = 'mlp_8_outputbn'  # batch norm layers are always added inside the mlp
-# Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
-model.params_regression_architecture = 'flow_realnvp_6l300'
+# Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
+model.params_regression_architecture = 'mlp_3l1024'
+# TODO Output of params regression model: hardtanh act, or not
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
@@ -109,6 +111,7 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # ======================================= Training procedure configuration ==========================================
 # ===================================================================================================================
 train = _Config()
+train.pretrain_ae_only = False  # Should we pre-train the auto-encoder model only?
 train.start_datetime = datetime.datetime.now().isoformat()
 train.minibatch_size = 160  # 160
 train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
@@ -118,7 +121,6 @@ train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 500  # See update_dynamic_config_params().  16k sample dataset: set to 700
-train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
 # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
 # more than 30x more instruments than NSynth). All available data will always be used for validation.
 train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -140,7 +142,8 @@ train.normalize_losses = True  # Normalize all losses over the vector-dimension 
 train.beta = 0.2  # latent loss factor (base value: 0.2) - use much lower value (e-2) to get closer the ELBO
 train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very unstable training)
 # Epochs of warmup increase from start_value to beta
-train.beta_warmup_epochs = 25  # See update_dynamic_config_params()
+train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only
+train.params_loss_compensation_factor = 1.0  # because MSE loss of the pre-trained VAE if much lower (approx. 1e-2)
 train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
 train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
 
@@ -151,6 +154,7 @@ train.optimizer = 'Adam'
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
 # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
 train.initial_learning_rate = {'ae': 1e-4, 'reg': 2e-4}
+train.initial_ae_lr_factor_after_pretrain = 1e-2  # AE LR reduced when used with regression model after pre-train
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
 train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
 train.lr_warmup_start_factor = 0.1
@@ -158,6 +162,7 @@ train.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
 train.scheduler_name = 'ReduceLROnPlateau'  # TODO try CosineAnnealing
 # Possible values: 'VAELoss' (total), 'ReconsLoss', 'Controls/BackpropLoss', ... All required losses will be summed
 train.scheduler_losses = {'ae': ('ReconsLoss/Backprop', ), 'reg': ('Controls/BackpropLoss', )}
+train.enable_ae_scheduler_after_pretrain = False
 train.scheduler_lr_factor = {'ae': 0.2, 'reg': 0.2}
 # Set a longer patience with smaller datasets and quite unstable trains
 # See update_dynamic_config_params(). 16k samples dataset:  set to 10
@@ -211,6 +216,9 @@ def update_dynamic_config_params():
     # Values set to None during pre-train
     if train.pretrain_ae_only:
         model.params_regression_architecture = 'None'
+    else:
+        train.initial_learning_rate['ae'] *= train.initial_ae_lr_factor_after_pretrain
+        train.beta_warmup_epochs = 0
 
     # stack_spectrograms must be False for 1-note datasets - security check
     model.stack_spectrograms = model.stack_spectrograms and (len(model.midi_notes) > 1)
