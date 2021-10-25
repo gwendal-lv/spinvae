@@ -202,35 +202,40 @@ class SynthParamsLoss:
 
 
 
-class QuantizedNumericalParamsLoss(SynthParamsLossBase):
-    """ 'Quantized' parameters loss: to get a meaningful (but non-differentiable) loss, inferred parameter
-    values must be quantized as they would be in the synthesizer.
-
-    Only numerical parameters are involved in this loss computation. The PresetIndexesHelper ctor argument
-    allows this class to know which params are numerical.
-    The loss to be applied after quantization can be passed as a ctor argument.
-
-    This loss breaks the computation path (.backward cannot be applied to it).
-    """
-    def __init__(self, idx_helper: PresetIndexesHelper, loss_type='L1',
+class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
+    def __init__(self, idx_helper: PresetIndexesHelper, numerical_loss_type='L1',
+                 reduce_accuracy=True, percentage_accuracy_output=True,
                  limited_vst_params_indexes: Optional[Sequence] = None,
                  compute_symmetrical_presets=False):
         """
+        'Quantized' parameters loss: to get a meaningful (but non-differentiable) loss, inferred parameter
+        values must be quantized as they would be in the synthesizer.
+        Only numerical parameters are involved in the numerical loss computation. The PresetIndexesHelper ctor
+        argument allows this class to know which params are numerical.
+        The loss to be applied after quantization can be passed as a ctor argument.
+
+        Similarly, provides an Accuracy measurement for categorical parameters.
+
+        This loss breaks the computation path (.backward cannot be applied to it).
 
         :param idx_helper:
-        :param loss_type: 'L1' or 'MSE'
+        :param numerical_loss_type: 'L1' or 'MSE'
+        :param reduce_accuracy: If True, an averaged accuracy will be returned. If False, a dict of accuracies
+            (keys = vst param indexes) is returned.
         :param limited_vst_params_indexes: List of VST params to include into to the loss computation. Can be used
             to measure performance of specific groups of params. Set to None to include all numerical parameters.
         :param compute_symmetrical_presets: If True, the loss of all symmetrical presets will be computed, and the
             lowest loss for each preset will be used.
         """
         super().__init__(idx_helper, compute_symmetrical_presets)
-        if loss_type == 'L1':
+        if numerical_loss_type == 'L1':
             self.numerical_loss = nn.L1Loss(reduction='none')
-        elif loss_type == 'MSE':
+        elif numerical_loss_type == 'MSE':
             self.numerical_loss = nn.MSELoss(reduction='none')
         else:
-            raise ValueError("Unavailable loss '{}'".format(loss_type))
+            raise ValueError("Unavailable loss '{}'".format(numerical_loss_type))
+        self.reduce_accuracy = reduce_accuracy
+        self.percentage_accuracy_output = percentage_accuracy_output
         # Cardinality checks
         for vst_idx, _ in self.idx_helper.num_idx_learned_as_cat.items():
             assert self.idx_helper.vst_param_cardinals[vst_idx] > 0
@@ -239,15 +244,42 @@ class QuantizedNumericalParamsLoss(SynthParamsLossBase):
             + len(self.idx_helper.num_idx_learned_as_cat)
         self.limited_vst_params_indexes = limited_vst_params_indexes
 
-    def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
+    def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor, bkpt=False):  # FIXME temp debug
         """ Returns the loss for numerical VST params only (searched in u_in and u_out).
         Learnable representations can be numerical (in [0.0, 1.0]) or one-hot categorical.
         The type of representation has been stored in self.idx_helper """
         minibatch_size = u_in.shape[0]
         permutations_sets_indices, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
+        # Numerical loss and Accuracy, without any reduction
+        all_numerical_losses = self._compute_all_numerical_losses(u_out_w_s, u_in_w_s)
+        all_accuracies = self._compute_all_accuracies(u_out_w_s, u_in_w_s)
+
+        # TODO get the best preset among all available symmetrical preset
+
+        # Factor 100.0?
+        if self.percentage_accuracy_output:
+            for k, v in all_accuracies.items():
+                all_accuracies[k] = v * 100.0
+        # TODO handle reduction, or not
+        all_numerical_losses = torch.mean(all_numerical_losses, dim=1, keepdim=True)
+        # Reduction if required
+        if self.reduce_accuracy:
+            acc = np.asarray([v for _, v in all_accuracies.items()]).mean()
+        else:
+            acc = all_accuracies
+        # then get the min loss for each set of permutations
+        min_loss_per_symmetric_set = [torch.min(all_numerical_losses[indices]) for indices in permutations_sets_indices]
+        if len(min_loss_per_symmetric_set) != minibatch_size:
+            raise AssertionError()
+        # TODO also return accuracy
+        return acc, sum(min_loss_per_symmetric_set) / minibatch_size  # Average over batch dimension
+
+    def _compute_all_numerical_losses(self, u_out_w_s: torch.Tensor, u_in_w_s: torch.Tensor):
+        """ Computes the non-reduced numerical losses for in/out presets with symmetries (those tensors' dim0 is
+        expected to be (much) larger the the original minibatch size). """
         # Partial tensors (for final loss computation) - pre-allocate
-        u_in_num = torch.empty((u_in_w_s.shape[0], self.num_params_count), device=u_in.device, requires_grad=False)
-        u_out_num = torch.empty((u_in_w_s.shape[0], self.num_params_count), device=u_in.device, requires_grad=False)
+        u_in_num = torch.empty((u_in_w_s.shape[0], self.num_params_count), device=u_in_w_s.device, requires_grad=False)
+        u_out_num = torch.empty((u_in_w_s.shape[0], self.num_params_count), device=u_in_w_s.device, requires_grad=False)
         # if limited vst indexes: fill with zeros (some allocated cols won't be used). Slow but used for eval only.
         if self.limited_vst_params_indexes is not None:
             u_in_num[:, :], u_out_num[:, :] = 0.0, 0.0
@@ -285,38 +317,11 @@ class QuantizedNumericalParamsLoss(SynthParamsLossBase):
         else:
             pass  # No size check for limited params (a list with unlearned and/or cat params can be provided)
             #  assert cur_num_tensors_col == len(self.limited_vst_params_indexes)
-        # apply loss (without any reduction), then get average loss for each (symmetrical) preset
-        all_losses = self.numerical_loss(u_out_num, u_in_num)  # Positive diff. if output > input
-        all_losses = torch.mean(all_losses, dim=1, keepdim=True)
-        # then get the min loss for each set of permutations
-        min_loss_per_symmetric_set = [torch.min(all_losses[indices]) for indices in permutations_sets_indices]
-        if len(min_loss_per_symmetric_set) != minibatch_size:
-            raise AssertionError()
-        return sum(min_loss_per_symmetric_set) / minibatch_size  # Average over batch dimension
+        return self.numerical_loss(u_out_num, u_in_num)  # Positive diff. if output > input. Non-reduced loss
 
-
-
-class CategoricalParamsAccuracy:
-    """ Only categorical parameters are involved in this loss computation. """
-    def __init__(self, idx_helper: PresetIndexesHelper, reduce=True, percentage_output=True,
-                 limited_vst_params_indexes: Optional[Sequence] = None):
-        """
-        :param idx_helper: allows this class to know which params are categorical
-        :param reduce: If True, an averaged accuracy will be returned. If False, a dict of accuracies (keys =
-          vst param indexes) is returned.
-        :param percentage_output: If True, accuracies in [0.0, 100.0], else in [0.0, 1.0]
-        :param limited_vst_params_indexes: List of VST params to include into to the loss computation. Can be uses
-            to measure performance of specific groups of params. Set to None to include all numerical parameters.
-        """
-        self.idx_helper = idx_helper
-        self.reduce = reduce
-        self.percentage_output = percentage_output
-        self.limited_vst_params_indexes = limited_vst_params_indexes
-
-    def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
-        """ Returns accuracy (or accuracies) for all categorical VST params.
-        Learnable representations can be numerical (in [0.0, 1.0]) or one-hot categorical.
-        The type of representation is stored in self.idx_helper """
+    def _compute_all_accuracies(self, u_out: torch.Tensor, u_in: torch.Tensor):
+        """ Returns accuracy (or accuracies) for all categorical VST params. Learnable representations can be numerical
+        (in [0.0, 1.0]) or one-hot categorical. The type of representation is stored in self.idx_helper """
         accuracies = dict()
         # Accuracy of numerical learnable representations (involves quantization)
         for vst_idx, learn_idx in self.idx_helper.cat_idx_learned_as_num.items():
@@ -338,15 +343,8 @@ class CategoricalParamsAccuracy:
             target_classes = torch.argmax(u_in[:, learn_indexes], dim=-1)  # New tensor allocated
             out_classes = torch.argmax(u_out[:, learn_indexes], dim=-1)  # New tensor allocated
             accuracies[vst_idx] = (target_classes == out_classes).count_nonzero().item() / target_classes.numel()
-        # Factor 100.0?
-        if self.percentage_output:
-            for k, v in accuracies.items():
-                accuracies[k] = v * 100.0
-        # Reduction if required
-        if self.reduce:
-            return np.asarray([v for _, v in accuracies.items()]).mean()
-        else:
-            return accuracies
+        return accuracies
+
 
 
 class FlowParamsLoss:

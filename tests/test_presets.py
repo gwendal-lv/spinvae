@@ -99,20 +99,26 @@ class LossTest(unittest.TestCase):
         idx_helper = ds.preset_indexes_helper
         total_cat_params = len(idx_helper.cat_idx_learned_as_cat) + len(idx_helper.cat_idx_learned_as_num)
         total_num_params = len(idx_helper.num_idx_learned_as_cat) + len(idx_helper.num_idx_learned_as_num)
-        print("\nLearned params: {} numerical, {} categorical".format(total_num_params, total_cat_params))
-        accuracy_criterion = model.loss.CategoricalParamsAccuracy(ds.preset_indexes_helper)
-        numerical_criterion = model.loss.QuantizedNumericalParamsLoss(idx_helper, loss_type='L1')
+        print("\nLearned params: {} VST-numerical, {} VST-categorical".format(total_num_params, total_cat_params))
+        eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(idx_helper, numerical_loss_type='L1')
         # TODO backprop loss
         # we test presets with all available algorithms
         # TODO build a batch of presets for testing
         preset_UIDs_and_algo = get_presets_for_all_algorithms(ds)
-        for preset_UID, algo in preset_UIDs_and_algo:
+        learnable_preset_length = ds.get_full_preset_params(0).get_learnable().shape[1]
+        learnable_preset_GT_batch = torch.empty((len(preset_UIDs_and_algo), learnable_preset_length))
+        learnable_preset_num_err_batch = torch.empty((len(preset_UIDs_and_algo), learnable_preset_length))
+        learnable_preset_cat_err_batch = torch.empty((len(preset_UIDs_and_algo), learnable_preset_length))
+        for batch_index, (preset_UID, algo) in enumerate(preset_UIDs_and_algo):
             vst_preset_GT = ds.get_full_preset_params(preset_UID)
             learnable_preset_GT = vst_preset_GT.get_learnable()
-            self.assertAlmostEqual(accuracy_criterion(learnable_preset_GT, learnable_preset_GT), 100.0, delta=0.1)
-            self.assertAlmostEqual(numerical_criterion(learnable_preset_GT, learnable_preset_GT), 0.0, delta=1e-4)
+            learnable_preset_GT_batch[batch_index, :] = learnable_preset_GT[0, :].clone()
+            acc, num_error = eval_criterion(learnable_preset_GT, learnable_preset_GT)
+            self.assertAlmostEqual(acc, 100.0, delta=0.1)
+            self.assertAlmostEqual(num_error, 0.0, delta=1e-4)
             # - - - - - - - Test the metric losses (no backprop possible) - - - - - - -
-            for vst_index in idx_helper.categorical_vst_params:  # For each categorical VST param
+            output_preset = None
+            for vst_index in idx_helper.categorical_vst_params[0:6]:  # FIXME For each categorical VST param
                 # introduce an error on the preset, and measure the decreasing accuracy
                 if idx_helper.vst_param_learnable_model[vst_index] is not None:  # If the preset is learnable
                     vst_preset_modified = copy.deepcopy(vst_preset_GT)
@@ -123,11 +129,12 @@ class LossTest(unittest.TestCase):
                     else:
                         vst_preset_modified._full_presets[0, vst_index] += cat_increment
                     output_preset = vst_preset_modified.get_learnable()
-                    acc = accuracy_criterion(output_preset, learnable_preset_GT)
+                    acc, num_error = eval_criterion(output_preset, learnable_preset_GT)
                     self.assertAlmostEqual(acc, 100.0 * (total_cat_params - 1.0) / total_cat_params, delta=0.1,
                                            msg="VST categorical param #{}, '{}'"
                                            .format(vst_index, idx_helper.vst_param_names[vst_index]))
-            for vst_index in idx_helper.numerical_vst_params:  # For each numerical param
+            learnable_preset_cat_err_batch[batch_index, :] = output_preset[0, :].clone()
+            for vst_index in idx_helper.numerical_vst_params[0:6]:  # FIXME For each numerical param
                 if idx_helper.vst_param_learnable_model[vst_index] is not None:  # If the preset is learnable
                     vst_preset_modified = copy.deepcopy(vst_preset_GT)
                     if vst_preset_modified._full_presets[0, vst_index] < 0.5:
@@ -138,11 +145,20 @@ class LossTest(unittest.TestCase):
                         vst_preset_modified._full_presets[0, vst_index] = 0.0
                     expected_loss = expected_loss / total_num_params
                     output_preset = vst_preset_modified.get_learnable()
-                    measured_loss = numerical_criterion(output_preset, learnable_preset_GT)  # Quantized L1 loss
-                    self.assertAlmostEqual(expected_loss, measured_loss, delta=1e-4)
+                    acc, num_error = eval_criterion(output_preset, learnable_preset_GT)  # Quantized L1 loss
+                    self.assertAlmostEqual(expected_loss, num_error, delta=1e-4)
+            learnable_preset_num_err_batch[batch_index, :] = output_preset[0, :].clone()
             # TODO - - - - - - - test permutations of oscillators (depend on the algorithm) - - - - - - -
             #    get the permutations from the Dexed class
             # TODO test minimal loss for several permutations
+        # TODO test all data as a batch
+        acc, num_error = eval_criterion(learnable_preset_GT_batch, learnable_preset_GT_batch)
+        self.assertAlmostEqual(acc, 100.0, delta=0.1)
+        self.assertAlmostEqual(num_error, 0.0, delta=1e-4)
+        acc, num_error = eval_criterion(learnable_preset_cat_err_batch, learnable_preset_GT_batch, bkpt=True)
+        self.assertAlmostEqual(acc, 100.0 * (total_cat_params - 1.0) / total_cat_params, delta=0.1)
+        acc, num_error = eval_criterion(learnable_preset_num_err_batch, learnable_preset_GT_batch)
+        self.assertAlmostEqual(acc, 100.0, delta=0.1)
 
 
 if __name__ == '__main__':
