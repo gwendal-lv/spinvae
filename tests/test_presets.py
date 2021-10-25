@@ -101,9 +101,10 @@ class LossTest(unittest.TestCase):
         total_num_params = len(idx_helper.num_idx_learned_as_cat) + len(idx_helper.num_idx_learned_as_num)
         print("\nLearned params: {} numerical, {} categorical".format(total_num_params, total_cat_params))
         accuracy_criterion = model.loss.CategoricalParamsAccuracy(ds.preset_indexes_helper)
-        numerical_criterion = model.loss.QuantizedNumericalParamsLoss(idx_helper, numerical_loss=nn.L1Loss())
+        numerical_criterion = model.loss.QuantizedNumericalParamsLoss(idx_helper, loss_type='L1')
         # TODO backprop loss
         # we test presets with all available algorithms
+        # TODO build a batch of presets for testing
         preset_UIDs_and_algo = get_presets_for_all_algorithms(ds)
         for preset_UID, algo in preset_UIDs_and_algo:
             vst_preset_GT = ds.get_full_preset_params(preset_UID)

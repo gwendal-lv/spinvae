@@ -1,5 +1,5 @@
 
-from typing import Iterable, Sequence, Optional
+from typing import Iterable, Sequence, Optional, List
 import numpy as np
 
 import torch
@@ -66,7 +66,25 @@ class GaussianDkl:
             return Dkl
 
 
-# TODO MMD
+
+class SynthParamsLossBase:
+    def __init__(self, idx_helper: PresetIndexesHelper, compute_symmetrical_presets=False):
+        self.idx_helper = idx_helper
+        self.compute_symmetrical_presets = compute_symmetrical_presets
+
+    def get_symmetrical_learnable_presets(self, u_out: torch.Tensor, u_in: torch.Tensor) \
+            -> (List[List[int]], torch.Tensor, torch.Tensor):
+        """ Returns an 'extended batch' with symmetrical presets if self.compute_symmetrical_presets,
+         otherwise returns compatible unmodified u_out and u_in.
+        See PresetIndexesHelper.get_symmetrical_learnable_presets(...)
+
+        :returns: permutations_sets_indices, u_out_with_symmetries, u_in_with_symmetries
+        """
+        if self.compute_symmetrical_presets:
+            permutations_sets_indices = list()
+            raise NotImplementedError()  # TODO permutations
+        else:
+            return [[i] for i in range(u_in.shape[0])], u_out, u_in
 
 
 
@@ -184,7 +202,7 @@ class SynthParamsLoss:
 
 
 
-class QuantizedNumericalParamsLoss:
+class QuantizedNumericalParamsLoss(SynthParamsLossBase):
     """ 'Quantized' parameters loss: to get a meaningful (but non-differentiable) loss, inferred parameter
     values must be quantized as they would be in the synthesizer.
 
@@ -194,34 +212,42 @@ class QuantizedNumericalParamsLoss:
 
     This loss breaks the computation path (.backward cannot be applied to it).
     """
-    def __init__(self, idx_helper: PresetIndexesHelper, numerical_loss=nn.MSELoss(),
-                 limited_vst_params_indexes: Optional[Sequence] = None):
+    def __init__(self, idx_helper: PresetIndexesHelper, loss_type='L1',
+                 limited_vst_params_indexes: Optional[Sequence] = None,
+                 compute_symmetrical_presets=False):
         """
 
         :param idx_helper:
-        :param numerical_loss:
+        :param loss_type: 'L1' or 'MSE'
         :param limited_vst_params_indexes: List of VST params to include into to the loss computation. Can be used
             to measure performance of specific groups of params. Set to None to include all numerical parameters.
+        :param compute_symmetrical_presets: If True, the loss of all symmetrical presets will be computed, and the
+            lowest loss for each preset will be used.
         """
-        self.idx_helper = idx_helper
-        self.numerical_loss = numerical_loss
+        super().__init__(idx_helper, compute_symmetrical_presets)
+        if loss_type == 'L1':
+            self.numerical_loss = nn.L1Loss(reduction='none')
+        elif loss_type == 'MSE':
+            self.numerical_loss = nn.MSELoss(reduction='none')
+        else:
+            raise ValueError("Unavailable loss '{}'".format(loss_type))
         # Cardinality checks
         for vst_idx, _ in self.idx_helper.num_idx_learned_as_cat.items():
             assert self.idx_helper.vst_param_cardinals[vst_idx] > 0
         # Number of numerical parameters considered for this loss (after cat->num conversions). For tensor pre-alloc
         self.num_params_count = len(self.idx_helper.num_idx_learned_as_num)\
-                                + len(self.idx_helper.num_idx_learned_as_cat)
+            + len(self.idx_helper.num_idx_learned_as_cat)
         self.limited_vst_params_indexes = limited_vst_params_indexes
 
     def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
         """ Returns the loss for numerical VST params only (searched in u_in and u_out).
         Learnable representations can be numerical (in [0.0, 1.0]) or one-hot categorical.
         The type of representation has been stored in self.idx_helper """
-        # Partial tensors (for final loss computation)
-        minibatch_size = u_in.size(0)
-        # pre-allocate tensors
-        u_in_num = torch.empty((minibatch_size, self.num_params_count), device=u_in.device, requires_grad=False)
-        u_out_num = torch.empty((minibatch_size, self.num_params_count), device=u_in.device, requires_grad=False)
+        minibatch_size = u_in.shape[0]
+        permutations_sets_indices, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
+        # Partial tensors (for final loss computation) - pre-allocate
+        u_in_num = torch.empty((u_in_w_s.shape[0], self.num_params_count), device=u_in.device, requires_grad=False)
+        u_out_num = torch.empty((u_in_w_s.shape[0], self.num_params_count), device=u_in.device, requires_grad=False)
         # if limited vst indexes: fill with zeros (some allocated cols won't be used). Slow but used for eval only.
         if self.limited_vst_params_indexes is not None:
             u_in_num[:, :], u_out_num[:, :] = 0.0, 0.0
@@ -232,9 +258,9 @@ class QuantizedNumericalParamsLoss:
             if self.limited_vst_params_indexes is not None:  # if limited vst indexes:
                 if vst_idx not in self.limited_vst_params_indexes:  # continue if this param is not included
                     continue
-            param_batch = u_in[:, learn_idx].detach()
+            param_batch = u_in_w_s[:, learn_idx].detach()
             u_in_num[:, cur_num_tensors_col] = param_batch  # Data copy - does not modify u_in
-            param_batch = u_out[:, learn_idx].detach().clone()
+            param_batch = u_out_w_s[:, learn_idx].detach().clone()
             if self.idx_helper.vst_param_cardinals[vst_idx] > 0:  # don't quantize <0 cardinal (continuous)
                 cardinal = self.idx_helper.vst_param_cardinals[vst_idx]
                 param_batch = torch.round(param_batch * (cardinal - 1.0)) / (cardinal - 1.0)
@@ -247,18 +273,26 @@ class QuantizedNumericalParamsLoss:
                     continue
             cardinal = len(learn_indexes)
             # Classes as column-vectors (for concatenation)
-            in_classes = torch.argmax(u_in[:, learn_indexes], dim=-1).detach().type(torch.float)
+            in_classes = torch.argmax(u_in_w_s[:, learn_indexes], dim=-1).detach().type(torch.float)
             u_in_num[:, cur_num_tensors_col] = in_classes / (cardinal-1.0)
-            out_classes = torch.argmax(u_out[:, learn_indexes], dim=-1).detach().type(torch.float)
+            out_classes = torch.argmax(u_out_w_s[:, learn_indexes], dim=-1).detach().type(torch.float)
             u_out_num[:, cur_num_tensors_col] = out_classes / (cardinal-1.0)
             cur_num_tensors_col += 1
         # Final size checks
         if self.limited_vst_params_indexes is None:
-            assert cur_num_tensors_col == self.num_params_count
+            if cur_num_tensors_col != self.num_params_count:
+                raise AssertionError()
         else:
             pass  # No size check for limited params (a list with unlearned and/or cat params can be provided)
             #  assert cur_num_tensors_col == len(self.limited_vst_params_indexes)
-        return self.numerical_loss(u_out_num, u_in_num)  # Positive diff. if output > input
+        # apply loss (without any reduction), then get average loss for each (symmetrical) preset
+        all_losses = self.numerical_loss(u_out_num, u_in_num)  # Positive diff. if output > input
+        all_losses = torch.mean(all_losses, dim=1, keepdim=True)
+        # then get the min loss for each set of permutations
+        min_loss_per_symmetric_set = [torch.min(all_losses[indices]) for indices in permutations_sets_indices]
+        if len(min_loss_per_symmetric_set) != minibatch_size:
+            raise AssertionError()
+        return sum(min_loss_per_symmetric_set) / minibatch_size  # Average over batch dimension
 
 
 

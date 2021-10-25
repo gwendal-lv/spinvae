@@ -282,6 +282,16 @@ class PresetIndexesHelper:
         else:
             return [], []
 
+    def get_symmetrical_learnable_presets(self, u_out: torch.Tensor, u_in: torch.Tensor):
+        """ Computes all symmetric presets for each learnable preset from the u_in input tensor.
+        Each preset from u_out will be duplicated the appropriate number of times such that u_out_with_symmetries
+        contains the same number of presets as u_in_with_symmetries does.
+
+        :returns: permutations_sets_indices, u_out_with_symmetries, u_in_with_symmetries
+        """
+        pass
+
+
 
 class PresetsParams:
     """
@@ -390,10 +400,6 @@ class PresetsParams:
         else:
             return self._learnable_presets
 
-    # TODO learnable representation, numerical-only (no category)
-
-    # TODO quantize learned representation
-
 
 
 class DexedPresetsParams(PresetsParams):
@@ -411,7 +417,7 @@ class DexedPresetsParams(PresetsParams):
     def get_full(self, apply_constraints=True) -> torch.Tensor:
         full_presets = super().get_full(apply_constraints)
         if not self.is_from_full_presets and self._limited_algos:
-            assert False  # FIXME this whole limited-algorithms section breaks non-limited algorithms
+            raise AssertionError()  # FIXME this whole limited-algorithms section breaks non-limited algorithms
             if self.idx_helper.vst_param_learnable_model[4] == 'num':  # algo learnable: rescale needed (to 32 values)
                 # Direct tensor-column modification
                 algo_col = full_presets[:, 4]  # Vector (len = batch size)
@@ -434,7 +440,7 @@ class DexedPresetsParams(PresetsParams):
         learnable_presets = super().get_learnable()
         # Algo rescale not needed if this class was built from inferred presets
         if self.is_from_full_presets and self._limited_algos:
-            assert False  # FIXME this whole limited-algorithms section breaks non-limited algorithms
+            raise AssertionError()  # FIXME this whole limited-algorithms section breaks non-limited algorithms
             # TODO deactivate the "algo rescale" feature? it should be rewritten from scratch or discarded
             # Numerical algo representation is a bad idea anyways
             if self._algo_learnable_index is not None:

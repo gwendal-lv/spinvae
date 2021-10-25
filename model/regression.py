@@ -86,7 +86,7 @@ class RegressionModel(model.base.TrainableModel, ABC):
                                 cat_softmax_t=train_config.params_cat_softmax_temperature)
             # Monitoring losses always remain the same
             self.num_eval_criterion = model.loss.\
-                QuantizedNumericalParamsLoss(self.idx_helper, numerical_loss=nn.MSELoss( reduction='mean'))
+                QuantizedNumericalParamsLoss(self.idx_helper, loss_type='L1')
             self.accuracy_criterion = model.loss.\
                 CategoricalParamsAccuracy(self.idx_helper, reduce=True, percentage_output=True)
         else:
