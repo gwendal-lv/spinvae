@@ -84,11 +84,10 @@ class RegressionModel(model.base.TrainableModel, ABC):
                                 cat_softmax=(not model_config.params_reg_softmax
                                              and not train_config.params_cat_bceloss),
                                 cat_softmax_t=train_config.params_cat_softmax_temperature)
-            # Monitoring losses always remain the same FIXME new loss
-            self.num_eval_criterion = model.loss.\
-                QuantizedNumericalParamsLoss(self.idx_helper, loss_type='L1')
-            self.accuracy_criterion = model.loss.\
-                CategoricalParamsAccuracy(self.idx_helper, reduce=True, percentage_output=True)
+            # Monitoring losses always remain the same
+            self.eval_criterion = model.loss. AccuracyAndQuantizedNumericalLoss(
+                self.idx_helper, numerical_loss_type='L1', reduce_accuracy=True, percentage_accuracy_output=True,
+                compute_symmetrical_presets=False)  # FIXME
         else:
             self.controls_criterion, self.num_eval_criterion, self.accuracy_criterion = None, None, None
             self.dropout_p = 0.0

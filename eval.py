@@ -133,11 +133,9 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     preset_UIDs = list()
     synth_params_GT = list()
     synth_params_inferred = list()
-    # Parameters criteria
-    controls_num_mse_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
-                                                                         numerical_loss=nn.MSELoss(reduction='mean'))
-    controls_num_mae_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
-                                                                         numerical_loss=nn.L1Loss(reduction='mean'))
+    # Parameters criteria FIXME new combined L1/Accuracy loss
+    controls_num_mse_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper, loss_type='MSE')
+    controls_num_mae_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper, loss_type='L1')
     controls_accuracy_criterion = model.loss.CategoricalParamsAccuracy(dataset.preset_indexes_helper,
                                                                        reduce=True, percentage_output=True)
     # Controls related to MIDI key and velocity (to compare single- and multi-channel spectrograms models)
@@ -146,8 +144,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     else:
         raise NotImplementedError("")
     dynamic_controls_num_mae_crit = \
-        model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
-                                                numerical_loss=nn.L1Loss(reduction='mean'),
+        model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper, loss_type='L1',
                                                 limited_vst_params_indexes=dynamic_vst_controls_indexes)
     dynamic_controls_acc_crit = \
         model.loss.CategoricalParamsAccuracy(dataset.preset_indexes_helper, reduce=True, percentage_output=True,

@@ -214,8 +214,9 @@ def train_config():
                     scalars['ReconsLoss/MSE/Train'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
                     scalars['Latent/MMD/Train'].append(ae_model.mmd(z_K_sampled))
                     if not pretrain_vae:
-                        scalars['Controls/QLoss/Train'].append(reg_model.num_eval_criterion(v_out, v_in))
-                        scalars['Controls/Accuracy/Train'].append(reg_model.accuracy_criterion(v_out, v_in))
+                        accuracy, numerical_error = reg_model.eval_criterion(v_out, v_in)
+                        scalars['Controls/QLoss/Train'].append(numerical_error)
+                        scalars['Controls/Accuracy/Train'].append(accuracy)
                 extra_lat_reg_loss = ae_model.additional_latent_regularization_loss(z_0_mu_logvar)  # Might be 0.0
                 extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
                 if not pretrain_vae:
@@ -258,8 +259,9 @@ def train_config():
                 scalars['ReconsLoss/MSE/Valid'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
                 scalars['Latent/MMD/Valid'].append(ae_model.mmd(z_K_sampled))
                 if not pretrain_vae:
-                    scalars['Controls/QLoss/Valid'].append(reg_model.num_eval_criterion(v_out, v_in))
-                    scalars['Controls/Accuracy/Valid'].append(reg_model.accuracy_criterion(v_out, v_in))
+                    accuracy, numerical_error = reg_model.eval_criterion(v_out, v_in)
+                    scalars['Controls/QLoss/Valid'].append(numerical_error)
+                    scalars['Controls/Accuracy/Valid'].append(accuracy)
                     if config.model.forward_controls_loss:  # unused params might be modified by this criterion
                         cont_loss = reg_model.backprop_criterion(v_out, v_in)
                     else:
@@ -330,7 +332,6 @@ def train_config():
     del reg_model_parallel, ae_model_parallel
     del extended_ae_model, ae_model
     del reg_model
-    del controls_criterion, controls_num_eval_criterion, controls_accuracy_criterion
     del logger
     del dataloader, dataset
     del train_audio_dataset, validation_audio_dataset
