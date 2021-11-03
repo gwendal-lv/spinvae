@@ -339,5 +339,6 @@ def train_config():
 
 if __name__ == "__main__":
     # Normal run, config.py only will be used to parametrize learning and models
+    config.update_dynamic_config_params()  # Required before any actual train
     train_config()
 

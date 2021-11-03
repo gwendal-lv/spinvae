@@ -207,10 +207,10 @@ train.profiler_schedule_kwargs = {'skip_first': 5, 'wait': 1, 'warmup': 1, 'acti
 
 
 
-def update_dynamic_config_params():
+def update_dynamic_config_params():  # Required before any actual train
     """
     Updates some global attributes of this config.py module.
-    This function should be called after any modification of this module's attributes.
+    This function should be called before using any train attribute
     """
 
     # Values set to None during pre-train
@@ -266,8 +266,4 @@ def update_dynamic_config_params():
                                                                     [label[0:4] for label in model.dataset_labels]))
     else:
         raise NotImplementedError("Unknown synth prefix for model.synth '{}'".format(model.synth))
-
-
-# Call this function again after modifications from the outside of this module
-update_dynamic_config_params()
 
