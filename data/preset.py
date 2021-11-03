@@ -4,13 +4,15 @@ Classes to store and transform batches of synth presets. Some functionalities ar
 - retrieve only learnable params of full presets, or fill un-learned (not inferred) values
 - transform some linear parameter into categorical, and reverse this transformation
 """
-
+import warnings
 from enum import Enum
-from typing import Optional, Iterable, Sequence
+from typing import Optional, Iterable, Sequence, List
 import numpy as np
 
 import torch
 import torch.nn.functional
+
+import synth.dexed
 
 
 # Should be used instead of the str synth name to reduce loss functions computation times
@@ -282,14 +284,118 @@ class PresetIndexesHelper:
         else:
             return [], []
 
-    def get_symmetrical_learnable_presets(self, u_out: torch.Tensor, u_in: torch.Tensor):
+    def vst_indices_range_to_learnable_range(self, vst_indices_ranges: range):
+        learnable_indices = list()
+        for vst_idx in vst_indices_ranges:
+            _learn_indices = self.full_to_learnable[vst_idx]
+            if isinstance(_learn_indices, int):
+                learnable_indices += [_learn_indices]
+            elif isinstance(_learn_indices, list):
+                learnable_indices += _learn_indices
+        learnable_indices = sorted(set(learnable_indices))
+        for i in range(len(learnable_indices) - 1):
+            if learnable_indices[i+1] - learnable_indices[i] != 1:
+                raise RuntimeError("Cannot build a range from the given set of learnable indices: {}"
+                                   .format(learnable_indices))
+        return range(min(learnable_indices), max(learnable_indices)+1)
+
+    def get_symmetrical_learnable_presets(self, u_out: torch.Tensor, u_in: torch.Tensor) \
+            -> (List[range], torch.Tensor, torch.Tensor):
         """ Computes all symmetric presets for each learnable preset from the u_in input tensor.
-        Each preset from u_out will be duplicated the appropriate number of times such that u_out_with_symmetries
+        Each preset from u_out will be duplicated the appropriate number of times such that u_out_with_duplicates
         contains the same number of presets as u_in_with_symmetries does.
 
-        :returns: permutations_sets_indices, u_out_with_symmetries, u_in_with_symmetries
+        :returns: permutations_groups, u_out_with_duplicates, u_in_with_symmetries
         """
-        pass
+        if self._synth == _Synth.DEXED:
+            # TODO some oscillators can be symmetrical
+            # TODO if feedback is zero, some algorithms can be equivalent
+
+            # 1st pass: get all information about the input preset (algorithms, feedback or not, ...)
+            #    and compute the final number of presets (including symmetrized duplicates)
+            # We use cloned CPU tensors here because we don't need the gradient (and we'll do many small operations)
+            u_in_cpu = u_in.detach().clone().cpu()
+            # Retrieve all algorithms - algorithm indexes in [0, 31]
+            if self.vst_param_learnable_model[4] == 'cat':
+                u_in_algos = u_in_cpu[:, self.cat_idx_learned_as_cat[4]]
+                u_in_algos = torch.argmax(u_in_algos, dim=1, keepdim=False).numpy()
+            elif self.vst_param_learnable_model[4] == 'num':
+                u_in_algos = u_in_cpu[:, self.cat_idx_learned_as_num[4]] * 31.0
+                u_in_algos = np.asarray(torch.round(u_in_algos).numpy(), dtype=int)
+            else:
+                raise AssertionError("Dexed algorithm is not a learnable parameter.")
+            # Feedback as a boolean (either 0.0, or non-negligible feedback)
+            if self.vst_param_learnable_model[5] == 'cat':
+                u_in_feedback = u_in_cpu[:, self.num_idx_learned_as_cat[5]]
+                u_in_feedback = (torch.argmax(u_in_feedback, dim=1, keepdim=False).numpy() > 0)
+            elif self.vst_param_learnable_model[5] == 'num':
+                u_in_feedback = (u_in_cpu[:, self.num_idx_learned_as_num[5]].numpy() > 0)
+            else:
+                raise AssertionError("Dexed feedback is not a learnable parameter.")
+            # Now, we can compute the symmetric duplicates
+            # List of (algos, operators permutations) tuples
+            permutations = [synth.dexed.Dexed.get_algorithms_and_oscillators_permutations(u_in_algos[i], u_in_feedback[i])
+                            for i in range(u_in_algos.shape[0])]
+            all_algos_permutations = np.hstack([permutations[i][0] for i in range(len(permutations))])
+            permutations_groups = list()
+            next_permutation_index = 0
+            for i in range(len(permutations)):
+                permutations_groups.append(range(next_permutation_index,
+                                                 next_permutation_index + permutations[i][0].shape[0]))
+                next_permutation_index += permutations[i][0].shape[0]
+
+            # 2nd pass: properly store symmetrized u_in duplicates (CPU ops only, no gradient)
+            # FIXME use empty tensor after debug
+            u_in_permutations_cpu = torch.ones((len(all_algos_permutations), u_in_cpu.shape[1])) * -1.0
+            # 2a) set algo of all permutations
+            algo_learn_indices = self.full_to_learnable[4]
+            if self.vst_param_learnable_model[4] == 'num':
+                u_in_permutations_cpu[:, algo_learn_indices] = all_algos_permutations
+            elif self.vst_param_learnable_model[4] == 'cat':
+                u_in_permutations_cpu[:, algo_learn_indices] = \
+                    torch.nn.functional.one_hot(torch.tensor(all_algos_permutations), 32).float()
+            else:
+                raise AssertionError("Dexed algorithm is not a learnable parameter.")
+            # 2b) and 2c) - All of those indices will be copied (algorithm excluded, unlearned won't be copied)
+            unchanged_vst_indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+            unchanged_learn_indices = list()
+            for vst_idx in unchanged_vst_indices:
+                learnable_indexes = self.full_to_learnable[vst_idx]
+                if learnable_indexes is not None:  # int (num) of list of ints (cat)
+                    if isinstance(learnable_indexes, int):
+                        learnable_indexes = [learnable_indexes]
+                    unchanged_learn_indices += learnable_indexes
+            # pre-compute groups of param indexes for each operator
+            op_params_vst_ranges = synth.dexed.Dexed.get_operators_params_indexes_groups()
+            op_params_ranges = [self.vst_indices_range_to_learnable_range(r) for r in op_params_vst_ranges]
+            for old_preset_idx, new_preset_range in enumerate(permutations_groups):
+                # 2b) copy values of general parameters (e.g. feedback, LFO, main pitch, ...)
+                u_in_partial = torch.unsqueeze(u_in_cpu[old_preset_idx, unchanged_learn_indices], 0)\
+                    .expand(len(new_preset_range), -1)
+                u_in_permutations_cpu[new_preset_range.start:new_preset_range.stop, unchanged_learn_indices] \
+                    = u_in_partial
+                # 2c) copy operators' values, for each permutation
+                for permutation_idx, new_preset_idx in enumerate(new_preset_range):
+                    for old_op_idx in range(6):
+                        new_op_idx = permutations[old_preset_idx][1][permutation_idx, old_op_idx]
+                        u_in_permutations_cpu[new_preset_idx,
+                                              op_params_ranges[new_op_idx].start:op_params_ranges[new_op_idx].stop] \
+                            = u_in_cpu[old_preset_idx,
+                                       op_params_ranges[old_op_idx].start:op_params_ranges[old_op_idx].stop]
+
+            # 3) Duplicate each output preset the appropriate number of times, WITHOUT BREAKING COMPUTATIONAL PATH
+            # Build a list of expanded tensors, stack them together
+            u_out_expanded = [u_out[i:i+1, :].expand(len(r), -1) for i, r in enumerate(permutations_groups)]
+            u_out_expanded = torch.vstack(u_out_expanded)
+
+            # FIXME temp: assert >= 0.0
+            if torch.any(u_in_permutations_cpu < 0).item():
+                raise AssertionError()
+
+            return permutations_groups, u_out_expanded, u_in_permutations_cpu.to(u_out_expanded.device)
+        else:
+            warnings.warn("Presets permutations for synth '{}' are not implemented.".format(self._synth))
+            return [range(i, i+1) for i in range(u_in.shape[0])], u_out, u_in
 
 
 

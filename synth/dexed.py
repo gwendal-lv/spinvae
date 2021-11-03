@@ -13,7 +13,7 @@ import pickle
 import multiprocessing
 from multiprocessing.pool import ThreadPool
 import time
-from typing import Iterable
+from typing import Iterable, List
 
 import librosa
 import numpy as np
@@ -24,6 +24,7 @@ import pandas as pd
 
 import pathlib
 
+import synth.dexedpermutations
 import librenderman as rm  # A symbolic link to the actual librenderman.so must be found in the current folder
 
 
@@ -444,6 +445,15 @@ class Dexed:
             indexes.append(40 + 22*i)  # R scale
             indexes.append(44 + 22*i)  # op on/off switch
         return indexes
+
+    @staticmethod
+    def get_operators_params_indexes_groups() -> List[range]:
+        """ Returns a list of 6 ranges, where each range contains the indices of all parameters of an operator. """
+        return [range(23 + 22 * i, 23 + 22 * (i+1)) for i in range(6)]
+
+    @staticmethod
+    def get_algorithms_and_oscillators_permutations(algo: int, feedback: bool):
+        return synth.dexedpermutations.get_algorithms_and_oscillators_permutations(algo, feedback)
 
 
 if __name__ == "__main__":

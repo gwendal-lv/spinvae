@@ -73,21 +73,20 @@ class SynthParamsLossBase:
         self.compute_symmetrical_presets = compute_symmetrical_presets
 
     def get_symmetrical_learnable_presets(self, u_out: torch.Tensor, u_in: torch.Tensor) \
-            -> (List[List[int]], torch.Tensor, torch.Tensor):
+            -> (List[range], torch.Tensor, torch.Tensor):
         """ Returns an 'extended batch' with symmetrical presets if self.compute_symmetrical_presets,
          otherwise returns compatible unmodified u_out and u_in.
         See PresetIndexesHelper.get_symmetrical_learnable_presets(...)
 
-        :returns: permutations_sets_indices, u_out_with_symmetries, u_in_with_symmetries
+        :returns: permutations_groups, u_out_with_duplicates, u_in_with_symmetries
         """
         if self.compute_symmetrical_presets:
-            permutations_sets_indices = list()
-            raise NotImplementedError()  # TODO permutations
+            return self.idx_helper.get_symmetrical_learnable_presets(u_out, u_in)
         else:
-            return [[i] for i in range(u_in.shape[0])], u_out, u_in
+            return [range(i, i+1) for i in range(u_in.shape[0])], u_out, u_in
 
 
-
+# TODO increased loss factor for the 'Algorithm' VST parameter
 class SynthParamsLoss:
     """ A 'dynamic' loss which handles different representations of learnable synth parameters
     (numerical and categorical). The appropriate loss can be computed by passing a PresetIndexesHelper instance
@@ -137,7 +136,7 @@ class SynthParamsLoss:
         # At first: we search for useless parameters (whose loss should not be back-propagated)
         useless_num_learn_param_indexes, useless_cat_learn_param_indexes = list(), list()
         batch_size = u_in.shape[0]
-        if self.prevent_useless_params_loss:
+        if self.prevent_useless_params_loss:  # TODO compute this on presets with symmetries
             for row in range(batch_size):
                 num_indexes, cat_indexes = self.idx_helper.get_useless_learned_params_indexes(u_in[row, :])
                 useless_num_learn_param_indexes.append(num_indexes)
@@ -201,7 +200,9 @@ class SynthParamsLoss:
         return num_loss + cat_loss * self.cat_loss_factor
 
 
-
+# TODO this class should not take into account parameters that aren't being used,
+#    e.g. parameters of a disabled Dexed oscillator.
+#    -----> that's a lot of work, and performance is likely to degrade
 class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
     def __init__(self, idx_helper: PresetIndexesHelper, numerical_loss_type='L1',
                  reduce_accuracy=True, percentage_accuracy_output=True,
@@ -239,9 +240,12 @@ class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
         # Cardinality checks
         for vst_idx, _ in self.idx_helper.num_idx_learned_as_cat.items():
             assert self.idx_helper.vst_param_cardinals[vst_idx] > 0
-        # Number of numerical parameters considered for this loss (after cat->num conversions). For tensor pre-alloc
+        # Number of parameters considered for this loss (after cat->num, etc... conversions).
+        # For tensor pre-alloc and size checks
         self.num_params_count = len(self.idx_helper.num_idx_learned_as_num)\
             + len(self.idx_helper.num_idx_learned_as_cat)
+        self.cat_params_count = len(self.idx_helper.cat_idx_learned_as_num)\
+            + len(self.idx_helper.cat_idx_learned_as_cat)
         self.limited_vst_params_indexes = limited_vst_params_indexes
 
     def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor, bkpt=False):  # FIXME temp debug
@@ -249,30 +253,36 @@ class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
         Learnable representations can be numerical (in [0.0, 1.0]) or one-hot categorical.
         The type of representation has been stored in self.idx_helper """
         minibatch_size = u_in.shape[0]
-        permutations_sets_indices, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
+        permutations_groups, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
         # Numerical loss and Accuracy, without any reduction
         all_numerical_losses = self._compute_all_numerical_losses(u_out_w_s, u_in_w_s)
-        all_accuracies = self._compute_all_accuracies(u_out_w_s, u_in_w_s)
+        all_accuracies, acc_vst_indexes = self._compute_all_accuracies(u_out_w_s, u_in_w_s)
 
-        # TODO get the best preset among all available symmetrical preset
+        # TODO get the best preset among all available symmetrical presets from a group of permutations
+        # This criteria to detect the 'best' result is very arbitrary....
+        u_error_scores = torch.sum(all_numerical_losses, dim=1) + (torch.sum(1.0 - all_accuracies, dim=1)) / 2.0
+        best_numerical_losses, best_accuracies = list(), list()
+        for preset_idx in range(u_in.shape[0]):
+            perm_r = permutations_groups[preset_idx]  # Permutation range
+            best_idx = torch.argmin(u_error_scores[perm_r.start:perm_r.stop])
+            best_idx += perm_r.start  # Convert permutation group index to minibatch index
+            best_numerical_losses.append(all_numerical_losses[best_idx:best_idx+1])
+            best_accuracies.append(all_accuracies[best_idx:best_idx+1])
+        # TODO bien tester tout ça (shape, ...)
+        best_accuracies = torch.vstack(best_accuracies)
+        best_numerical_losses = torch.vstack(best_numerical_losses)
 
-        # Factor 100.0?
+        num_loss = torch.mean(best_numerical_losses).item()  # Average over all dimensions
+        # handle reduction, or not
         if self.percentage_accuracy_output:
-            for k, v in all_accuracies.items():
-                all_accuracies[k] = v * 100.0
-        # TODO handle reduction, or not
-        all_numerical_losses = torch.mean(all_numerical_losses, dim=1, keepdim=True)
-        # Reduction if required
-        if self.reduce_accuracy:
-            acc = np.asarray([v for _, v in all_accuracies.items()]).mean()
-        else:
-            acc = all_accuracies
-        # then get the min loss for each set of permutations
-        min_loss_per_symmetric_set = [torch.min(all_numerical_losses[indices]) for indices in permutations_sets_indices]
-        if len(min_loss_per_symmetric_set) != minibatch_size:
-            raise AssertionError()
-        # TODO also return accuracy
-        return acc, sum(min_loss_per_symmetric_set) / minibatch_size  # Average over batch dimension
+            best_accuracies *= 100.0
+        if self.reduce_accuracy:  # Reduction if required
+            acc = torch.mean(best_accuracies).item()
+        else:  # Otherwise, return a dict of per-VST-index mean accuracy
+            acc = dict()
+            for col, vst_idx in enumerate(acc_vst_indexes):
+                acc[vst_idx] = torch.mean(best_accuracies[:, col]).item()
+        return acc, num_loss
 
     def _compute_all_numerical_losses(self, u_out_w_s: torch.Tensor, u_in_w_s: torch.Tensor):
         """ Computes the non-reduced numerical losses for in/out presets with symmetries (those tensors' dim0 is
@@ -283,7 +293,7 @@ class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
         # if limited vst indexes: fill with zeros (some allocated cols won't be used). Slow but used for eval only.
         if self.limited_vst_params_indexes is not None:
             u_in_num[:, :], u_out_num[:, :] = 0.0, 0.0
-        # Column-by-column tensors filling
+        # Column-by-column tensors filling (parameters' ordering is NOT preserved)
         cur_num_tensors_col = 0
         # quantize numerical learnable representations
         for vst_idx, learn_idx in self.idx_helper.num_idx_learned_as_num.items():
@@ -319,31 +329,42 @@ class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
             #  assert cur_num_tensors_col == len(self.limited_vst_params_indexes)
         return self.numerical_loss(u_out_num, u_in_num)  # Positive diff. if output > input. Non-reduced loss
 
-    def _compute_all_accuracies(self, u_out: torch.Tensor, u_in: torch.Tensor):
+    def _compute_all_accuracies(self, u_out_w_s: torch.Tensor, u_in_w_s: torch.Tensor):
         """ Returns accuracy (or accuracies) for all categorical VST params. Learnable representations can be numerical
         (in [0.0, 1.0]) or one-hot categorical. The type of representation is stored in self.idx_helper """
-        accuracies = dict()
+        accuracies = torch.empty((u_in_w_s.shape[0], self.cat_params_count),
+                                 device=u_in_w_s.device, requires_grad=False)
         # Accuracy of numerical learnable representations (involves quantization)
+        # Column-by-column tensors filling (parameters' ordering is NOT preserved)
+        cur_num_tensors_col = 0
+        # but the list of VST indexes corresponding to each col is also returned
+        vst_indexes = np.ones((self.cat_params_count, ), dtype=int) * -1
         for vst_idx, learn_idx in self.idx_helper.cat_idx_learned_as_num.items():
             if self.limited_vst_params_indexes is not None:  # if limited vst indexes:
                 if vst_idx not in self.limited_vst_params_indexes:  # continue if this param is not included
                     continue
             cardinal = self.idx_helper.vst_param_cardinals[vst_idx]
-            param_batch = torch.unsqueeze(u_in[:, learn_idx].detach(), 1)  # Column-vector
+            param_batch = torch.unsqueeze(u_in_w_s[:, learn_idx].detach(), 1)  # Column-vector
             # Class indexes, from 0 to cardinal-1
             target_classes = torch.round(param_batch * (cardinal - 1.0)).type(torch.int32)  # New tensor allocated
-            param_batch = torch.unsqueeze(u_out[:, learn_idx].detach(), 1)
+            param_batch = torch.unsqueeze(u_out_w_s[:, learn_idx].detach(), 1)
             out_classes = torch.round(param_batch * (cardinal - 1.0)).type(torch.int32)  # New tensor allocated
-            accuracies[vst_idx] = (target_classes == out_classes).count_nonzero().item() / target_classes.numel()
+            accuracies[:, cur_num_tensors_col] = (target_classes == out_classes)
+            vst_indexes[cur_num_tensors_col] = vst_idx
+            cur_num_tensors_col += 1
         # accuracy of one-hot encoded categorical learnable representations
         for vst_idx, learn_indexes in self.idx_helper.cat_idx_learned_as_cat.items():
             if self.limited_vst_params_indexes is not None:  # if limited vst indexes:
                 if vst_idx not in self.limited_vst_params_indexes:  # continue if this param is not included
                     continue
-            target_classes = torch.argmax(u_in[:, learn_indexes], dim=-1)  # New tensor allocated
-            out_classes = torch.argmax(u_out[:, learn_indexes], dim=-1)  # New tensor allocated
-            accuracies[vst_idx] = (target_classes == out_classes).count_nonzero().item() / target_classes.numel()
-        return accuracies
+            target_classes = torch.argmax(u_in_w_s[:, learn_indexes], dim=-1)  # New tensor allocated
+            out_classes = torch.argmax(u_out_w_s[:, learn_indexes], dim=-1)  # New tensor allocated
+            accuracies[:, cur_num_tensors_col] = (target_classes == out_classes)
+            vst_indexes[cur_num_tensors_col] = vst_idx
+            cur_num_tensors_col += 1
+        if cur_num_tensors_col != self.cat_params_count or np.any(vst_indexes < 0):
+            raise AssertionError()
+        return accuracies, vst_indexes
 
 
 
