@@ -11,11 +11,14 @@ import seaborn as sns
 import pandas as pd
 import librosa.display
 import torch
+import torch.nn.functional as F
 
 import logs.metrics
 
 from data.abstractbasedataset import AudioDataset, PresetDataset
 from data.preset import PresetIndexesHelper
+
+import model.regression
 
 import utils.stat
 
@@ -457,16 +460,21 @@ def plot_synth_learnable_preset(learnable_preset, idx_helper: PresetIndexesHelpe
     return fig, ax
 
 
-def plot_synth_preset_error(param_batch_errors, idx_helper: PresetIndexesHelper,
+def plot_synth_preset_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper: PresetIndexesHelper,
+                            apply_softmax_to_v_out=False,
                             mae_y_limit=0.59, boxplots_y_limits=(-1.1, 1.1), figsize=None):
     """ Uses boxplots to show the error between inferred (out) and GT (in) preset parameters.
 
     :param mae_y_limit: Constant y-axis upper display limit (to help visualize improvements during training).
         Won't be used is a computed MAE is actually greater than this value.
     :param boxplots_y_limits: Constant y-axis box plots display limits.
-    :param param_batch_errors: 2D Tensor of learnable synth parameters error (numerical and categorical)
     :param idx_helper: to improve the display (param names, cardinality, ...) """
     # init
+    if apply_softmax_to_v_out:
+        act = model.regression.PresetActivation(idx_helper, cat_hardtanh_activation=False, cat_softmax_activation=True)
+        param_batch_errors = act(v_out) - v_in
+    else:
+        param_batch_errors = v_out - v_in
     n_params = param_batch_errors.size(1)
     assert n_params == idx_helper.learnable_preset_size
     batch_errors_np = param_batch_errors.numpy()
