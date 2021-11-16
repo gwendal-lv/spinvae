@@ -23,6 +23,7 @@ import utils
 import utils.figures
 import utils.stat
 from .tbwriter import TensorboardSummaryWriter  # Custom modified summary writer
+import logs.logger_mp
 
 _erase_security_time_s = 5.0
 
@@ -282,6 +283,10 @@ class RunLogger:
 
     def plot_stats_tensorboard__threaded(self, train_config, epoch, super_metrics, ae_model):
         if self.figures_threads[0] is not None:
+            if self.figures_threads[0].is_alive():
+                # TODO force-stop the previous rendering thread???
+                #  which is sometimes blocked at an os.waitpid call (inside multiprocessing/popen_fork.py)
+                raise AssertionError("The plotting thread should not be alive at this point - please handle this case")
             self.figures_threads[0].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
         networks_layers_params = dict()  # If remains empty: no plot
@@ -295,27 +300,22 @@ class RunLogger:
                                                          networks_layers_params))
         self.figures_threads[0].start()
 
-    @staticmethod
-    def _get_stats_figures(epoch, super_metrics, networks_layers_params):
-        figs_dict = {'LatentStats': utils.figures.
-                        plot_latent_distributions_stats(latent_metric=super_metrics['LatentMetric/Valid'])[0],
-                    'LatentRhoCorr': utils.figures.
-                        plot_spearman_correlation(latent_metric=super_metrics['LatentMetric/Valid'])[0]}
-        for network_name, layers_params in networks_layers_params.items():  # key: e.g. 'Decoder'
-            figs_dict['{}ParamsStats'.format(network_name)] = \
-                utils.figures.plot_network_parameters(layers_params)[0]  # Retrieve fig only, not the axes
-        return figs_dict
-
     def _plot_stats_thread(self, epoch, super_metrics, networks_layers_params):
         if not self.use_multiprocessing:
-            figs_dict = self._get_stats_figures(epoch, super_metrics, networks_layers_params)
+            figs_dict = logs.logger_mp.get_stats_figures(epoch, super_metrics, networks_layers_params)
         else:
-            q = multiprocessing.Queue()
-            p = multiprocessing.Process(target=self._get_stats_figs__multiproc,
+            # FIXME tentative de résolution du deadlock (probablement au join)
+            #  deadlock seems to be caused by serializing this instance
+            #  'spawn' context is slower, but creates an
+            # TODO check si ça résoud bien le pb (train du mercredi 10/11/21 à 21h)
+            ctx = multiprocessing.get_context('spawn')  # Utilisé au lieu de multiproc
+            q = ctx.Queue()
+            p = ctx.Process(target=logs.logger_mp.get_stats_figs__multiproc,
                                         args=(q, epoch, super_metrics, networks_layers_params))
             p.start()
             figs_dict = q.get()  # Will block until an item is available
             p.join()
+            p.close()
 
         for fig_name, fig in figs_dict.items():
             self.tensorboard.add_figure(fig_name, fig, epoch, close=True)
@@ -332,8 +332,6 @@ class RunLogger:
                     self.tensorboard.add_histogram('{}_no_outlier/{}/{}'.format(network_name, layer_name, param_name),
                                                    utils.stat.remove_outliers(param_values), epoch)
 
-    def _get_stats_figs__multiproc(self, q: multiprocessing.Queue, epoch, super_metrics, networks_layers_params):
-        q.put(self._get_stats_figures(epoch, super_metrics, networks_layers_params))
 
 
 
