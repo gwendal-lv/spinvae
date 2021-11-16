@@ -72,8 +72,12 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         # self.hyper_params['contloss'] = self.model_config.controls_losses
         self.hyper_params['regr_arch'] = self.model_config.params_regression_architecture
         self.hyper_params['regr_FCdrop'] = self.train_config.reg_fc_dropout
+        self.hyper_params['regr_outhtanh'] = self.model_config.params_reg_hardtanh_out
         self.hyper_params['regr_outsoftm'] = self.model_config.params_reg_softmax
         self.hyper_params['regr_catloss'] = 'BinCE' if self.train_config.params_cat_bceloss else 'CatCE'
+        self.hyper_params['regloss_factor'] = self.train_config.params_loss_compensation_factor
+        self.hyper_params['regloss_excl_useless'] = self.train_config.params_loss_exclude_useless
+        self.hyper_params['regloss_permutations'] = self.train_config.params_loss_with_permutations
         # Auto-Encoder hparams
         self.hyper_params['VAE_FCdrop'] = self.train_config.fc_dropout
         self.hyper_params['enc_arch'] = self.model_config.encoder_architecture

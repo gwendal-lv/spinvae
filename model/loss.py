@@ -87,15 +87,15 @@ class SynthParamsLossBase:
 
 
 # TODO increased loss factor for the 'Algorithm' VST parameter
-class SynthParamsLoss:
+class SynthParamsLoss(SynthParamsLossBase):
     """ A 'dynamic' loss which handles different representations of learnable synth parameters
     (numerical and categorical). The appropriate loss can be computed by passing a PresetIndexesHelper instance
     to this class constructor.
 
     The categorical loss is categorical cross-entropy. """
     def __init__(self, idx_helper: PresetIndexesHelper, normalize_losses: bool, categorical_loss_factor=0.2,
-                 prevent_useless_params_loss=True,
-                 cat_bce=True, cat_softmax=False, cat_softmax_t=0.1):
+                 prevent_useless_params_loss=True, compute_symmetrical_presets=False,
+                 cat_bce=False, cat_softmax=False, cat_softmax_t=0.1):  # FIXME temperature
         """
 
         :param idx_helper: PresetIndexesHelper instance, created by a PresetDatabase, to convert vst<->learnable params
@@ -112,7 +112,7 @@ class SynthParamsLoss:
         :param cat_bce: Binary Cross-Entropy applied to independent outputs (see InverSynth 2019). Very bad
             perfs but option remains available.
         """
-        self.idx_helper = idx_helper
+        super().__init__(idx_helper, compute_symmetrical_presets)
         self.normalize_losses = normalize_losses
         if cat_bce and cat_softmax:
             raise ValueError("'cat_bce' (Binary Cross-Entropy) and 'cat_softmax' (implies Categorical Cross-Entropy)"
@@ -122,87 +122,91 @@ class SynthParamsLoss:
         self.cat_softmax_t = cat_softmax_t
         self.cat_loss_factor = categorical_loss_factor
         self.prevent_useless_params_loss = prevent_useless_params_loss
-        # Numerical loss criterion
-        if self.normalize_losses:
-            self.numerical_criterion = nn.MSELoss(reduction='mean')
-        else:
-            self.numerical_criterion = L2Loss()
+        # Numerical loss criterion - summation/average over batch dimension is done at the end
+        self.numerical_criterion = nn.MSELoss(reduction='none')
         # Pre-compute indexes lists (to use less CPU). 'num' stands for 'numerical' (not number)
         self.num_indexes = self.idx_helper.get_numerical_learnable_indexes()
         self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()
 
     def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
         """ Categorical parameters must be one-hot encoded. """
+        permutations_groups, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
+
         # At first: we search for useless parameters (whose loss should not be back-propagated)
         useless_num_learn_param_indexes, useless_cat_learn_param_indexes = list(), list()
-        batch_size = u_in.shape[0]
-        if self.prevent_useless_params_loss:  # TODO compute this on presets with symmetries
-            for row in range(batch_size):
-                num_indexes, cat_indexes = self.idx_helper.get_useless_learned_params_indexes(u_in[row, :])
+        if self.prevent_useless_params_loss:  # useless params searched into all presets with permutations
+            for row in range(u_in_w_s.shape[0]):
+                num_indexes, cat_indexes = self.idx_helper.get_useless_learned_params_indexes(u_in_w_s[row, :])
                 useless_num_learn_param_indexes.append(num_indexes)
                 useless_cat_learn_param_indexes.append(cat_indexes)
-        num_loss = 0.0  # - - - numerical loss - - -
+
+        # - - - numerical loss - - -
         if len(self.num_indexes) > 0:
+            # no summation over batch dimension yet
+            num_losses = self.numerical_criterion(u_out_w_s[:, self.num_indexes], u_in_w_s[:, self.num_indexes])
             if self.prevent_useless_params_loss:
-                # apply a 0.0 factor for disabled parameters (e.g. Dexed operator w/ output level 0.0)
-                for row in range(u_in.shape[0]):
-                    for num_idx in self.num_indexes:
+                # set loss to 0.0 for disabled parameters (e.g. Dexed operator w/ output level 0.0)
+                for row in range(u_in_w_s.shape[0]):
+                    for j, num_idx in enumerate(self.num_indexes):  # j is a sub-tensor column index
                         if num_idx in useless_num_learn_param_indexes[row]:
-                            u_in[row, num_idx] = 0.0
-                            u_out[row, num_idx] = 0.0
-            num_loss = self.numerical_criterion(u_out[:, self.num_indexes], u_in[:, self.num_indexes])
-        cat_loss = 0.0  # - - - categorical loss - - -
-        if len(self.cat_indexes) > 0:
-            # For each categorical output (separate loss computations...)
-            for cat_learn_indexes in self.cat_indexes:  # type: list
-                # don't compute cat loss for disabled parameters (e.g. Dexed operator w/ output level 0.0)
-                rows_to_remove = list()
-                if self.prevent_useless_params_loss:
-                    for row in range(batch_size):  # Need to check cat index 0 only
-                        if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
-                            rows_to_remove.append(row)
-                useful_rows = None  # None means that the full batch is useful
-                if len(rows_to_remove) > 0:  # If this batch contains useless inferred params
-                    useful_rows = list(range(0, batch_size))
-                    for row in rows_to_remove:
-                        useful_rows.remove(row)
-                # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
-                # corresponding to target classes with p=1. We only need a limited number of output probabilities
-                # (they actually all depend on each other thanks to the softmax output layer).
-                if not self.cat_bce:  # Categorical CE
-                    target_one_hot = u_in[:, cat_learn_indexes].bool()  # Will be used for tensor-element selection
-                else:  # Binary CE: float values required
-                    target_one_hot = u_in[:, cat_learn_indexes]
-                if useful_rows is not None:  # Some rows can be discarded from loss computation
-                    target_one_hot = target_one_hot[useful_rows, :]
-                q_odds = u_out[:, cat_learn_indexes]  # contains all q odds required for BCE or CCE
-                # The same rows must be discarded from loss computation (if the preset didn't use this cat param)
-                if useful_rows is not None:
-                    q_odds = q_odds[useful_rows, :]
-                if not self.cat_bce:  # - - - - - NOT Binary CE => Categorical CE - - - - -
-                    # softmax T° if required: q_odds might not sum to 1.0 already if no softmax was applied before
-                    if self.cat_softmax:
-                        q_odds = torch.softmax(q_odds / self.cat_softmax_t, dim=1)
-                    # Then the cross-entropy can be computed (simplified formula thanks to p=1.0 one-hot odds)
-                    q_odds = q_odds[target_one_hot]  # CE uses only 1 odd per output vector (thanks to softmax)
-                    # batch-sum and normalization vs. batch size
-                    param_cat_loss = - torch.sum(torch.log(q_odds)) / (batch_size - len(rows_to_remove))
-                else:  # - - - - - Binary Cross-Entropy - - - - -
-                    # empirical normalization factor - works quite well to get similar CCE and BCE values
-                    param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
-                # CCE and BCE: add the temp per-param loss
-                cat_loss += param_cat_loss
-                # TODO instead of final factor: maybe divide the each cat loss by the one-hot vector length?
-                #    maybe not: cross-entropy always uses only 1 of the odds... (softmax does the job before)
-            if self.normalize_losses:  # Normalization vs. number of categorical-learned params
-                cat_loss = cat_loss / len(self.cat_indexes)
+                            num_losses[row, j] = 0.0
+            if self.normalize_losses:
+                num_losses = torch.mean(num_losses, dim=1)
+            else:
+                num_losses = torch.sum(num_losses, dim=1)
+        else:
+            num_losses = torch.zeros((u_in_w_s.shape[0], 1), device=u_in_w_s.device)
+        # - - - categorical loss - - -
+        cat_losses = torch.zeros((u_in_w_s.shape[0], ), device=u_in_w_s.device)
+        # For each categorical output (separate loss computations...)
+        for cat_learn_indexes in self.cat_indexes:  # type: list
+            # used at the end - don't compute cat loss for disabled parameters
+            useless_rows = list()
+            if self.prevent_useless_params_loss:
+                for row in range(u_in_w_s.shape[0]):  # Need to check cat index 0 only
+                    if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
+                        useless_rows.append(row)
+            # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
+            # corresponding to target classes with p=1. We only need a limited number of output probabilities
+            # (they actually all depend on each other thanks to the softmax (output) layer).
+            if not self.cat_bce:  # Categorical CE
+                target_one_hot = u_in_w_s[:, cat_learn_indexes].bool()  # Will be used for tensor-element selection
+            else:  # Binary CE: float values required
+                target_one_hot = u_in_w_s[:, cat_learn_indexes]
+            q_odds = u_out_w_s[:, cat_learn_indexes]  # contains all q odds required for BCE or CCE
+            if not self.cat_bce:  # - - - - - NOT Binary CE => Categorical CE - - - - -
+                # softmax T° if required: q_odds might not sum to 1.0 already if no softmax was applied before
+                if self.cat_softmax:  # FIXME use combined softmax and CE for stability, if T° close to 1.0
+                    q_odds = torch.softmax(q_odds / self.cat_softmax_t, dim=1)
+                # Then the cross-entropy can be computed (simplified formula thanks to p=1.0 one-hot odds)
+                q_odds = q_odds[target_one_hot]  # CE uses only 1 odd per output vector (thanks to softmax)
+                param_cat_loss = - torch.log(q_odds)
+            else:  # - - - - - Binary Cross-Entropy - - - - -
+                raise AssertionError("compute binary cross entropy without")
+                # empirical normalization factor - works quite well to get similar CCE and BCE values
+                param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
+            param_cat_loss[useless_rows] = 0.0
+            # CCE and BCE: add the temp per-param loss
+            cat_losses += param_cat_loss
+        if self.normalize_losses:  # Normalization vs. number of categorical-learned params
+            cat_losses = cat_losses / len(self.cat_indexes)
+
+        # TODO keep only the best loss from each group
         # losses weighting - Cross-Entropy is usually be much bigger than MSE. num_loss
-        return num_loss + cat_loss * self.cat_loss_factor
+        total_losses = num_losses + cat_losses * self.cat_loss_factor
+        best_losses_summed = 0.0
+        for preset_idx in range(u_in.shape[0]):
+            perm_r = permutations_groups[preset_idx]  # Permutation range
+            best_idx = torch.argmin(total_losses[perm_r.start:perm_r.stop])
+            best_losses_summed += total_losses[best_idx + perm_r.start]  # Convert perm group idx to minibatch idx
+
+        # average over batch dimension (always)
+        return best_losses_summed / u_in.shape[0]
 
 
 # TODO this class should not take into account parameters that aren't being used,
 #    e.g. parameters of a disabled Dexed oscillator.
-#    -----> that's a lot of work, and performance is likely to degrade
+#    -----> that's a lot of work, and train/eval times are likely to increase much
 class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
     def __init__(self, idx_helper: PresetIndexesHelper, numerical_loss_type='L1',
                  reduce_accuracy=True, percentage_accuracy_output=True,
@@ -248,18 +252,17 @@ class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
             + len(self.idx_helper.cat_idx_learned_as_cat)
         self.limited_vst_params_indexes = limited_vst_params_indexes
 
-    def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor, bkpt=False):  # FIXME temp debug
+    def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
         """ Returns the loss for numerical VST params only (searched in u_in and u_out).
         Learnable representations can be numerical (in [0.0, 1.0]) or one-hot categorical.
         The type of representation has been stored in self.idx_helper """
-        minibatch_size = u_in.shape[0]
         permutations_groups, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
         # Numerical loss and Accuracy, without any reduction
         all_numerical_losses = self._compute_all_numerical_losses(u_out_w_s, u_in_w_s)
         all_accuracies, acc_vst_indexes = self._compute_all_accuracies(u_out_w_s, u_in_w_s)
 
-        # TODO get the best preset among all available symmetrical presets from a group of permutations
-        # This criteria to detect the 'best' result is very arbitrary....
+        # get the best preset among all available symmetrical presets from a group of permutations
+        # TODO This criteria to detect the 'best' result is very arbitrary....
         u_error_scores = torch.sum(all_numerical_losses, dim=1) + (torch.sum(1.0 - all_accuracies, dim=1)) / 2.0
         best_numerical_losses, best_accuracies = list(), list()
         for preset_idx in range(u_in.shape[0]):
@@ -268,7 +271,6 @@ class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
             best_idx += perm_r.start  # Convert permutation group index to minibatch index
             best_numerical_losses.append(all_numerical_losses[best_idx:best_idx+1])
             best_accuracies.append(all_accuracies[best_idx:best_idx+1])
-        # TODO bien tester tout ça (shape, ...)
         best_accuracies = torch.vstack(best_accuracies)
         best_numerical_losses = torch.vstack(best_numerical_losses)
 

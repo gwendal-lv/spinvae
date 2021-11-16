@@ -72,6 +72,7 @@ def build_extended_ae_model(model_config, train_config, idx_helper):
             raise AssertionError()   # Non-invertible MLP cannot inverse target values
         reg_arch = model_config.params_regression_architecture.replace("mlp_", "")
         reg_model = regression.MLPControlsRegression(reg_arch, model_config.dim_z, idx_helper,
+                                                     cat_hardtanh_activation=model_config.params_reg_hardtanh_out,
                                                      cat_softmax_activation=model_config.params_reg_softmax,
                                                      model_config=model_config, train_config=train_config)
     elif model_config.params_regression_architecture.startswith("flow_"):
@@ -80,6 +81,7 @@ def build_extended_ae_model(model_config, train_config, idx_helper):
         reg_arch = model_config.params_regression_architecture.replace("flow_", "")
         reg_model = regression.FlowControlsRegression(reg_arch, model_config.dim_z, idx_helper,
                                                       fast_forward_flow=model_config.forward_controls_loss,
+                                                      cat_hardtanh_activation=model_config.params_reg_hardtanh_out,
                                                       cat_softmax_activation=model_config.params_reg_softmax,
                                                       model_config=model_config, train_config=train_config)
     else:

@@ -25,7 +25,7 @@ model = _Config()
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "ControlsRegr_tests"
-model.run_name = 'dev_test_5'  # run: different hyperparams, optimizer, etc... for a given model
+model.run_name = 'backprop_loss_permutations'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/MMD_tests/" \
                                   "mmd_determ_enc_lossx5_drop0.0_wd_1e-4/checkpoints/00499.tar"
@@ -146,6 +146,8 @@ train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during
 train.params_loss_compensation_factor = 1.0  # because MSE loss of the pre-trained VAE if much lower (approx. 1e-2)
 train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
 train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
+train.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
+train.params_loss_with_permutations = True  # Applies to the backprop loss only; monitoring losses always use True
 
 # ------------------------------------------- Optimizer + scheduler -------------------------------------------
 # Different optimizers for the pre-trained AE and the regression networks ('ae_' or 'reg_' prefixes or dict keys)

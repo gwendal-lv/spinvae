@@ -131,14 +131,15 @@ class LossTest(unittest.TestCase):
         total_cat_params = len(idx_helper.cat_idx_learned_as_cat) + len(idx_helper.cat_idx_learned_as_num)
         total_num_params = len(idx_helper.num_idx_learned_as_cat) + len(idx_helper.num_idx_learned_as_num)
         print("\nLearned params: {} VST-numerical, {} VST-categorical".format(total_num_params, total_cat_params))
-        # TODO build 2 criteria, 1 with, 1 without symmetries
         eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(idx_helper, numerical_loss_type='L1',
                                                                       compute_symmetrical_presets=True)
+        backprop_criterion = model.loss.SynthParamsLoss(idx_helper, normalize_losses=True, cat_softmax=True,
+                                                        compute_symmetrical_presets=True)
         # TODO backprop loss
         # we test presets with all available algorithms
-        # TODO build a batch of presets for testing
         preset_UIDs_and_algo = get_presets_for_all_algorithms(ds)
         learnable_preset_length = ds.get_full_preset_params(0).get_learnable().shape[1]
+        # build batches of presets (see end of this test)
         learnable_preset_GT_batch = torch.empty((len(preset_UIDs_and_algo), learnable_preset_length))
         learnable_preset_num_err_batch = torch.empty((len(preset_UIDs_and_algo), learnable_preset_length))
         learnable_preset_cat_err_batch = torch.empty((len(preset_UIDs_and_algo), learnable_preset_length))
@@ -150,7 +151,9 @@ class LossTest(unittest.TestCase):
             acc, num_error = eval_criterion(learnable_preset_GT, learnable_preset_GT)
             self.assertAlmostEqual(acc, 100.0, delta=0.1)
             self.assertAlmostEqual(num_error, 0.0, delta=1e-4)
-            # - - - - - - - Test the metric losses (no backprop possible) - - - - - - -
+            # backprop_loss = backprop_criterion(learnable_preset_GT, learnable_preset_GT)  # > 0
+            # self.assertAlmostEqual(backprop_loss, 0.0, delta=1e-3)
+            # - - - - - - - Test numerical loss and categorical accuracy - - - - - - -
             output_preset = None
             for vst_index in idx_helper.categorical_vst_params[0:6]:  # FIXME For each categorical VST param
                 # introduce an error on the preset, and measure the decreasing accuracy
@@ -175,7 +178,7 @@ class LossTest(unittest.TestCase):
                                            msg="VST categorical param #{}, '{}'"
                                            .format(vst_index, idx_helper.vst_param_names[vst_index]))
             learnable_preset_cat_err_batch[batch_index, :] = output_preset[0, :].clone()
-            for vst_index in idx_helper.numerical_vst_params:  # FIXME For each numerical param (LONGER++)
+            for vst_index in idx_helper.numerical_vst_params[0:6]:  # FIXME For each numerical param (LONGER++)
                 if idx_helper.vst_param_learnable_model[vst_index] is not None:  # If the preset is learnable
                     vst_preset_modified = copy.deepcopy(vst_preset_GT)
                     if vst_preset_modified._full_presets[0, vst_index] < 0.5:
@@ -219,15 +222,23 @@ class LossTest(unittest.TestCase):
         acc, num_error = eval_criterion(learnable_preset_GT_batch, learnable_preset_GT_batch)  # GT vs GT
         self.assertAlmostEqual(acc, 100.0, delta=0.1)
         self.assertAlmostEqual(num_error, 0.0, delta=1e-4)
+        backprop_loss = backprop_criterion(learnable_preset_GT_batch, learnable_preset_GT_batch)
+        self.assertAlmostEqual(backprop_loss, 0.0, delta=1e-3)
         acc, num_error = eval_criterion(learnable_preset_symmetry_batch, learnable_preset_GT_batch)  # Symmetry vs GT
         self.assertAlmostEqual(acc, 100.0, delta=0.1)
         self.assertAlmostEqual(num_error, 0.0, delta=1e-4)
-        acc, num_error = eval_criterion(learnable_preset_cat_err_batch, learnable_preset_GT_batch, bkpt=True)  # cat err
+        backprop_loss = backprop_criterion(learnable_preset_symmetry_batch, learnable_preset_GT_batch)
+        self.assertAlmostEqual(backprop_loss, 0.0, delta=1e-3)
+        acc, num_error = eval_criterion(learnable_preset_cat_err_batch, learnable_preset_GT_batch)  # cat err
         self.assertAlmostEqual(acc, 100.0 * (total_cat_params - 1.0) / total_cat_params, delta=0.1)
         self.assertAlmostEqual(num_error, 0.0, delta=1e-4)
+        backprop_loss = backprop_criterion(learnable_preset_cat_err_batch, learnable_preset_GT_batch)
+        self.assertGreater(backprop_loss, 1e-2)
         acc, num_error = eval_criterion(learnable_preset_num_err_batch, learnable_preset_GT_batch)  # num err
         self.assertAlmostEqual(acc, 100.0, delta=0.1)
         self.assertGreater(num_error, 0.0)
+        backprop_loss = backprop_criterion(learnable_preset_num_err_batch, learnable_preset_GT_batch)
+        self.assertGreater(backprop_loss, 1e-3)
 
 
 

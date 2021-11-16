@@ -25,35 +25,38 @@ class PresetActivation(nn.Module):
     """ Applies the appropriate activations (e.g. sigmoid, hardtanh, softmax, ...) to different neurons
     or groups of neurons of a given input layer. """
     def __init__(self, idx_helper: PresetIndexesHelper,
-                 numerical_activation=nn.Hardtanh(min_val=0.0, max_val=1.0),
-                 cat_softmax_activation=False):
+                 cat_hardtanh_activation=False, cat_softmax_activation=False):
         """
+        Applies a [0;1] hardtanh activation on numerical parameters, and activates or not the categorical sub-vectors.
+
         :param idx_helper:
-        :param numerical_activation: Should be nn.Hardtanh if numerical params often reach 0.0 and 1.0 GT values,
-            or nn.Sigmoid to perform a smooth regression without extreme 0.0 and 1.0 values.
+        :param activate_cat: if True, applies a [0;1] hardtanh activation to categorical outputs
         :param cat_softmax_activation: if True, a softmax activation is applied on categorical sub-vectors.
             Otherwise, applies the same HardTanh for cat and num params (and softmax should be applied in loss function)
         """
         super().__init__()
         self.idx_helper = idx_helper
-        self.numerical_act = numerical_activation
+        # Pre-compute indexes lists (to use less CPU)
+        self.num_indexes = self.idx_helper.get_numerical_learnable_indexes()
+        self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()  # type: Iterable[Iterable]
+        self.cat_indexes_1d_list = sum(self.cat_indexes, [])
+
+        self.hardtanh_act = nn.Hardtanh(min_val=0.0, max_val=1.0)
+        self.cat_hardtanh_activation = cat_hardtanh_activation
         self.cat_softmax_activation = cat_softmax_activation
         if self.cat_softmax_activation:
             self.categorical_act = nn.Softmax(dim=-1)  # Required for categorical cross-entropy loss
-            # Pre-compute indexes lists (to use less CPU)
-            self.num_indexes = self.idx_helper.get_numerical_learnable_indexes()
-            self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()  # type: Iterable[Iterable]
         else:
-            pass  # Nothing to init....
+            self.categorical_act = None
 
     def forward(self, x):
         """ Applies per-parameter output activations using the PresetIndexesHelper attribute of this instance. """
+        x[:, self.num_indexes] = self.hardtanh_act(x[:, self.num_indexes])
+        if self.cat_hardtanh_activation:
+            x[:, self.cat_indexes_1d_list] = self.hardtanh_act(x[:, self.cat_indexes_1d_list])
         if self.cat_softmax_activation:
-            x[:, self.num_indexes] = self.numerical_act(x[:, self.num_indexes])
             for cat_learnable_indexes in self.cat_indexes:  # type: Iterable
                 x[:, cat_learnable_indexes] = self.categorical_act(x[:, cat_learnable_indexes])
-        else:  # Same activation on num and cat ('one-hot encoded') params
-            x = self.numerical_act(x)
         return x
 
 
@@ -63,7 +66,8 @@ class PresetActivation(nn.Module):
 
 
 class RegressionModel(model.base.TrainableModel, ABC):
-    def __init__(self, architecture: str, dim_z: int, idx_helper: PresetIndexesHelper, cat_softmax_activation=False,
+    def __init__(self, architecture: str, dim_z: int, idx_helper: PresetIndexesHelper,
+                 cat_hardtanh_activation=False, cat_softmax_activation=False,
                  model_config=None, train_config=None):
         super().__init__(train_config=train_config, model_type='reg')
         self.architecture = architecture
@@ -71,23 +75,27 @@ class RegressionModel(model.base.TrainableModel, ABC):
         self.dim_z = dim_z
         self.idx_helper = idx_helper
 
-        self.activation_layer = PresetActivation(self.idx_helper, cat_softmax_activation=cat_softmax_activation)
+        self.activation_layer = PresetActivation(
+            self.idx_helper, cat_hardtanh_activation=cat_hardtanh_activation,
+            cat_softmax_activation=cat_softmax_activation)
 
         # Attributes used for training only (losses, ...
         if train_config is not None and model_config is not None:
             self.dropout_p = train_config.reg_fc_dropout
             if train_config.params_cat_bceloss and model_config.params_reg_softmax:
                 raise AssertionError("BCE loss requires no-softmax at reg model output")
-            self.backprop_criterion = model.loss.\
-                SynthParamsLoss(self.idx_helper, train_config.normalize_losses,
-                                cat_bce=train_config.params_cat_bceloss,
-                                cat_softmax=(not model_config.params_reg_softmax
-                                             and not train_config.params_cat_bceloss),
-                                cat_softmax_t=train_config.params_cat_softmax_temperature)
+            self.backprop_criterion = model.loss.SynthParamsLoss(
+                self.idx_helper, train_config.normalize_losses, cat_bce=train_config.params_cat_bceloss,
+                cat_softmax=(not model_config.params_reg_softmax and not train_config.params_cat_bceloss),
+                cat_softmax_t=train_config.params_cat_softmax_temperature,
+                prevent_useless_params_loss=train_config.params_loss_exclude_useless,
+                compute_symmetrical_presets=train_config.params_loss_with_permutations
+            )
             # Monitoring losses always remain the same
             self.eval_criterion = model.loss. AccuracyAndQuantizedNumericalLoss(
                 self.idx_helper, numerical_loss_type='L1', reduce_accuracy=True, percentage_accuracy_output=True,
-                compute_symmetrical_presets=False)  # FIXME
+                compute_symmetrical_presets=True
+            )
         else:
             self.controls_criterion, self.num_eval_criterion, self.accuracy_criterion = None, None, None
             self.dropout_p = 0.0
@@ -102,7 +110,8 @@ class RegressionModel(model.base.TrainableModel, ABC):
 
 
 class MLPControlsRegression(RegressionModel):
-    def __init__(self, architecture: str, dim_z: int, idx_helper: PresetIndexesHelper, cat_softmax_activation=False,
+    def __init__(self, architecture: str, dim_z: int, idx_helper: PresetIndexesHelper,
+                 cat_hardtanh_activation=False, cat_softmax_activation=False,
                  model_config=None, train_config=None):
         """
         :param architecture: MLP automatically built from architecture string. E.g. '3l1024' means
@@ -111,7 +120,8 @@ class MLPControlsRegression(RegressionModel):
         :param dim_z: Size of a z_K latent vector
         :param idx_helper:
         """
-        super().__init__(architecture, dim_z, idx_helper, cat_softmax_activation, model_config, train_config)
+        super().__init__(architecture, dim_z, idx_helper, cat_hardtanh_activation, cat_softmax_activation,
+                         model_config, train_config)
         if len(self.arch_args) == 1:
             num_hidden_layers, num_hidden_neurons = self.arch_args[0].split('l')
             num_hidden_layers, num_hidden_neurons = int(num_hidden_layers), int(num_hidden_neurons)
@@ -139,7 +149,8 @@ class MLPControlsRegression(RegressionModel):
 
 class FlowControlsRegression(RegressionModel):
     def __init__(self, architecture: str, dim_z: int, idx_helper: PresetIndexesHelper,
-                 fast_forward_flow=True, cat_softmax_activation=False,
+                 fast_forward_flow=True,
+                 cat_hardtanh_activation=False, cat_softmax_activation=False,
                  model_config=None, train_config=None):
         """
         :param architecture: Flow automatically built from architecture string. E.g. 'realnvp_16l200' means
@@ -153,7 +164,8 @@ class FlowControlsRegression(RegressionModel):
             between layers, the flow can be trained only its 'fast' direction (which can be forward or inverse
             depending on this argument).
         """
-        super().__init__(architecture, dim_z, idx_helper, cat_softmax_activation, model_config, train_config)
+        super().__init__(architecture, dim_z, idx_helper, cat_hardtanh_activation, cat_softmax_activation,
+                         model_config, train_config)
         self._fast_forward_flow = fast_forward_flow
         self.flow_type, self.num_flow_layers, self.num_flow_hidden_features, _, _, _ = \
             model.flows.parse_flow_args(architecture, authorize_options=False)
