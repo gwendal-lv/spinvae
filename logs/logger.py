@@ -8,6 +8,7 @@ import shutil
 import json
 import datetime
 import pathlib
+import warnings
 from typing import List, Optional
 
 import numpy as np
@@ -284,9 +285,8 @@ class RunLogger:
     def plot_stats_tensorboard__threaded(self, train_config, epoch, super_metrics, ae_model):
         if self.figures_threads[0] is not None:
             if self.figures_threads[0].is_alive():
-                # TODO force-stop the previous rendering thread???
-                #  which is sometimes blocked at an os.waitpid call (inside multiprocessing/popen_fork.py)
-                raise AssertionError("The plotting thread should not be alive at this point - please handle this case")
+                warnings.warn("A new threaded plot request has been issued but the previous has not finished yet. "
+                              "Please ignore this message if the training run is about to end.")
             self.figures_threads[0].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
         networks_layers_params = dict()  # If remains empty: no plot
@@ -311,7 +311,7 @@ class RunLogger:
             ctx = multiprocessing.get_context('spawn')  # Utilisé au lieu de multiproc
             q = ctx.Queue()
             p = ctx.Process(target=logs.logger_mp.get_stats_figs__multiproc,
-                                        args=(q, epoch, super_metrics, networks_layers_params))
+                            args=(q, epoch, super_metrics, networks_layers_params))
             p.start()
             figs_dict = q.get()  # Will block until an item is available
             p.join()
