@@ -115,7 +115,7 @@ class SynthParamsLoss(SynthParamsLossBase):
         super().__init__(idx_helper, compute_symmetrical_presets)
         self.normalize_losses = normalize_losses
         if cat_bce and cat_softmax:
-            raise ValueError("'cat_bce' (Binary Cross-Entropy) and 'cat_softmax' (implies Categorical Cross-Entropy)"
+            raise ValueError("'cat_bce' (Binary Cross-Entropy) and 'cat_softmax' (implies Categorical Cross-Entropy) "
                              "cannot be both set to True")
         self.cat_bce = cat_bce
         self.cat_softmax = cat_softmax
@@ -130,6 +130,7 @@ class SynthParamsLoss(SynthParamsLossBase):
 
     def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
         """ Categorical parameters must be one-hot encoded. """
+        # TODO u_in_w_s and permutations_groups must be sent as args - compte u_out_w_s
         permutations_groups, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
 
         # At first: we search for useless parameters (whose loss should not be back-propagated)
@@ -145,11 +146,14 @@ class SynthParamsLoss(SynthParamsLossBase):
             # no summation over batch dimension yet
             num_losses = self.numerical_criterion(u_out_w_s[:, self.num_indexes], u_in_w_s[:, self.num_indexes])
             if self.prevent_useless_params_loss:
+                # pre-compute the matrix with a few zeros on CPU (many small ops)
+                num_losses_factor = torch.ones(num_losses.shape, device='cpu')
                 # set loss to 0.0 for disabled parameters (e.g. Dexed operator w/ output level 0.0)
                 for row in range(u_in_w_s.shape[0]):
                     for j, num_idx in enumerate(self.num_indexes):  # j is a sub-tensor column index
                         if num_idx in useless_num_learn_param_indexes[row]:
-                            num_losses[row, j] = 0.0
+                            num_losses_factor[row, j] = 0.0
+                num_losses *= num_losses_factor.to(num_losses.device)  # Apply on GPU using a single op (-1.5s / epoch)
             if self.normalize_losses:
                 num_losses = torch.mean(num_losses, dim=1)
             else:
@@ -157,15 +161,19 @@ class SynthParamsLoss(SynthParamsLossBase):
         else:
             num_losses = torch.zeros((u_in_w_s.shape[0], 1), device=u_in_w_s.device)
         # - - - categorical loss - - -
-        cat_losses = torch.zeros((u_in_w_s.shape[0], ), device=u_in_w_s.device)
+        # FIXME We'll store all losses in a matrix, then sum all elements of each line to obtain a per-preset cat loss
+        cat_losses = torch.zeros((u_in_w_s.shape[0], len(self.cat_indexes)), device=u_in_w_s.device)
+        cat_losses_useless_factors = torch.ones((u_in_w_s.shape[0], len(self.cat_indexes)), device='cpu')
         # For each categorical output (separate loss computations...)
-        for cat_learn_indexes in self.cat_indexes:  # type: list
+        for cat_column, cat_learn_indexes in enumerate(self.cat_indexes):
             # used at the end - don't compute cat loss for disabled parameters
+            # TODO optimiser ce truc, beaucoup trop lent. e.g. calculer une matrice d'annulation, sur CPU,
+            #   puis l'appliquer en GPU en 1 opération
             useless_rows = list()
             if self.prevent_useless_params_loss:
                 for row in range(u_in_w_s.shape[0]):  # Need to check cat index 0 only
                     if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
-                        useless_rows.append(row)
+                        cat_losses_useless_factors[row, cat_column] = 0.0
             # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
             # corresponding to target classes with p=1. We only need a limited number of output probabilities
             # (they actually all depend on each other thanks to the softmax (output) layer).
@@ -185,9 +193,10 @@ class SynthParamsLoss(SynthParamsLossBase):
                 raise AssertionError("compute binary cross entropy without")
                 # empirical normalization factor - works quite well to get similar CCE and BCE values
                 param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
-            param_cat_loss[useless_rows] = 0.0
-            # CCE and BCE: add the temp per-param loss
-            cat_losses += param_cat_loss
+            # CCE and BCE: add the temp loss for the current synth parameter
+            cat_losses[:, cat_column] = param_cat_loss
+        cat_losses *= cat_losses_useless_factors.to(u_in_w_s.device)
+        cat_losses = torch.sum(cat_losses, 1)  # Sum all cat losses for a given preset
         if self.normalize_losses:  # Normalization vs. number of categorical-learned params
             cat_losses = cat_losses / len(self.cat_indexes)
 
