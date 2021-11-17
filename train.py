@@ -243,7 +243,8 @@ def train_config():
         with torch.no_grad():
             ae_model_parallel.eval()  # BN stops running estimates
             reg_model_parallel.eval()
-            v_error = torch.Tensor().to(device=recons_loss.device)  # Params inference error (Tensorboard plot)
+            v_out_backup = torch.Tensor().to(device=recons_loss.device)  # Params inference error (Tensorboard plot)
+            v_in_backup = torch.Tensor().to(device=recons_loss.device)
             for i, sample in enumerate(dataloader['validation']):
                 x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
@@ -270,7 +271,8 @@ def train_config():
                     scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
                 # Validation plots
                 if should_plot:
-                    v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage - will be used later
+                    v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
+                    v_in_backup = torch.cat([v_in_backup, v_in])
                     if i == 0:  # tensorboard samples for minibatch 'eval' [0] only
                         logger.plot_train_spectrograms(epoch, x_in, x_out, sample_info,
                                                        dataset if dataset is not None else validation_audio_dataset,
@@ -296,20 +298,28 @@ def train_config():
         # = = = = = Epoch logs (scalars/sounds/images + updated metrics) = = = = =
         for k, s in scalars.items():  # All available scalars are written to tensorboard
             try:
-                logger.tensorboard.add_scalar(k, s.get(), epoch)  # .get might raise except if empty/unused scalar
+                # don't need to log everything for every train procedure (during pre-train, if no flow, etc...)
+                if (k.startswith('Controls') and pretrain_vae) or (k.startswith('Sched/Controls') and pretrain_vae)\
+                        or (k.startswith('LatCorr/zK') and config.model.latent_flow_arch is None):
+                    pass
+                else:
+                    logger.tensorboard.add_scalar(k, s.get(), epoch)  # .get might raise except if empty/unused scalar
             except ValueError:  # unused scalars with buffer (e.g. during pretrain) will raise that exception
                 pass
         if should_plot or early_stop:
             logger.plot_stats_tensorboard__threaded(config.train, epoch, super_metrics, ae_model)  # non-blocking
-            if v_error.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
-                fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(), dataset.preset_indexes_helper)
+            if v_in_backup.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
+                fig, _ = utils.figures.plot_synth_preset_error(
+                    v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), dataset.preset_indexes_helper,
+                    apply_softmax_to_v_out=(not config.model.params_reg_softmax))
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
         metrics['Latent/MMD/Valid_'].append(scalars['Latent/MMD/Valid'].get())
         metrics['LatCorr/z0/Valid_'].append(scalars['LatCorr/z0/Valid'].get())
-        metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
-        if not pretrain_vae:  # TODO handle properly
+        if config.model.latent_flow_arch is not None:
+            metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
+        if not pretrain_vae:
             metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
             metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
         logger.tensorboard.update_metrics(metrics)
