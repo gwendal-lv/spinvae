@@ -120,6 +120,12 @@ class SynthParamsLoss(SynthParamsLossBase):
         self.cat_bce = cat_bce
         self.cat_softmax = cat_softmax
         self.cat_softmax_t = cat_softmax_t
+        if np.isclose(self.cat_softmax_t, 1.0) and not cat_bce:  # Soft T° close to 1.0: directly use pytorch's CE loss
+            self.cross_entropy_criterion = nn.CrossEntropyLoss(reduction='none')
+            if not cat_softmax:
+                raise AssertionError("Softmax should always be True - the False value is to be deprecated anyway")
+        else:
+            self.cross_entropy_criterion = None
         self.cat_loss_factor = categorical_loss_factor
         self.prevent_useless_params_loss = prevent_useless_params_loss
         # Numerical loss criterion - summation/average over batch dimension is done at the end
@@ -173,27 +179,33 @@ class SynthParamsLoss(SynthParamsLossBase):
                 for row in range(u_in_w_s.shape[0]):  # Need to check cat index 0 only
                     if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
                         cat_losses_useless_factors[row, cat_column] = 0.0
-            # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
-            # corresponding to target classes with p=1. We only need a limited number of output probabilities
-            # (they actually all depend on each other thanks to the softmax (output) layer).
-            if not self.cat_bce:  # Categorical CE
-                target_one_hot = u_in_w_s[:, cat_learn_indexes].bool()  # Will be used for tensor-element selection
-            else:  # Binary CE: float values required
-                target_one_hot = u_in_w_s[:, cat_learn_indexes]
-            q_odds = u_out_w_s[:, cat_learn_indexes]  # contains all q odds required for BCE or CCE
-            if not self.cat_bce:  # - - - - - NOT Binary CE => Categorical CE - - - - -
-                # softmax T° if required: q_odds might not sum to 1.0 already if no softmax was applied before
-                if self.cat_softmax:  # FIXME use combined softmax and CE for stability, if T° close to 1.0
-                    q_odds = torch.softmax(q_odds / self.cat_softmax_t, dim=1)
-                # Then the cross-entropy can be computed (simplified formula thanks to p=1.0 one-hot odds)
-                q_odds = q_odds[target_one_hot]  # CE uses only 1 odd per output vector (thanks to softmax)
-                param_cat_loss = - torch.log(q_odds)
-            else:  # - - - - - Binary Cross-Entropy - - - - -
-                raise AssertionError("compute binary cross entropy without")
-                # empirical normalization factor - works quite well to get similar CCE and BCE values
-                param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
-            # CCE and BCE: add the temp loss for the current synth parameter
-            cat_losses[:, cat_column] = param_cat_loss
+            if self.cross_entropy_criterion is not None:  # Baseline categorical cross-entropy loss
+                # Warning: target second. Class indexes are required with pytorch < 1.10.0
+                cat_losses[:, cat_column] = self.cross_entropy_criterion(
+                    u_out_w_s[:, cat_learn_indexes],
+                    torch.argmax(u_in_w_s[:, cat_learn_indexes], dim=1))
+            else:  # Other losses
+                # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
+                # corresponding to target classes with p=1. We only need a limited number of output probabilities
+                # (they actually all depend on each other thanks to the softmax (output) layer).
+                if not self.cat_bce:  # Categorical CE
+                    target_one_hot = u_in_w_s[:, cat_learn_indexes].bool()  # Will be used for tensor-element selection
+                else:  # Binary CE: float values required
+                    target_one_hot = u_in_w_s[:, cat_learn_indexes]
+                q_odds = u_out_w_s[:, cat_learn_indexes]  # contains all q odds required for BCE or CCE
+                if not self.cat_bce:  # - - - - - NOT Binary CE => Categorical CE with custom T° - - - - -
+                    # softmax T° if required: q_odds might not sum to 1.0 already if no softmax was applied before
+                    if self.cat_softmax:  # FIXME use combined softmax and CE for stability, if T° close to 1.0
+                        q_odds = torch.softmax(q_odds / self.cat_softmax_t, dim=1)
+                    # Then the cross-entropy can be computed (simplified formula thanks to p=1.0 one-hot odds)
+                    q_odds = q_odds[target_one_hot]  # CE uses only 1 odd per output vector (thanks to softmax)
+                    param_cat_loss = - torch.log(q_odds)
+                else:  # - - - - - Binary Cross-Entropy - - - - -
+                    raise AssertionError("compute binary cross entropy without")
+                    # empirical normalization factor - works quite well to get similar CCE and BCE values
+                    param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
+                # CCE and BCE: add the temp loss for the current synth parameter
+                cat_losses[:, cat_column] = param_cat_loss
         cat_losses *= cat_losses_useless_factors.to(u_in_w_s.device)
         cat_losses = torch.sum(cat_losses, 1)  # Sum all cat losses for a given preset
         if self.normalize_losses:  # Normalization vs. number of categorical-learned params
