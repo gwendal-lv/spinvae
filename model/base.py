@@ -118,3 +118,10 @@ class DummyModel(TrainableModel):
         return torch.zeros(self.output_size, device=x.device)
 
 
+class DummyRegModel(DummyModel):
+    def precompute_u_in_permutations(self, u_in):
+        pass
+
+    def precompute_u_out_with_symmetries(self, u_out):
+        pass
+

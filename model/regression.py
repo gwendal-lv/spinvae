@@ -4,7 +4,7 @@ Neural networks classes for synth parameters regression, and related utility fun
 These regression models can be used on their own, or passed as constructor arguments to
 extended AE models.
 """
-
+import threading
 from collections.abc import Iterable
 from abc import ABC, abstractmethod  # Abstract Base Class
 
@@ -60,10 +60,6 @@ class PresetActivation(nn.Module):
         return x
 
 
-# TODO class to "reverse" preset softmax activations.
-#    could be done by using the properly one-hot encoded sub-vectors, by applying a simple affine functions
-#    (whose coeffs will depend on the size of the one-hot sub-vector, to always get the same softmax activation)
-
 
 class RegressionModel(model.base.TrainableModel, ABC):
     def __init__(self, architecture: str, dim_z: int, idx_helper: PresetIndexesHelper,
@@ -79,26 +75,31 @@ class RegressionModel(model.base.TrainableModel, ABC):
             self.idx_helper, cat_hardtanh_activation=cat_hardtanh_activation,
             cat_softmax_activation=cat_softmax_activation)
 
-        # Attributes used for training only (losses, ...
+        # Attributes used for training only (losses, ...)
         if train_config is not None and model_config is not None:
             self.dropout_p = train_config.reg_fc_dropout
+            self.loss_wih_permutations = train_config.params_loss_with_permutations
             if train_config.params_cat_bceloss and model_config.params_reg_softmax:
                 raise AssertionError("BCE loss requires no-softmax at reg model output")
-            self.backprop_criterion = model.loss.SynthParamsLoss(
+            self._backprop_criterion = model.loss.SynthParamsLoss(
                 self.idx_helper, train_config.normalize_losses, cat_bce=train_config.params_cat_bceloss,
                 cat_softmax=(not model_config.params_reg_softmax and not train_config.params_cat_bceloss),
                 cat_softmax_t=train_config.params_cat_softmax_temperature,
                 prevent_useless_params_loss=train_config.params_loss_exclude_useless,
-                compute_symmetrical_presets=train_config.params_loss_with_permutations
+                compute_symmetrical_presets=self.loss_wih_permutations
             )
-            # Monitoring losses always remain the same
-            self.eval_criterion = model.loss. AccuracyAndQuantizedNumericalLoss(
+            # Monitoring losses always remain the same (always return the loss corresponding to the best permutation)
+            self._eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
                 self.idx_helper, numerical_loss_type='L1', reduce_accuracy=True, percentage_accuracy_output=True,
                 compute_symmetrical_presets=True
             )
         else:
-            self.controls_criterion, self.num_eval_criterion, self.accuracy_criterion = None, None, None
+            self._backprop_criterion, self._eval_criterion = None, None
             self.dropout_p = 0.0
+        # Those will be stored during train or eval, after associated method have been called
+        self.current_u_in, self.current_u_out = None, None
+        self.current_permutation_groups, self.current_u_in_w_s, self.current_u_out_w_s = None, None, None
+        self._permutations_computation_thread = None
 
     @abstractmethod
     def _reg_model_without_activation(self, z):
@@ -107,6 +108,54 @@ class RegressionModel(model.base.TrainableModel, ABC):
     def forward(self, z):
         """ Applies the regression model to a z latent vector (VAE latent flow output samples). """
         return self.activation_layer(self.reg_model(z))
+
+    def precompute_u_in_permutations(self, u_in):
+        """ Computes possible permutations (i.e. different presets that give the exact same sonic output, using
+         symmetries of the synth) of the u_in presets, and stores them internally.
+         Permutations are always used by evaluation criteria, so they must always be computed. """
+        self.current_u_in, self.current_u_out = u_in, None
+        self.current_permutation_groups, self.current_u_in_w_s, self.current_u_out_w_s = None, None, None
+        self._permutations_computation_thread = threading.Thread(
+            target=self._precompute_u_in_permutations__thread, args=(u_in, ))
+        self._permutations_computation_thread.start()
+
+    def _precompute_u_in_permutations__thread(self, u_in):
+        self.current_permutation_groups, self.current_u_in_w_s = self.idx_helper.get_u_in_permutations(u_in)
+
+    def precompute_u_out_with_symmetries(self, u_out):
+        self._permutations_computation_thread.join()
+        self._permutations_computation_thread = None
+        # This is done directly on GPU - no need to use a parallel thread
+        self.current_u_out = u_out
+        if self.current_permutation_groups is None:
+            raise AssertionError("self.current_permutation_groups have not been computed yet.")
+        self.current_u_out_w_s = self.idx_helper.get_u_out_permutations(self.current_permutation_groups, u_out)
+
+    def _assert_pre_computed_symmetries_available(self):
+        if self.current_u_in is None or self.current_u_in_w_s is None or self.current_permutation_groups is None:
+            raise AssertionError("The precompute_u_in_permutations(..) method must be called before this one.")
+        if self.current_u_out is None or self.current_u_out_w_s is None:
+            raise AssertionError("The precompute_u_out_with_symmetries(..) method must be called before this one.")
+
+    @property
+    def backprop_loss_value(self):
+        """ Returns the current backprop loss value, computed using previously given u_in and u_out values
+        (see precompute_u_in_permutations(...) and precompute_u_out_with_symmetries(...) methods. """
+        if self.loss_wih_permutations:
+            self._assert_pre_computed_symmetries_available()
+            return self._backprop_criterion.loss_with_permutations(
+                self.current_permutation_groups, self.current_u_out_w_s, self.current_u_in_w_s)
+        else:  # no permutation: we let the loss do its job
+            return self._backprop_criterion(self.current_u_out, self.current_u_in)
+
+    @property
+    def eval_criterion_values(self):
+        """ Returns the current eval accuracy and numerical error, computed using previously given u_in and u_out values
+        (see precompute_u_in_permutations(...) and precompute_u_out_with_symmetries(...) methods. """
+        self._assert_pre_computed_symmetries_available()
+        return self._eval_criterion.losses_with_permutations(
+            self.current_permutation_groups, self.current_u_out_w_s, self.current_u_in_w_s)
+
 
 
 class MLPControlsRegression(RegressionModel):
