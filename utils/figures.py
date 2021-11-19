@@ -19,6 +19,7 @@ from data.abstractbasedataset import AudioDataset, PresetDataset
 from data.preset import PresetIndexesHelper
 
 import model.regression
+import model.loss
 
 import utils.stat
 
@@ -375,7 +376,7 @@ def plot_synth_preset_param(ref_preset: Sequence, inferred_preset: Optional[Sequ
             params_quant_values = [dataset.get_preset_param_quantized_steps(i, learnable_representation=False)
                                    for i in range(len(ref_preset))]
             for i, y_values in enumerate(params_quant_values):
-                if y_values is not None:  # Discrete param
+                if y_values is not None and len(y_values) < 50:  # Discrete param with small cardinality
                     marker = '_' if y_values.shape[0] > 1 else 'x'
                     sns.scatterplot(x=[i for _ in range(y_values.shape[0])], y=y_values, marker=marker,
                                     color='grey', ax=ax)
@@ -464,6 +465,7 @@ def plot_synth_preset_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper:
                             apply_softmax_to_v_out=False,
                             mae_y_limit=0.59, boxplots_y_limits=(-1.1, 1.1), figsize=None):
     """ Uses boxplots to show the error between inferred (out) and GT (in) preset parameters.
+    Displays very large figures, because each logit has its own plot column.
 
     :param mae_y_limit: Constant y-axis upper display limit (to help visualize improvements during training).
         Won't be used is a computed MAE is actually greater than this value.
@@ -527,4 +529,40 @@ def plot_synth_preset_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper:
     fig.tight_layout()
     return fig, axes
 
+
+def plot_synth_preset_vst_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper: PresetIndexesHelper):
+    eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
+        idx_helper, reduce_num_loss=False,reduce_accuracy=False, percentage_accuracy_output=False,
+        compute_symmetrical_presets=True)
+    accuracies, num_losses = eval_criterion(v_out, v_in)
+    acc_vst_indices, num_vst_indices = list(accuracies.keys()), list(num_losses.keys())
+    all_learned_vst_indices = acc_vst_indices + num_vst_indices
+
+    # figsize correct
+    fig, ax = plt.subplots(1, 1, figsize=(__param_width * len(all_learned_vst_indices), 3.5))
+    for vst_idx, value in num_losses.items():
+        ax.scatter(vst_idx, value, color='tab:blue')
+    ax2 = ax
+    for vst_idx, value in accuracies.items():
+        ax2.scatter(vst_idx, 1.0 - value, color='tab:purple')
+    ax.set_ylabel('MAE   [num. param]\n(1 - accuracy)   [cat. param]')
+    # Lines to separate group
+    if idx_helper.synth_name.lower() == "dexed":
+        for x in [6, 7, 13, 14, 15, 19] \
+                 + sum([[i + 22*op for i in [23, 27, 31, 32, 33, 36, 44]] for op in range(6)], []):
+            ax.axvline(x-0.5, color='tab:gray', linewidth=0.5)
+    else:
+        warnings.warn("This plotting function is configured for the Dexed synth only.")
+
+    # set axes limits
+    ax.set_xlim([min(all_learned_vst_indices)-0.5, max(all_learned_vst_indices)+0.5])
+    ax.set_ylim(bottom=0.0)
+
+    # parameters' names
+    ax.set_xticks(all_learned_vst_indices)
+    ax.set_xticklabels(['{}.{}'.format(idx, idx_helper.vst_param_names[idx]) for idx in all_learned_vst_indices])
+    _configure_params_plot_x_tick_labels(ax)
+
+    fig.tight_layout()
+    return fig, ax
 
