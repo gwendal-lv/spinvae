@@ -266,8 +266,15 @@ class PresetIndexesHelper:
             op_params_base_vst_indexes = [23, 24, 25, 26, 27, 28, 29, 30,
                                           32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
             for op_i, vst_volume_idx in enumerate([31 + 22*i for i in range(6)]):
-                if isinstance(self.full_to_learnable[vst_volume_idx], int):  # numerical
-                    if preset_GT[self.full_to_learnable[vst_volume_idx]].item() < 1e-3:  # OP zero-volume?
+                if self.full_to_learnable[vst_volume_idx] is None:
+                    pass
+                else:
+                    if isinstance(self.full_to_learnable[vst_volume_idx], int):  # numerical
+                        op_zero_volume = preset_GT[self.full_to_learnable[vst_volume_idx]].item() < 0.005
+                    else:
+                        op_volume_one_hot = preset_GT[self.full_to_learnable[vst_volume_idx]]
+                        op_zero_volume = op_volume_one_hot[0] > 0.5
+                    if op_zero_volume:
                         # add all operator-related indexes
                         cur_op_params_vst_indexes = [idx + op_i*22 for idx in op_params_base_vst_indexes]
                         for vst_idx in cur_op_params_vst_indexes:
@@ -276,10 +283,6 @@ class PresetIndexesHelper:
                                 useless_num_learn_param_indexes.append(learn_idx)
                             elif isinstance(learn_idx, list):  # cat: only first cat probability output is appended
                                 useless_cat_learn_param_indexes.append(learn_idx[0])
-                elif self.full_to_learnable[vst_volume_idx] is None:
-                    pass
-                else:  # TODO If volume is categorical, we must convert....
-                    raise NotImplementedError("Dexed Operator output volume learned as categorical")
             return useless_num_learn_param_indexes, useless_cat_learn_param_indexes
         else:
             return [], []

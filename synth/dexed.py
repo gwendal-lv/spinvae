@@ -378,8 +378,7 @@ class Dexed:
 
     @staticmethod
     def get_param_cardinality(param_index):
-        """ Returns the number of possible values for a given parameter, or -1 if the param
-        is considered continuous (100 discrete values). """
+        """ Returns the number of possible values for a given parameter. """
         if param_index == 4:  # Algorithm
             return 32
         elif param_index == 5:  # Feedback
@@ -411,10 +410,10 @@ class Dexed:
                 return 8
             elif (param_index % 22) == (44 % 22):  # OPx Switch (off/on)
                 return 2
-            else:  # all other are considered non-discrete  # TODO return 100
-                return -1
-        else:  # all other are considered non-discrete
-            return -1
+            else:  # all other are 'continuous' but truly present 100 steps
+                return 100
+        else:
+            return 100
 
     @staticmethod
     def get_numerical_params_indexes():

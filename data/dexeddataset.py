@@ -155,6 +155,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         if vst_params_learned_as_categorical is not None:
             if vst_params_learned_as_categorical.startswith('all<='):
                 num_vst_learned_as_cat_cardinal_threshold = int(vst_params_learned_as_categorical.replace('all<=', ''))
+            elif vst_params_learned_as_categorical == 'all':
+                num_vst_learned_as_cat_cardinal_threshold = -1  # All params are learned
             else:
                 assert vst_params_learned_as_categorical == 'vst_cat'
         # We go through all VST params indexes
@@ -164,6 +166,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             else:
                 if vst_params_learned_as_categorical is None:  # Default: forced numerical only
                     self._vst_param_learnable_model.append('num')
+                elif vst_params_learned_as_categorical == 'all':  # Everything learned as cat
+                    self._vst_param_learnable_model.append('cat')
                 else:  # Mixed representations: is the VST param numerical?
                     if vst_idx in dexed.Dexed.get_numerical_params_indexes():
                         if num_vst_learned_as_cat_cardinal_threshold is None:  # If no threshold: learned as numerical
@@ -208,6 +212,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             return "all_numerical"
         elif self._vst_params_learned_as_categorical == 'vst_cat':
             return "vst_cat_as_cat"
+        elif self._vst_params_learned_as_categorical == 'all':
+            return 'all_categorical'
         elif self._vst_params_learned_as_categorical.startswith('all<='):
             cardinal_threshold = int(self._vst_params_learned_as_categorical.replace('all<=', ''))
             return "vst_num_lt{}_as_cat".format(cardinal_threshold)
