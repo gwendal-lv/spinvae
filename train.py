@@ -78,7 +78,7 @@ def train_config():
     # are set to None during pre-training). Useful to change device or train/eval status of all models.
     if pretrain_vae:
         _, _, ae_model = model.build.build_ae_model(config.model, config.train)
-        reg_model = model.base.DummyModel()
+        reg_model = model.base.DummyRegModel()
         extended_ae_model = model.extendedAE.ExtendedAE(ae_model, reg_model)
     else:
         _, _, ae_model, reg_model, extended_ae_model = model.build.build_extended_ae_model(config.model, config.train,
@@ -197,11 +197,13 @@ def train_config():
             for i in range(len(dataloader['train'])):
                 sample = next(dataloader_iter)
                 x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+                reg_model.precompute_u_in_permutations(v_in)  # TODO threaded
                 ae_model.optimizer.zero_grad()
                 reg_model.optimizer.zero_grad()
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
+                reg_model.precompute_u_out_with_symmetries(v_out)
                 # Losses
                 super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
@@ -214,16 +216,16 @@ def train_config():
                     scalars['ReconsLoss/MSE/Train'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
                     scalars['Latent/MMD/Train'].append(ae_model.mmd(z_K_sampled))
                     if not pretrain_vae:
-                        accuracy, numerical_error = reg_model.eval_criterion(v_out, v_in)
+                        accuracy, numerical_error = reg_model.eval_criterion_values
                         scalars['Controls/QLoss/Train'].append(numerical_error)
                         scalars['Controls/Accuracy/Train'].append(accuracy)
                 extra_lat_reg_loss = ae_model.additional_latent_regularization_loss(z_0_mu_logvar)  # Might be 0.0
                 extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
                 if not pretrain_vae:
-                    if config.model.forward_controls_loss:  # unused params might be modified by this criterion
-                        cont_loss = reg_model.backprop_criterion(v_out, v_in)
+                    if config.model.forward_controls_loss:
+                        cont_loss = reg_model.backprop_loss_value
                     else:
-                        cont_loss = reg_model.backprop_criterion(z_0_mu_logvar, v_in)
+                        cont_loss = reg_model.backprop_criterion(z_0_mu_logvar, v_in)  # FIXME
                     cont_loss *= config.train.params_loss_compensation_factor
                     scalars['Controls/BackpropLoss/Train'].append(cont_loss)
                 else:
@@ -247,9 +249,11 @@ def train_config():
             v_in_backup = torch.Tensor().to(device=recons_loss.device)
             for i, sample in enumerate(dataloader['validation']):
                 x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+                reg_model.precompute_u_in_permutations(v_in)  # TODO threaded
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)
+                reg_model.precompute_u_out_with_symmetries(v_out)
                 super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
@@ -260,11 +264,11 @@ def train_config():
                 scalars['ReconsLoss/MSE/Valid'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
                 scalars['Latent/MMD/Valid'].append(ae_model.mmd(z_K_sampled))
                 if not pretrain_vae:
-                    accuracy, numerical_error = reg_model.eval_criterion(v_out, v_in)
+                    accuracy, numerical_error = reg_model.eval_criterion_values
                     scalars['Controls/QLoss/Valid'].append(numerical_error)
                     scalars['Controls/Accuracy/Valid'].append(accuracy)
-                    if config.model.forward_controls_loss:  # unused params might be modified by this criterion
-                        cont_loss = reg_model.backprop_criterion(v_out, v_in)
+                    if config.model.forward_controls_loss:
+                        cont_loss = reg_model.backprop_loss_value
                     else:
                         cont_loss = reg_model.backprop_criterion(z_0_mu_logvar, v_in)
                     cont_loss *= config.train.params_loss_compensation_factor
@@ -309,9 +313,8 @@ def train_config():
         if should_plot or early_stop:
             logger.plot_stats_tensorboard__threaded(config.train, epoch, super_metrics, ae_model)  # non-blocking
             if v_in_backup.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
-                fig, _ = utils.figures.plot_synth_preset_error(
-                    v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), dataset.preset_indexes_helper,
-                    apply_softmax_to_v_out=(not config.model.params_reg_softmax))
+                fig, _ = utils.figures.plot_synth_preset_vst_error(
+                    v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), dataset.preset_indexes_helper)
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())

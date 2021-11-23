@@ -95,7 +95,7 @@ class SynthParamsLoss(SynthParamsLossBase):
     The categorical loss is categorical cross-entropy. """
     def __init__(self, idx_helper: PresetIndexesHelper, normalize_losses: bool, categorical_loss_factor=0.2,
                  prevent_useless_params_loss=True, compute_symmetrical_presets=False,
-                 cat_bce=False, cat_softmax=False, cat_softmax_t=0.1):  # FIXME temperature
+                 cat_bce=False, cat_softmax=True, cat_softmax_t=1.0):
         """
 
         :param idx_helper: PresetIndexesHelper instance, created by a PresetDatabase, to convert vst<->learnable params
@@ -201,7 +201,7 @@ class SynthParamsLoss(SynthParamsLossBase):
                     q_odds = q_odds[target_one_hot]  # CE uses only 1 odd per output vector (thanks to softmax)
                     param_cat_loss = - torch.log(q_odds)
                 else:  # - - - - - Binary Cross-Entropy - - - - -
-                    raise AssertionError("compute binary cross entropy without")
+                    raise AssertionError("BCE is currently disabled")
                     # empirical normalization factor - works quite well to get similar CCE and BCE values
                     param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
                 # CCE and BCE: add the temp loss for the current synth parameter
@@ -283,6 +283,7 @@ class AccuracyAndQuantizedNumericalLoss(SynthParamsLossBase):
     def losses_with_permutations(self, permutations_groups: List[range],
                                  u_out_w_s: torch.Tensor, u_in_w_s: torch.Tensor):
         # Numerical loss and Accuracy, without any reduction. Don't thread those computations (counter-productive)
+        # TODO many small tensor operations: try to compute this on CPU only (and check the difference...)
         all_numerical_losses, num_vst_indexes = self._compute_all_numerical_losses(u_out_w_s, u_in_w_s)
         all_accuracies, acc_vst_indexes = self._compute_all_accuracies(u_out_w_s, u_in_w_s)
 

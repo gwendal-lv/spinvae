@@ -24,11 +24,11 @@ model = _Config()
 # ----------------------------------------------- Data ---------------------------------------------------
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "ControlsRegr_tests"
-model.run_name = 'backprop_loss_permutations'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "ControlsRegr_allascat"
+model.run_name = 'dev_test'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
-model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/MMD_tests/" \
-                                  "mmd_determ_enc_lossx5_drop0.0_wd_1e-4/checkpoints/00499.tar"
+model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/MMD_WDtests/" \
+                                  "wd1.0e-05/checkpoints/00499.tar"
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
@@ -40,9 +40,9 @@ model.encoder_architecture = 'speccnn8l1_res'
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 model.style_architecture = 'mlp_8_outputbn'  # batch norm layers are always added inside the mlp
 # Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
-model.params_regression_architecture = 'mlp_3l1024'
-# TODO Output of params regression model: hardtanh act, or not
-model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
+model.params_regression_architecture = 'mlp_4l1024'
+model.params_reg_hardtanh_out = False  # Applies to categorical params only (numerical are always hardtanh-activated)
+model.params_reg_softmax = False  # Apply softmax at the end of the reg model itself?
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
 model.forward_controls_loss = True  # Must be true for non-invertible MLP regression (False is now deprecated)
@@ -54,7 +54,7 @@ model.concat_midi_to_z = None  # See update_dynamic_config_params()
 model.dim_z = 610  # Including possibly concatenated midi pitch and velocity
 # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
-#    - set to None to disable latent space flow transforms: will build a BasicVAE
+#    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
 #    - options: _BNinternal (batch norm between hidden MLPs, to compute transform coefficients),
 #               _BNbetween (between flow layers), _BNoutput (BN on the last two layers, or not)
 model.latent_flow_arch = None
@@ -97,7 +97,7 @@ model.learnable_params_tensor_length = -1  # Will be set automatically - see dat
 # Modeling of synth controls probability distributions
 # Possible values: None, 'vst_cat' or 'all<=xx' where xx is numerical params threshold cardinal
 # TODO implement '+pitch' option
-model.synth_vst_params_learned_as_categorical = 'all<=32'
+model.synth_vst_params_learned_as_categorical = 'all'
 # flags/values to describe the dataset to be used
 model.dataset_labels = None  # tuple of labels (e.g. ('harmonic', 'percussive')), or None to use all available labels
 # Dexed: Preset Algorithms, and activated Operators (Lists of ints, None to use all)
@@ -113,7 +113,7 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 train = _Config()
 train.pretrain_ae_only = False  # Should we pre-train the auto-encoder model only?
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 160  # 160
+train.minibatch_size = 300  # 160
 train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
@@ -147,7 +147,7 @@ train.params_loss_compensation_factor = 1.0  # because MSE loss of the pre-train
 train.params_cat_bceloss = False  # If True, disables the Categorical Cross-Entropy loss to compute BCE loss instead
 train.params_cat_softmax_temperature = 0.2  # Temperature if softmax if applied in the loss only
 train.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
-train.params_loss_with_permutations = True  # Applies to the backprop loss only; monitoring losses always use True
+train.params_loss_with_permutations = False  # Applies to the backprop loss only; monitoring losses always use True
 
 # ------------------------------------------- Optimizer + scheduler -------------------------------------------
 # Different optimizers for the pre-trained AE and the regression networks ('ae_' or 'reg_' prefixes or dict keys)
@@ -156,7 +156,7 @@ train.optimizer = 'Adam'
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
 # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
 train.initial_learning_rate = {'ae': 1e-4, 'reg': 2e-4}
-train.initial_ae_lr_factor_after_pretrain = 1e-2  # AE LR reduced when used with regression model after pre-train
+train.initial_ae_lr_factor_after_pretrain = 1e-1  # AE LR reduced when used with regression model after pre-train
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
 train.lr_warmup_epochs = 6  # See update_dynamic_config_params(). 16k samples dataset: set to 10
 train.lr_warmup_start_factor = 0.1
@@ -179,7 +179,7 @@ train.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 # ----------------------------------------------- Regularization --------------------------------------------------
 # WD definitely helps for regularization but significantly impairs results. 1e-4 seems to be a good compromise
 # for both Basic and MMD VAEs (without regression net). 3e-6 allows for the lowest reconstruction error.
-train.weight_decay = 1e-4
+train.weight_decay = 1e-5
 train.fc_dropout = 0.0  # 0.3 without MMD, to try to help prevent VAE posterior collapse
 train.reg_fc_dropout = 0.4
 train.latent_input_dropout = 0.0  # Should always remain zero... intended for tests (not tensorboard-logged)

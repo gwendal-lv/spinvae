@@ -8,7 +8,9 @@ import threading
 from collections.abc import Iterable
 from abc import ABC, abstractmethod  # Abstract Base Class
 
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from nflows.transforms.base import CompositeTransform
 from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
@@ -155,6 +157,34 @@ class RegressionModel(model.base.TrainableModel, ABC):
         self._assert_pre_computed_symmetries_available()
         return self._eval_criterion.losses_with_permutations(
             self.current_permutation_groups, self.current_u_out_w_s, self.current_u_in_w_s)
+
+    def find_preset_inverse(self, u_target: torch.Tensor, z_first_guess: torch.Tensor):
+        if u_target.shape[0] != 1 or z_first_guess.shape[0] != 1:  # check 1d input (batch of 1 element)
+            raise AssertionError("This method handles only 1 preset at a time.")
+        z_start = torch.tensor(z_first_guess, requires_grad=False)  # Constant tensor
+        z_offset = torch.zeros_like(z_start, requires_grad=True)  # We'll optimize this one
+        optimizer = torch.optim.Adam([z_offset], lr=0.1, weight_decay=1e-5)
+        backprop_criterion = model.loss.SynthParamsLoss(
+            self.idx_helper, normalize_losses=True,
+            compute_symmetrical_presets=False, prevent_useless_params_loss=False,
+        )
+        eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
+            self.idx_helper, compute_symmetrical_presets=False
+        )
+        # Searching loop
+        acc, num_loss = 0.0, 1.0
+        for i in range(100):  # FIXME dummy test
+            optimizer.zero_grad()
+            z_estimated = z_start + z_offset
+            u_out = self.forward(z_estimated)
+            backprop_loss = backprop_criterion(u_out, u_target)
+            backprop_loss.backward()
+            optimizer.step()
+            acc, num_loss = eval_criterion(u_out, u_target)
+            if i%10 == 0:
+                print("Accuracy = {:.1f}%, num_loss = {:.3f}".format(acc, num_loss))
+        z_offset.requires_grad = False
+        return z_start + z_offset, acc, num_loss
 
 
 

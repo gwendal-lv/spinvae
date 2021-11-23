@@ -4,6 +4,7 @@ Utility function for building datasets and dataloaders using given configuration
 
 import sys
 import warnings
+from typing import Optional
 
 import numpy as np
 
@@ -64,11 +65,13 @@ def get_num_workers(train_config):
     return num_workers
 
 
-def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):  # TODO model_config arg: pin_memory?
+def get_split_dataloaders(train_config, full_dataset,
+                          num_workers: Optional[int] = None, persistent_workers=True):
     """ Returns a dict of train/validation/test DataLoader instances, and a dict which contains the
     length of each sub-dataset. """
     # Num workers might be zero (no multiprocessing)
-    num_workers = get_num_workers(train_config)
+    if num_workers is None:
+        num_workers = get_num_workers(train_config)
     # Dataloader easily build from samplers
     subset_samplers = data.sampler.build_subset_samplers(full_dataset, k_fold=train_config.current_k_fold,
                                                          k_folds_count=train_config.k_folds,

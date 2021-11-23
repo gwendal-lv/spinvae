@@ -9,6 +9,9 @@ import numpy as np
 import scipy.interpolate
 import torch
 
+import data.abstractbasedataset
+import data.build
+import evaluation.load
 import logs.logger
 import model.build
 import utils.config
@@ -19,7 +22,7 @@ class LatentInterpolationEval:
         """
 
         :param generator: Any model that provides a generate_from_latent_vector(z) method (where z is a batch of
-            vectors), a .dim_z attribute, and... ? TODO finish doc
+            vectors), a .dim_z attribute. E.g. an ae_model.
         :param kind: See https://docs.scipy.org/doc/scipy/reference/reference/generated/scipy.interpolate.interp1d.html
         """
         self.gen = generator
@@ -59,14 +62,41 @@ class LatentInterpolationEval:
     # TODO compute 'interpolation smoothness' coefficients
 
 
+class PresetInterpolatorEval:
+    def __init__(self, model_loader: evaluation.load.ModelLoader):
+        self.dataset = model_loader.dataset
+        if not isinstance(self.dataset, data.abstractbasedataset.PresetDataset):
+            raise NotImplementedError("This evaluation class is available for a PresetDataset only.")
+        self.dataloader, dataloaders_nb_items \
+            = data.build.get_split_dataloaders(model_loader.train_config, self.dataset, num_workers=0)
+        self.extended_ae_model, self.ae_model, self.reg_model \
+            = model_loader.extended_ae_model, model_loader.ae_model, model_loader.reg_model
+        if self.extended_ae_model is None or self.reg_model is None:
+            raise AssertionError("A full model (including a regression network) must be loaded.")
+
+    def find_preset_inverse(self, x_in, sample_info, u_target):
+        self.ae_model.eval()
+        ae_outputs = self.ae_model(x_in, sample_info)
+        z_first_guess = ae_outputs[2]
+        self.reg_model.eval()  # Dropout must be de-activated
+        # TODO search element-by-element
+        z_estimated, acc, num_loss = self.reg_model.find_preset_inverse(u_target, z_first_guess)
+        z_diff = z_first_guess - z_estimated
+        print(z_first_guess - z_estimated, acc, num_loss)
+        print("max z diff = {}".format(torch.max(torch.abs(z_diff))))
+
+
 if __name__ == "__main__":
-    import evaluation.load
     _device = 'cpu'
-    model_loader = evaluation.load.ModelLoader("saved/MMD_tests/mmd_determ_enc_lossx5_drop0.3_wd_1e-4", _device)
+    _model_loader = evaluation.load.ModelLoader("saved/ControlsRegr_allascat/htanhTrue_softmT°0.2_permTrue", _device)
 
-    interpolator = LatentInterpolationEval(model_loader.ae_model, device=_device)
-    _z_start, _z_end = torch.ones((1, interpolator.dim_z)) * 0.0, torch.ones((1, interpolator.dim_z)) * 1.0
-    #_z_start, _z_end = torch.normal(0.0, 1.0, (1, interpolator.dim_z)), torch.normal(0.0, 1.0, (1, interpolator.dim_z))
-    _u, _z, _x = interpolator.interpolate_spectrograms_from_latent(_z_start, _z_end)
+    preset_interpolator = PresetInterpolatorEval(_model_loader)
+    dataloader_iter = iter(preset_interpolator.dataloader['test'])
 
-    print(model_loader.model_config)
+    items = next(dataloader_iter)
+    r = range(0, 1)
+    _x_in = items[0][r, :, :, :]
+    _u_target = items[1][r, :]
+    _sample_info = items[2][r, :]
+    preset_interpolator.find_preset_inverse(_x_in, _sample_info, _u_target)
+    print('OK')

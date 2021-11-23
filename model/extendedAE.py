@@ -5,6 +5,7 @@ which infers synth parameters values from latent space values.
 
 from typing import Optional
 
+import torch
 import torch.nn as nn
 
 from model import VAE
@@ -46,3 +47,7 @@ class ExtendedAE(nn.Module):
     def latent_loss(self, z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac):
         return self.ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
 
+    def find_preset_inverse(self, x_in, sample_info, target_u_out):
+        """ Returns the latent code z corresponding to the target output preset, as well as the corresponding
+        accuracy and numerical error. """
+        pass

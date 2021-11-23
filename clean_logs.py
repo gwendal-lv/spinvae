@@ -25,8 +25,8 @@ if __name__ == "__main__":
         model_config = _Config
         model_config.logs_root_dir = "saved"
         # = = = = = Insert here model and run to be erased = = = = =
-        model_config.name = 'PosteriorCollapse'
-        model_config.run_name = '05_ref_zerodropout'
+        model_config.name = 'MMD_tests'
+        model_config.run_name = 'dev_test'
         # = = = = = Insert here model and run to be erased = = = = =
 
 

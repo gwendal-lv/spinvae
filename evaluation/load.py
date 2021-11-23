@@ -4,6 +4,7 @@ Functions and classes to easily load models or data for evaluation.
 
 from pathlib import Path
 
+import data.build
 import logs.logger
 import model.build
 import utils.config
@@ -23,9 +24,22 @@ class ModelLoader:
         self.model_config, self.train_config = utils.config.get_config_from_file(self.path_to_model_dir
                                                                                  .joinpath('config.json'))
         checkpoint = logs.logger.get_model_last_checkpoint(self._root_path, self.model_config, device=self.device)
-        _, _, self.ae_model = model.build.build_ae_model(self.model_config, self.train_config)
-        self.ae_model.load_checkpoint(checkpoint, eval_only=True)
         if self.train_config.pretrain_ae_only:
-            self.reg_model = None
+            _, _, self.ae_model = model.build.build_ae_model(self.model_config, self.train_config)
+            self.ae_model.load_checkpoint(checkpoint, eval_only=True)
+            self.reg_model, self.extended_ae_model = None, None
+            # TODO load dataset(s)
+            self.dataset = None
         else:
-            raise NotImplementedError()  # TODO create and load both ae and reg models
+            # Dataset required to build the preset indexes helper
+            self.dataset = data.build.get_dataset(self.model_config, self.train_config)
+            _, _, self.ae_model, self.reg_model, self.extended_ae_model = model.build.build_extended_ae_model(
+                self.model_config, self.train_config, self.dataset.preset_indexes_helper)
+            self.ae_model.load_checkpoint(checkpoint, eval_only=True)
+            self.reg_model.load_checkpoint(checkpoint, eval_only=True)
+
+
+if __name__ == "__main__":
+    loader = ModelLoader('saved/ControlsRegr_allascat/htanhTrue_softmT°0.2_permTrue')
+    print("OK")
+
