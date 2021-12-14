@@ -17,7 +17,8 @@ def build_encoder_and_decoder_models(model_config, train_config):
 
     print("MIDI NOTES = {}".format(model_config.midi_notes))  # TODO remove
     encoder_model = \
-        encoder.SpectrogramEncoder(model_config.encoder_architecture, enc_z_length,
+        encoder.SpectrogramEncoder(model_config.encoder_architecture,
+                                   enc_z_length, train_config.latent_loss.endswith('_determ_enc'),
                                    model_config.input_tensor_size, train_config.fc_dropout,
                                    output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
                                    output_dropout_p=train_config.latent_input_dropout,

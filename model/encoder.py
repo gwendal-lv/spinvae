@@ -35,13 +35,15 @@ def parse_architecture(full_architecture: str):
 
 class SpectrogramEncoder(nn.Module):
     """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu and logs(var) values"""
-    def __init__(self, architecture, dim_z, input_tensor_size, fc_dropout, output_bn=False, output_dropout_p=0.0,
+    def __init__(self, architecture, dim_z, deterministic: bool,
+                 input_tensor_size, fc_dropout, output_bn=False, output_dropout_p=0.0,
                  deep_features_mix_level=-1, force_bigger_network=False):
         """
 
         :param architecture: String describing the type of network, number of CNN and FC layers, with options
             (see parse_architecture(...) method)
-        :param dim_z:
+        :param dim_z: Output tensor will be Nminibatch x (2*dim_z)  (means and log variances for each item)
+        :param deterministic: If True, this module will 0.0 variances only.
         :param input_tensor_size:
         :param fc_dropout:
         :param output_bn:
@@ -52,6 +54,7 @@ class SpectrogramEncoder(nn.Module):
         """
         super().__init__()
         self.dim_z = dim_z  # Latent-vector size (2*dim_z encoded values - mu and logs sigma 2)
+        self.deterministic = deterministic
         self.spectrogram_channels = input_tensor_size[1]
         self.full_architecture = architecture
         self.deep_feat_mix_level = deep_features_mix_level
@@ -78,18 +81,19 @@ class SpectrogramEncoder(nn.Module):
         # Number of linear layers as configured in the arch arg (e.g. speccnn8l1 -> 1 FC layer).
         # Default: no final batch-norm (maybe added after this for loop). Always 1024 hidden units
         self.mlp = nn.Sequential()
+        module_output_units = self.dim_z if self.deterministic else 2 * self.dim_z
         for i in range(self.num_fc_layers):
             if self.fc_dropout > 0.0:
                 self.mlp.add_module("encdrop{}".format(i), nn.Dropout(self.fc_dropout))
             in_units = cnn_out_items if (i == 0) else 1024
-            out_units = 1024 if (i < (self.num_fc_layers - 1)) else 2 * self.dim_z
+            out_units = 1024 if (i < (self.num_fc_layers - 1)) else module_output_units
             self.mlp.add_module("encfc{}".format(i), nn.Linear(in_units, out_units))
             if i < (self.num_fc_layers - 1):  # No final activation - outputs are latent mu/logvar
                 self.mlp.add_module("act{}".format(i), nn.ReLU())
         # Batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
         # Dropout to help prevent VAE posterior collapse --> should be zero
         if output_bn:
-            self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(2 * self.dim_z))
+            self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(module_output_units))
         if output_dropout_p > 0.0:
             self.mlp.add_module('lat_in_drop', nn.Dropout(output_dropout_p))
 
@@ -228,7 +232,14 @@ class SpectrogramEncoder(nn.Module):
         # print("Forward CNN out size = {}".format(cnn_out.size()))
         z_mu_logvar = self.mlp(cnn_out)
         # Last dim contains a latent proba distribution value, last-1 dim is 2 (to retrieve mu or logs sigma2)
-        return torch.reshape(z_mu_logvar, (n_minibatch, 2, self.dim_z))
+        if not self.deterministic:
+            return torch.reshape(z_mu_logvar, (n_minibatch, 2, self.dim_z))
+        # or: constant log var if this encoder is deterministic (log var is not computed at all)
+        else:
+            z_mu = torch.unsqueeze(z_mu_logvar, 1)
+            z_logvar = torch.ones_like(z_mu) * (- 1e-10)
+            return torch.cat([z_mu, z_logvar], 1)
+
 
 
 

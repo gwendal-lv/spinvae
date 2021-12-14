@@ -88,7 +88,9 @@ class BasicVAE(model.base.TrainableModel):
         style_args = style_arch.split('_')
         if style_args[0] != 'mlp':
             raise AssertionError("Style network must be 'mlp'")
-        n_layers = int(style_args[1])
+        layers_args = style_args[1].split('l')
+        style_n_layers = int(layers_args[0])
+        style_n_units = int(layers_args[1])
         output_bn = False
         if len(style_args) >= 3:
             if style_args[2].lower() == 'outputbn':
@@ -96,11 +98,12 @@ class BasicVAE(model.base.TrainableModel):
             else:
                 raise AssertionError("Unrecognized style network argument '{}'".format(style_args[2]))
         self.style_mlp = nn.Sequential()
-        for i in range(n_layers):
-            self.style_mlp.add_module('fc{}'.format(i), nn.Linear(dim_z, dim_z))
+        for i in range(style_n_layers):
+            self.style_mlp.add_module('fc{}'.format(i),
+                                      nn.Linear(style_n_units if i > 0 else self.dim_z, style_n_units))
             self.style_mlp.add_module('act{}'.format(i), nn.ReLU())
-            if i < (n_layers-1) or (i == (n_layers-1) and output_bn):
-                self.style_mlp.add_module('bn{}'.format(i), nn.BatchNorm1d(dim_z))
+            if i < (style_n_layers-1) or (i == (style_n_layers-1) and output_bn):
+                self.style_mlp.add_module('bn{}'.format(i), nn.BatchNorm1d(style_n_units))
 
     def _encode_and_sample(self, x, sample_info=None):
         n_minibatch = x.size()[0]

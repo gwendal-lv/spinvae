@@ -5,6 +5,9 @@
     <orderEntry type="jdk" jdkName="Remote Python 3.8.11 (sftp://gwendal@grospyter.irisib.be:6400/home/gwendal/anaconda3/bin/python3)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
+  <component name="PackageRequirementsSettings">
+    <option name="versionSpecifier" value="Greater or equal (&gt;=x.y.z)" />
+  </component>
   <component name="PyDocumentationSettings">
     <option name="renderExternalDocumentation" value="true" />
   </component>
