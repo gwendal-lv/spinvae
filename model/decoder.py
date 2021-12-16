@@ -1,6 +1,6 @@
 
 import warnings
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List, Optional
 from collections import OrderedDict
 
 import numpy as np
@@ -14,7 +14,9 @@ from model import encoder  # Contains an architecture parsing method
 
 class SpectrogramDecoder(nn.Module):
     """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu/logsigma2 values"""
-    def __init__(self, architecture: str, dim_z: int, output_tensor_size: Tuple[int, int, int, int], fc_dropout: float,
+    def __init__(self, architecture: str, dim_z: int, output_tensor_size: Tuple[int, int, int, int],
+                 fc_dropout: float,
+                 midi_notes: Optional[Tuple[Tuple[int, int]]] = None,
                  force_bigger_network=False):
         """
 
@@ -31,7 +33,12 @@ class SpectrogramDecoder(nn.Module):
         self.spectrogram_input_size = (self.output_tensor_size[2], self.output_tensor_size[3])
         self.spectrogram_channels = output_tensor_size[1]
         self.dim_z = dim_z  # Latent-vector size
-        self.dim_w_single_ch_cnn = dim_z  # TODO contact MIDI notes to the style vector?
+        self.midi_notes = midi_notes
+        self.dim_w_single_ch_cnn = 512  # TODO contact MIDI notes to the style vector?  FIXME constant size
+        if self.midi_notes is not None:
+            self.dim_w_single_ch_cnn += 2  # midi pitch/vel will be concatenated to the style vector
+        elif self.spectrogram_channels > 1:
+            warnings.warn("midi_notes argument was not given but multi-channel spectrograms are being decoded.")
         self.full_architecture = architecture
         self.cnn_input_shape = None  # shape not including batch size
 
@@ -98,8 +105,13 @@ class SpectrogramDecoder(nn.Module):
                     output_padding = (0, 0)
                 if 0 <= i < (self.num_cnn_layers-1):
                     act = nn.LeakyReLU(0.1)
-                    # TODO keep using BN with some layers (don't use AdaIN only, BN is very effective)
-                    norm = 'adain' if self.arch_args['adain'] else 'bn'
+                    # keep using BN with some layers (don't use AdaIN only, BN is very effective)
+                    if 1 <= i <= 4:
+                        norm = 'bn+adain' if self.arch_args['adain'] else 'bn'
+                    elif i == 5:  # TODO try adain on layer 6?
+                        norm = 'adain' if self.arch_args['adain'] else 'bn'
+                    else:
+                        norm = 'bn'
                 else:
                     norm = None
                     act = nn.Identity()
@@ -164,10 +176,10 @@ class SpectrogramDecoder(nn.Module):
         # Final activation, for all architectures
         self.single_ch_cnn_act = nn.Hardtanh()
 
-    def forward(self, z_sampled, w_style=None):  # TODO add midi_notes as arg
+    def forward(self, z_sampled, w_style=None):
         if w_style is None:  # w_style can be omitted during summary writing
             print("[decoder.py] w_style tensor is None; replaced by 0.0 (should happen during init only)")
-            w_style = torch.zeros((z_sampled.shape[0], self.dim_w_single_ch_cnn))
+            w_style = torch.zeros((z_sampled.shape[0], self.dim_w_single_ch_cnn), device=z_sampled.device)
         mixed_features = self.mlp(z_sampled)
         mixed_features = mixed_features.view(-1,  # batch size auto inferred
                                              self.cnn_input_shape[0], self.cnn_input_shape[1], self.cnn_input_shape[2])
@@ -175,10 +187,16 @@ class SpectrogramDecoder(nn.Module):
         # This won't work on multi-channel spectrograms with force_bigger_network==True (don't do this anyway)
         single_ch_cnn_inputs = torch.split(unmixed_features, self.first_gt1_conv_ch,  # actual multi-spec: 512ch-split
                                            dim=1)  # Split along channels dimension
-        # TODO concat midi notes to w_style
         single_ch_cnn_outputs = list()
-        for single_ch_in in single_ch_cnn_inputs:
-            single_ch_cnn_outputs.append(self.single_ch_cnn((single_ch_in, w_style)))
+        for i, single_ch_in in enumerate(single_ch_cnn_inputs):
+            # concat midi notes to w_style (if w_style was not None as a method argument)
+            if self.midi_notes is not None and w_style.shape[1] < self.dim_w_single_ch_cnn:
+                notes_tensor = torch.tensor(self.midi_notes[i], device=w_style.device, dtype=w_style.dtype)
+                notes_tensor = notes_tensor / 63.5 - 1.0
+                w_with_midi = torch.cat([notes_tensor.expand(w_style.shape[0], 2), w_style], dim=1)
+            else:
+                w_with_midi = w_style
+            single_ch_cnn_outputs.append(self.single_ch_cnn((single_ch_in, w_with_midi)))
         # Remove style
         single_ch_cnn_outputs = [x[0] for x in single_ch_cnn_outputs]
 

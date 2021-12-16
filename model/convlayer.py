@@ -173,7 +173,8 @@ class ResConv2DBase(nn.Module, ABC):
         self.conv1_act_bn = None  # to be set by child class
         self.conv2 = None
         self.residuals_conv = nn.Conv2d(in_ch, out_ch, (1, 1)) if (in_ch != out_ch) else None
-        self.act_norm_2 = ActAndNorm(in_ch, out_ch, act, norm_layer, adain_num_style_features)
+        self.act_norm_2 = ActAndNorm(in_ch, out_ch, copy.deepcopy(act),
+                                     norm_layer, adain_num_style_features)
 
     @abstractmethod
     def _resize_x_skip(self, x_skip, output_feature_maps_size):
@@ -198,6 +199,7 @@ class ResConv2D(ResConv2DBase):
                  kernel_size, stride, padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
                  norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
         super().__init__(in_ch, out_ch, act, norm_layer, adain_num_style_features)
+        # TODO "hybrid" norm: adain inside, batch norm for residuals+skip output
         self.conv1_act_bn = Conv2D(in_ch, hidden_ch, kernel_size, stride, padding, dilation,
                                    padding_mode, act, norm_layer, adain_num_style_features)
         self.conv2 = nn.Conv2d(hidden_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
@@ -211,9 +213,13 @@ class ResTConv2D(ResConv2DBase):
     def __init__(self, in_ch, hidden_ch, out_ch,
                  kernel_size, stride, padding, output_padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
                  norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
-        super().__init__(in_ch, out_ch, act, norm_layer, adain_num_style_features)
+        if norm_layer == 'bn+adain' or norm_layer == 'adain+bn':
+            norm1, norm2 = 'adain', 'bn'
+        else:
+            norm1, norm2 = norm_layer, norm_layer
+        super().__init__(in_ch, out_ch, act, norm2, adain_num_style_features)
         self.conv1_act_bn = TConv2D(in_ch, hidden_ch, kernel_size, stride, padding, output_padding, dilation,
-                                    padding_mode, act, norm_layer, adain_num_style_features)
+                                    padding_mode, act, norm1, adain_num_style_features)
         self.conv2 = nn.ConvTranspose2d(hidden_ch, out_ch, kernel_size, stride, padding, output_padding,
                                         dilation=dilation, padding_mode=padding_mode)
 

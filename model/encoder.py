@@ -104,7 +104,7 @@ class SpectrogramEncoder(nn.Module):
             Our experiments seem to show: more stable latent loss with no BN before the FC that regresses mu/logvar,
             consistent training runs  '''
             if self.arch_args['adain']:
-                raise NotImplementedError("'adain' arch arg (MIDI notes provided to layers) not implemented")
+                warnings.warn("'adain' arch arg (MIDI notes provided to layers) not implemented")
             if self.arch_args['time+']:
                 raise NotImplementedError("_time+ (increased time resolution) arch arg not implemented")
             _in_ch, _out_ch = -1, -1  # backup for res blocks

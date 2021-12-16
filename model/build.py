@@ -26,6 +26,7 @@ def build_encoder_and_decoder_models(model_config, train_config):
                                    force_bigger_network=force_bigger_network)
     decoder_model = decoder.SpectrogramDecoder(model_config.encoder_architecture, model_config.dim_z,
                                                model_config.input_tensor_size, train_config.fc_dropout,
+                                               model_config.midi_notes,
                                                force_bigger_network=force_bigger_network)
     return encoder_model, decoder_model
 
