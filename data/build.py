@@ -27,6 +27,8 @@ def get_dataset(model_config, train_config):
                                             operators=model_config.dataset_synth_args[1],
                                             vst_params_learned_as_categorical=
                                             model_config.synth_vst_params_learned_as_categorical,
+                                            continuous_params_max_resolution=
+                                            model_config.continuous_params_max_resolution,
                                             restrict_to_labels=model_config.dataset_labels)
     else:
         raise NotImplementedError("No dataset available for '{}': unrecognized synth.".format(model_config.synth))

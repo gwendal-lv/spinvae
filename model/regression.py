@@ -109,7 +109,7 @@ class RegressionModel(model.base.TrainableModel, ABC):
 
     def forward(self, z):
         """ Applies the regression model to a z latent vector (VAE latent flow output samples). """
-        return self.activation_layer(self.reg_model(z))
+        return self.activation_layer(self._reg_model_without_activation(z))
 
     def precompute_u_in_permutations(self, u_in):
         """ Computes possible permutations (i.e. different presets that give the exact same sonic output, using
@@ -256,6 +256,8 @@ class FlowControlsRegression(RegressionModel):
         # Multi-layer flow definition
         if self.flow_type.lower() == 'realnvp' or self.flow_type.lower() == 'rnvp':
             # RealNVP - custom (without useless gaussian base distribution) and no BN on last layers
+            # TODO random permutations instead of checkerboard pattern?
+            # TODO allow dropout between flow layers
             self._forward_flow_transform = CustomRealNVP(
                 self.dim_z, self.num_flow_hidden_features, self.num_flow_layers, dropout_probability=self.dropout_p,
                 bn_between_layers=self.bn_between_flows, bn_within_layers=self.bn_within_flows,

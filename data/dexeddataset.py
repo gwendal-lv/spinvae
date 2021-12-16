@@ -37,6 +37,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                  algos: Optional[List[int]] = None,
                  operators: Optional[List[int]] = None,
                  vst_params_learned_as_categorical: Optional[str] = None,
+                 continuous_params_max_resolution: Optional[int] = 100,
                  restrict_to_labels=None, constant_filter_and_tune_params=True,
                  constant_middle_C=True,
                  prevent_SH_LFO=False,  # TODO re-implement
@@ -124,6 +125,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         # This cardinality is the LEARNING REPRESENTATION cardinality - will be used for categorical representations
         self._params_cardinality = np.asarray([dexed.Dexed.get_param_cardinality(idx)
                                                for idx in range(self.total_nb_params)])
+        self.continuous_params_max_resolution = continuous_params_max_resolution
+        self._params_cardinality = np.minimum(self._params_cardinality, self.continuous_params_max_resolution)
         self._params_default_values = dict()
         # Algo cardinality is manually set. We consider an algo-limited DX7 to be a new synth
         if len(self.algos) > 0:  # len 0 means all algorithms are used
@@ -209,17 +212,21 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     @property
     def learnable_representation_name(self):
         if self._vst_params_learned_as_categorical is None:
-            return "all_numerical"
+            representation_name = "all_numerical"
         elif self._vst_params_learned_as_categorical == 'vst_cat':
-            return "vst_cat_as_cat"
+            representation_name = "vst_cat_as_cat"
         elif self._vst_params_learned_as_categorical == 'all':
-            return 'all_categorical'
+            representation_name = 'all_categorical'
+            representation_name += '__reso{}'.format(self.continuous_params_max_resolution)
         elif self._vst_params_learned_as_categorical.startswith('all<='):
             cardinal_threshold = int(self._vst_params_learned_as_categorical.replace('all<=', ''))
-            return "vst_num_lt{}_as_cat".format(cardinal_threshold)
+            representation_name = "vst_num_lt{}_as_cat".format(cardinal_threshold)
+            if cardinal_threshold >= self.continuous_params_max_resolution:
+                representation_name += '__reso{}'.format(self.continuous_params_max_resolution)
         else:
             raise ValueError("Invalid 'vst_params_learned_as_categorical' value: {}"
                              .format(self._vst_params_learned_as_categorical))
+        return representation_name
 
     @property
     def vst_param_learnable_model(self):

@@ -41,20 +41,17 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool, regen
 
     operators = config.model.dataset_synth_args[1]
 
-    # Possible values: None, 'vst_cat' or 'all<=xx' where xx is numerical params threshold cardinal
-    vst_params_learned_as_cat = config.model.synth_vst_params_learned_as_categorical
-
     # No label restriction, no normalization, etc...
     dexed_dataset = DexedDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                  algos=None,  # allow all algorithms
                                  operators=operators,  # Operators limitation (config.py, or chosen above)
-                                 # Params learned as categorical: maybe comment
-                                 vst_params_learned_as_categorical=vst_params_learned_as_cat,
+                                 vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
+                                 continuous_params_max_resolution=config.model.continuous_params_max_resolution,
                                  restrict_to_labels=None,
                                  check_constrains_consistency=(not regenerate_wav) and (not regenerate_spectrograms)
                                  )
-    #print(dexed_dataset.preset_indexes_helper)
     if regenerate_learnable_presets:
+        print(dexed_dataset.preset_indexes_helper)
         dexed_dataset.compute_and_store_learnable_presets()
     _gen_dataset(dexed_dataset, regenerate_wav, regenerate_spectrograms)
 
