@@ -114,7 +114,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
 
     def __str__(self):
         return "Dataset of {}/{} {} presets. Total items count {}: {} MIDI notes / preset, {} spectrograms.\n" \
-               "{} Spectrogram items, size={}, min={:.1f}dB, normalization:{}" \
+               "{} Spectrogram items, size={}, min={:.1f}dB, normalization:{}." \
             .format(self.valid_presets_count, self.total_nb_presets, self.synth_name,
                     len(self), self.midi_notes_per_preset,
                     ('stacked' if self.midi_notes_per_preset > 1 and self._multichannel_stacked_spectrograms else 'independent'),
@@ -638,6 +638,21 @@ class PresetDataset(AudioDataset):
     def _get_learnable_preset_file_path(self, preset_UID, preset_variation):
         return self._learnable_preset_folder.joinpath("{:06d}_pvar{:03d}.pt".format(preset_UID, preset_variation))
 
+    @property
+    def _learnable_presets_cat_params_stats_file(self):
+        return self._learnable_preset_folder.joinpath('cat_params_stats.dict.pkl')
+
+    @property
+    def cat_params_class_samples_count(self):
+        """ A dict containing the number of samples of each class, for each synth param learned as
+         categorical. Dict keys are VST parameter indices. """
+        try:
+            with open(self._learnable_presets_cat_params_stats_file, 'rb') as f:
+                return pickle.load(f)
+        except FileNotFoundError:
+            raise FileNotFoundError("The {} file could not be found. Please pre-compute stats over cat-learned "
+                                    "parameters first.".format(self._learnable_presets_cat_params_stats_file))
+
     def compute_and_store_learnable_presets(self, verbose=True):
         if verbose:
             print("Computing and storing all learnable presets...")
@@ -645,15 +660,29 @@ class PresetDataset(AudioDataset):
         if os.path.exists(self._learnable_preset_folder):
             shutil.rmtree(self._learnable_preset_folder)
         os.makedirs(self._learnable_preset_folder)
+        # dict for storing nb of samples for each class (categorical-learned params only)
+        cat_params_samples_per_class = dict()
+        for vst_index, learn_model in enumerate(self.preset_indexes_helper.vst_param_learnable_model):
+            if learn_model == 'cat':
+                cat_params_samples_per_class[vst_index] \
+                    = np.zeros_like(self.preset_indexes_helper.full_to_learnable[vst_index], dtype=int)
+        # Compute and store presets (learnable representation)
         for preset_UID in self.valid_preset_UIDs:
             for preset_var in range(self._nb_preset_variations_per_note):
-                audio_delay = 0
                 preset_params = self.get_full_preset_params(preset_UID, preset_variation=preset_var)
                 preset_params = torch.squeeze(preset_params.get_learnable(), 0)
+                # stats about classes for each cat-encoded synth parameter (for all variations)
+                for vst_index in cat_params_samples_per_class:
+                    learn_indices = self.preset_indexes_helper.full_to_learnable[vst_index]
+                    cat_params_samples_per_class[vst_index] += np.asarray(preset_params[learn_indices], dtype=int)
                 torch.save(preset_params.clone(), self._get_learnable_preset_file_path(preset_UID, preset_var))
+        # store classes samples counts
+        with open(self._learnable_presets_cat_params_stats_file, 'wb') as f:
+            pickle.dump(cat_params_samples_per_class, f)
+
         if verbose:
             delta_t = (datetime.now() - t_start).total_seconds()
-            print("Finished in {:.1f} min. {} presets with {}x data augmentation (presets variations), {:.1f} ms / "
+            print("Finished in {:.1f} minutes. {} presets with {}x data augmentation (presets variations), {:.1f} ms / "
                   "file.".format(delta_t/60.0, len(self.valid_preset_UIDs), self._nb_preset_variations_per_note,
                                  1000.0*delta_t/(len(self.valid_preset_UIDs)*self._nb_preset_variations_per_note)))
 

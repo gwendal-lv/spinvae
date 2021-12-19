@@ -8,6 +8,7 @@ with small modifications to the config (enqueued train runs).
 See train_queue.py for enqueued training runs
 """
 import multiprocessing
+import gc
 from pathlib import Path
 import contextlib
 from typing import Optional, Dict, List
@@ -197,7 +198,7 @@ def train_config():
             for i in range(len(dataloader['train'])):
                 sample = next(dataloader_iter)
                 x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
-                reg_model.precompute_u_in_permutations(v_in)  # TODO threaded
+                reg_model.precompute_u_in_permutations(v_in)
                 ae_model.optimizer.zero_grad()
                 reg_model.optimizer.zero_grad()
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
@@ -249,7 +250,7 @@ def train_config():
             v_in_backup = torch.Tensor().to(device=recons_loss.device)
             for i, sample in enumerate(dataloader['validation']):
                 x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
-                reg_model.precompute_u_in_permutations(v_in)  # TODO threaded
+                reg_model.precompute_u_in_permutations(v_in)
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)
@@ -281,6 +282,7 @@ def train_config():
                         logger.plot_train_spectrograms(epoch, x_in, x_out, sample_info,
                                                        dataset if dataset is not None else validation_audio_dataset,
                                                        config.model, config.train)
+                        # CUDA illegal memory access (stacktrace might be incorrect...) - fixed by torch 1.10, CUDA 11.3
                         logger.plot_decoder_interpolation(epoch, ae_model, z_K_sampled, sample_info,
                                                           dataset if dataset is not None else validation_audio_dataset)
         metrics['Latent/MaxAbsVal/Valid_'].append(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
@@ -289,12 +291,18 @@ def train_config():
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
         if pretrain_vae or (not pretrain_vae and config.train.enable_ae_scheduler_after_pretrain):
-            ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
-                                         for loss_name in config.train.scheduler_losses['ae']]))
+            if config.train.scheduler_name == 'ReduceLROnPlateau':
+                ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
+                                             for loss_name in config.train.scheduler_losses['ae']]))
+            else:  # deterministic scheduler
+                ae_model.scheduler.step()
         scalars['Sched/VAE/LR'].set(ae_model.learning_rate)
         if not pretrain_vae:
-            reg_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
-                                          for loss_name in config.train.scheduler_losses['reg']]))
+            if config.train.scheduler_name == 'ReduceLROnPlateau':
+                reg_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
+                                              for loss_name in config.train.scheduler_losses['reg']]))
+            else:  # deterministic scheduler
+                reg_model.scheduler.step()
             scalars['Sched/Controls/LR'].set(reg_model.learning_rate)
         # Possible early stop if reg model is not learning anything anymore
         early_stop = (reg_model.learning_rate < config.train.early_stop_lr_threshold['reg'])
@@ -345,9 +353,14 @@ def train_config():
     del reg_model_parallel, ae_model_parallel
     del extended_ae_model, ae_model
     del reg_model
+    del v_in, v_out, v_in_backup, v_out_backup, x_in, x_out, sample_info
+    del ae_out, z_0_sampled, z_K_sampled, z_0_mu_logvar
+    del extra_lat_reg_loss, lat_loss
+    del metrics, super_metrics
     del logger
     del dataloader, dataset
     del train_audio_dataset, validation_audio_dataset
+    gc.collect()
 
 
 if __name__ == "__main__":

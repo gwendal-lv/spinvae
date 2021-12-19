@@ -40,13 +40,15 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool, regen
     importlib.reload(config)
 
     operators = config.model.dataset_synth_args[1]
+    continuous_params_max_resolution = config.model.continuous_params_max_resolution
+    # continuous_params_max_resolution = 100
 
     # No label restriction, no normalization, etc...
     dexed_dataset = DexedDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                  algos=None,  # allow all algorithms
                                  operators=operators,  # Operators limitation (config.py, or chosen above)
                                  vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
-                                 continuous_params_max_resolution=config.model.continuous_params_max_resolution,
+                                 continuous_params_max_resolution=continuous_params_max_resolution,
                                  restrict_to_labels=None,
                                  check_constrains_consistency=(not regenerate_wav) and (not regenerate_spectrograms)
                                  )

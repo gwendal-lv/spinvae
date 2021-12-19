@@ -55,6 +55,10 @@ class TrainableModel(nn.Module):
                                           cooldown=self.train_config.scheduler_cooldown[self.model_type],
                                           threshold=self.train_config.scheduler_threshold,
                                           verbose=(self.train_config.verbosity >= 2))
+            elif self.train_config.scheduler_name.lower() == 'steplr':
+                self._scheduler = torch.optim.lr_scheduler.StepLR(
+                    self.optimizer, step_size=self.train_config.scheduler_period,
+                    gamma=self.train_config.scheduler_lr_factor[self.model_type])
             else:
                 raise NotImplementedError("Scheduler '{}' not available.".format(self.train_config.scheduler_name))
         else:
@@ -100,6 +104,7 @@ class TrainableModel(nn.Module):
         self.load_state_dict(sub_checkpoint['model_state_dict'])
         if not eval_only:
             self.optimizer.load_state_dict(sub_checkpoint['optimizer_state_dict'])
+            # FIXME scheduler might be different after loading the model
             self.scheduler.load_state_dict(sub_checkpoint['scheduler_state_dict'])
 
 

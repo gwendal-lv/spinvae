@@ -116,6 +116,16 @@ class PresetIndexesHelper:
                 else:
                     raise ValueError("Unknown learnable representation '{}'".format(learnable_model))
 
+        try:
+            self.cat_params_class_samples_count = dataset.cat_params_class_samples_count
+        except FileNotFoundError:  # build default count if classes samples counts were not computed yet
+            warnings.warn("Number of class samples for each categorical-learned were not computed. Using default "
+                          "counts of 1. Please re-compute dataset learnable presets.")
+            self.cat_params_class_samples_count = dict()
+            for vst_idx, learn_indices in enumerate(self.full_to_learnable):
+                if self.vst_param_learnable_model[vst_idx] == 'cat':
+                    self.cat_params_class_samples_count[vst_idx] = np.ones((len(learn_indices), ), dtype=int)
+
     def __str__(self):
         learnable_count = sum([(0 if learn_model is None else 1) for learn_model in self._vst_param_learnable_model])
         params_str = "[PresetIndexesHelper] {} learnable VSTi parameters: ".format(learnable_count)

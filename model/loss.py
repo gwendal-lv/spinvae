@@ -86,7 +86,7 @@ class SynthParamsLossBase:
             return [range(i, i+1) for i in range(u_in.shape[0])], u_out, u_in
 
 
-# TODO increased loss factor for the 'Algorithm' VST parameter
+
 class SynthParamsLoss(SynthParamsLossBase):
     """ A 'dynamic' loss which handles different representations of learnable synth parameters
     (numerical and categorical). The appropriate loss can be computed by passing a PresetIndexesHelper instance
@@ -95,7 +95,9 @@ class SynthParamsLoss(SynthParamsLossBase):
     The categorical loss is categorical cross-entropy. """
     def __init__(self, idx_helper: PresetIndexesHelper, normalize_losses: bool, categorical_loss_factor=0.2,
                  prevent_useless_params_loss=True, compute_symmetrical_presets=False,
-                 cat_bce=False, cat_softmax=True, cat_softmax_t=1.0):
+                 cat_bce=False, cat_softmax=True, cat_softmax_t=1.0,
+                 cat_label_smoothing=0.0, target_noise=0.0, cat_use_class_weights=False,
+                 cuda_device='cuda:0'):
         """
 
         :param idx_helper: PresetIndexesHelper instance, created by a PresetDatabase, to convert vst<->learnable params
@@ -113,6 +115,10 @@ class SynthParamsLoss(SynthParamsLossBase):
             perfs but option remains available.
         """
         super().__init__(idx_helper, compute_symmetrical_presets)
+        # Pre-compute indexes lists (to use less CPU). 'num' stands for 'numerical' (not number)
+        self.num_indexes = self.idx_helper.get_numerical_learnable_indexes()
+        self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()
+
         self.normalize_losses = normalize_losses
         if cat_bce and cat_softmax:
             raise ValueError("'cat_bce' (Binary Cross-Entropy) and 'cat_softmax' (implies Categorical Cross-Entropy) "
@@ -120,27 +126,46 @@ class SynthParamsLoss(SynthParamsLossBase):
         self.cat_bce = cat_bce
         self.cat_softmax = cat_softmax
         self.cat_softmax_t = cat_softmax_t
+        self.target_noise = target_noise
         if np.isclose(self.cat_softmax_t, 1.0) and not cat_bce:  # Soft T° close to 1.0: directly use pytorch's CE loss
-            self.cross_entropy_criterion = nn.CrossEntropyLoss(reduction='none')
+            samples_count = self.idx_helper.cat_params_class_samples_count
+            self.cross_entropy_criteria = list()  # 1 criterion per cat-learned synth param
+            for vst_idx, learn_model in enumerate(self.idx_helper.vst_param_learnable_model):
+                if learn_model == 'cat':
+                    # to prevent un-represented labels to get an infinite weight
+                    min_sample_count = (30000 // len(self.idx_helper.full_to_learnable[vst_idx])) // 5
+                    weights = np.maximum(samples_count[vst_idx], min_sample_count)
+                    weights = 1.0 / weights
+                    weights = torch.from_numpy(weights / weights.mean()).to(cuda_device)
+                    self.cross_entropy_criteria.append(nn.CrossEntropyLoss(
+                        reduction='none', label_smoothing=cat_label_smoothing,
+                        weight=(weights if cat_use_class_weights else None)))
             if not cat_softmax:
                 raise AssertionError("Softmax should always be True - the False value is to be deprecated anyway")
         else:
-            self.cross_entropy_criterion = None
+            raise DeprecationWarning("Standard cross entropy is the only available criterion")
+            self.cross_entropy_criteria = None
         self.cat_loss_factor = categorical_loss_factor
         self.prevent_useless_params_loss = prevent_useless_params_loss
         # Numerical loss criterion - summation/average over batch dimension is done at the end
         self.numerical_criterion = nn.MSELoss(reduction='none')
-        # Pre-compute indexes lists (to use less CPU). 'num' stands for 'numerical' (not number)
-        self.num_indexes = self.idx_helper.get_numerical_learnable_indexes()
-        self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()
 
-    def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
+    def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor, training=False):
         """ Categorical parameters must be one-hot encoded. This direct __call__ always recomputes permutations
-         of presets (if required in the ctor); to avoid this, use the loss_with_permutations function. """
+         of presets (if required in the ctor); to avoid this, use the loss_with_permutations function with
+         identity permutation groups. """
         permutations_groups, u_out_w_s, u_in_w_s = self.get_symmetrical_learnable_presets(u_out, u_in)
-        return self.loss_with_permutations(permutations_groups, u_out_w_s, u_in_w_s)
+        return self.loss_with_permutations(permutations_groups, u_out_w_s, u_in_w_s, training)
 
-    def loss_with_permutations(self, permutations_groups: List[range], u_out_w_s: torch.Tensor, u_in_w_s: torch.Tensor):
+    def loss_with_permutations(self, permutations_groups: List[range], u_out_w_s: torch.Tensor, _u_in_w_s: torch.Tensor,
+                               training=False):
+        # add noise to targets, if required
+        if training and self.target_noise > 0.0:
+            u_in_w_s = _u_in_w_s \
+                       + torch.normal(mean=0.0, std=self.target_noise, size=_u_in_w_s.shape).to(_u_in_w_s.device)
+            u_in_w_s = torch.clamp(u_in_w_s, min=0.0, max=1.0)
+        else:
+            u_in_w_s = _u_in_w_s
         # At first: we search for useless parameters (whose loss should not be back-propagated)
         useless_num_learn_param_indexes, useless_cat_learn_param_indexes = list(), list()
         if self.prevent_useless_params_loss:  # useless params searched into all presets with permutations
@@ -179,11 +204,11 @@ class SynthParamsLoss(SynthParamsLossBase):
                 for row in range(u_in_w_s.shape[0]):  # Need to check cat index 0 only
                     if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
                         cat_losses_useless_factors[row, cat_column] = 0.0
-            if self.cross_entropy_criterion is not None:  # Baseline categorical cross-entropy loss
-                # Warning: target second. Class indexes are required with pytorch < 1.10.0
-                cat_losses[:, cat_column] = self.cross_entropy_criterion(
-                    u_out_w_s[:, cat_learn_indexes],
-                    torch.argmax(u_in_w_s[:, cat_learn_indexes], dim=1))
+            if self.cross_entropy_criteria is not None:  # Baseline categorical cross-entropy loss
+                # pytorch >= 1.10: target can be given as class probabilities (lower perf. but allows for noise regul.)
+                target_probabilities = u_in_w_s[:, cat_learn_indexes]
+                cat_losses[:, cat_column] = self.cross_entropy_criteria[cat_column](
+                    u_out_w_s[:, cat_learn_indexes], target_probabilities)
             else:  # Other losses
                 # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
                 # corresponding to target classes with p=1. We only need a limited number of output probabilities

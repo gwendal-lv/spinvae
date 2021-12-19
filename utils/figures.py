@@ -253,6 +253,7 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     :param figsize:
     :param eps: Value added to bounds for numerical stability (when a latent value is constant).
     """
+    # TODO display 1000 first latent coordinates only
     metrics_names = ['mu', 'sigma', 'zK']
     data = dict()
     # - - - stats on all metrics - - -

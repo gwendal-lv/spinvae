@@ -79,6 +79,9 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['regloss_factor'] = self.train_config.params_loss_compensation_factor
         self.hyper_params['regloss_excl_useless'] = self.train_config.params_loss_exclude_useless
         self.hyper_params['regloss_permutations'] = self.train_config.params_loss_with_permutations
+        self.hyper_params['regloss_target_noise'] = self.train_config.params_target_noise
+        self.hyper_params['regloss_label_smooth'] = self.train_config.params_cat_CE_label_smoothing
+        self.hyper_params['regloss_cat_weights'] = self.train_config.params_cat_CE_use_weights
         # Auto-Encoder hparams
         self.hyper_params['VAE_FCdrop'] = self.train_config.fc_dropout
         self.hyper_params['enc_arch'] = self.model_config.encoder_architecture

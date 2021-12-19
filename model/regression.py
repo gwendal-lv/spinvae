@@ -88,7 +88,10 @@ class RegressionModel(model.base.TrainableModel, ABC):
                 cat_softmax=(not model_config.params_reg_softmax and not train_config.params_cat_bceloss),
                 cat_softmax_t=train_config.params_cat_softmax_temperature,
                 prevent_useless_params_loss=train_config.params_loss_exclude_useless,
-                compute_symmetrical_presets=self.loss_wih_permutations
+                compute_symmetrical_presets=self.loss_wih_permutations,
+                cat_label_smoothing=train_config.params_cat_CE_label_smoothing,
+                target_noise=train_config.params_target_noise,
+                cat_use_class_weights=train_config.params_cat_CE_use_weights
             )
             # Monitoring losses always remain the same (always return the loss corresponding to the best permutation)
             self._eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
@@ -146,9 +149,9 @@ class RegressionModel(model.base.TrainableModel, ABC):
         if self.loss_wih_permutations:
             self._assert_pre_computed_symmetries_available()
             return self._backprop_criterion.loss_with_permutations(
-                self.current_permutation_groups, self.current_u_out_w_s, self.current_u_in_w_s)
+                self.current_permutation_groups, self.current_u_out_w_s, self.current_u_in_w_s, self.training)
         else:  # no permutation: we let the loss do its job
-            return self._backprop_criterion(self.current_u_out, self.current_u_in)
+            return self._backprop_criterion(self.current_u_out, self.current_u_in, self.training)
 
     @property
     def eval_criterion_values(self):
