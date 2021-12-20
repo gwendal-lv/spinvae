@@ -22,9 +22,9 @@ def parse_architecture(full_architecture: str):
     else:
         raise AssertionError("Base architecture not available for given arch '{}'".format(base_arch_name))
     # Check arch args, transform
-    arch_args_dict = {'adain': False, 'big': False, 'res': False, 'att': False, 'time+': False}
+    arch_args_dict = {'adain': False, 'big': False, 'bigger': False, 'res': False, 'att': False, 'time+': False}
     for arch_arg in arch_args:
-        if arch_arg in ['adain', 'big', 'res', 'time+']:
+        if arch_arg in ['adain', 'big', 'bigger', 'res', 'time+']:
             arch_args_dict[arch_arg] = True  # Authorized arguments
         elif arch_arg == 'att':
             raise NotImplementedError("Self-attention encoder argument (_att) not implemented.")
@@ -124,14 +124,19 @@ class SpectrogramEncoder(nn.Module):
                     kernel_size, stride, padding = [5, 5], [2, 2], 2
                     in_ch = 1
                     out_ch = 2**(i+3)
-                    if self.arch_args['big']:
+                    if self.arch_args['bigger']:
                         out_ch = max(out_ch, 128)
+                    elif self.arch_args['big']:
+                        out_ch = out_ch if out_ch > 64 else out_ch * 2
                 elif 1 <= i <= 6:
                     kernel_size, stride, padding = [4, 4], [2, 2], 2
                     in_ch = 2**(i+2)
                     out_ch = 2**(i+3)
-                    if self.arch_args['big']:
+                    if self.arch_args['bigger']:
                         in_ch, out_ch = max(in_ch, 128), max(out_ch, 128)
+                    elif self.arch_args['big']:
+                        in_ch = in_ch if in_ch > 64 else in_ch * 2
+                        out_ch = out_ch if out_ch > 64 else out_ch * 2
                 else:  # i == 7
                     kernel_size, stride, padding = [1, 1], [1, 1], 0
                     in_ch = 2**(i+2)

@@ -245,7 +245,8 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
     return fig, axes
 
 
-def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, figsize=None, eps=1e-7):
+def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, figsize=None, eps=1e-7,
+                                    max_displayed_latent_coords=150):
     """ Uses boxplots to represent the distribution of the mu and/or sigma parameters of
     latent gaussian distributions. Also plots a general histogram of all samples.
 
@@ -253,29 +254,33 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     :param figsize:
     :param eps: Value added to bounds for numerical stability (when a latent value is constant).
     """
-    # TODO display 1000 first latent coordinates only
     metrics_names = ['mu', 'sigma', 'zK']
-    data = dict()
+    data_limited = dict()
     # - - - stats on all metrics - - -
-    metrics_flat = dict()
+    data_full_flat = dict()
     outlier_limits = dict()  # measured lower and upper outliers bounds
+    x_label = None  # Might include the number of not-displayed latent items
     for k in metrics_names:
-        data[k] = latent_metric.get_z(k)
+        data_limited[k] = latent_metric.get_z(k)
         if k == 'sigma':  # log10 applied to sigma
-            data[k] = np.log10(data[k])
-        metrics_flat[k] = data[k].flatten()
-        outlier_limits[k] = utils.stat.get_outliers_bounds(metrics_flat[k])
+            data_limited[k] = np.log10(data_limited[k])
+        data_full_flat[k] = data_limited[k].flatten()
+        if data_limited[k].shape[1] > max_displayed_latent_coords:
+            x_label = 'z index (partial subplot: {} to {} are not displayed)'\
+                .format(max_displayed_latent_coords, data_limited[k].shape[1]-1)
+            data_limited[k] = data_limited[k][:, 0:max_displayed_latent_coords]
+        outlier_limits[k] = utils.stat.get_outliers_bounds(data_full_flat[k])
         outlier_limits[k] = (outlier_limits[k][0] - eps, outlier_limits[k][1] + eps)
     # - - - box plots (general and per component) - - -
     general_plots_eq_num_items = 10  # equivalent number of "small component boxplots", to properly divide fig width
     if figsize is None:
-        figsize = (__param_width * (data['mu'].shape[1] + 8 + general_plots_eq_num_items), 8)
+        figsize = (__param_width * (data_limited['mu'].shape[1] + 8 + general_plots_eq_num_items), 6.5)
     fig, axes = plt.subplots(3, 2, figsize=figsize, sharex='col',
-                             gridspec_kw={'width_ratios': [general_plots_eq_num_items, data['mu'].shape[1] + 8]})
+                             gridspec_kw={'width_ratios': [general_plots_eq_num_items, data_limited['mu'].shape[1] + 8]})
     flierprops = dict(marker='.', markerfacecolor='k', markersize=0.5, markeredgecolor='none')
     for i, k in enumerate(metrics_names):
-        axes[i][0].boxplot(x=metrics_flat[k], vert=True, sym='.k', flierprops=flierprops)
-        sns.boxplot(data=data[k], ax=axes[i][1], fliersize=0.3, linewidth=0.5)
+        axes[i][0].boxplot(x=data_full_flat[k], vert=True, sym='.k', flierprops=flierprops)
+        sns.boxplot(data=data_limited[k], ax=axes[i][1], fliersize=0.3, linewidth=0.5)
     # - - - axes labels, limits and ticks - - -
     axes[2][0].set_xticks((1.0, ))
     axes[2][0].set_xticklabels(('all', ))
@@ -283,9 +288,9 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     # zK (supposed to be approx. Standard Gaussian): limit display to +/- 4 std (-4std: cumulative distributions < e-4)
     axes[0][1].set(ylabel='$q_{\phi}(z_0|x) : \mu_0$', ylim=outlier_limits['mu'])
     axes[1][1].set(ylabel='$q_{\phi}(z_0|x) : \log_{10}(\sigma_0)$', ylim=outlier_limits['sigma'])
-    axes[2][1].set(xlabel='z index', ylabel='$z_K$ samples', ylim=[-4.0, 4.0])
+    axes[2][1].set(xlabel=('z index' if x_label is None else x_label), ylabel='$z_K$ samples', ylim=[-4.0, 4.0])
     # TODO Target 25 and 75 percentiles as horizontal lines (+/- 0.6745 for standard normal distributions)
-    axes[2][1].hlines([-0.6745, 0.0, 0.6745], -0.5, data['mu'].shape[1]-0.5, colors='grey', linewidth=0.5)
+    axes[2][1].hlines([-0.6745, 0.0, 0.6745], -0.5, data_limited['mu'].shape[1]-0.5, colors='grey', linewidth=0.5)
     #     And target outliers limits (Q1/Q3 +/- 1.5 IQR) as dotted lines
     # Small ticks for right subplots only (component indexes)
     for ax in [axes[0][1], axes[1][1], axes[2][1]]:

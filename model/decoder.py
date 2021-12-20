@@ -88,10 +88,14 @@ class SpectrogramDecoder(nn.Module):
             for i in range(1, self.num_cnn_layers):  # 'normal' channels: (1024, ) 512, 256, ...., 8
                 in_ch = self.first_gt1_conv_ch if i == 1 else 2 ** (10 - i)
                 out_ch = 2 ** (10 - (i + 1)) if (i < (self.num_cnn_layers - 1)) else 1
-                if self.arch_args['big']:
+                if self.arch_args['bigger']:
                     in_ch = max(in_ch, 128)
                     if out_ch > 1:
                         out_ch = max(out_ch, 128)
+                elif self.arch_args['big']:
+                    in_ch = in_ch if in_ch > 64 else in_ch * 2
+                    if out_ch > 1:
+                        out_ch = out_ch if out_ch > 64 else out_ch * 2
                 padding, stride = (2, 2), 2
                 if i < self.num_cnn_layers - 1:
                     kernel = (4, 4)
