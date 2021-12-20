@@ -1,7 +1,7 @@
 """
 Utility function for building datasets and dataloaders using given configuration arguments.
 """
-
+import copy
 import sys
 import warnings
 from typing import Optional
@@ -48,8 +48,12 @@ def get_dataset(model_config, train_config):
 
 
 def get_pretrain_datasets(model_config, train_config):
-    train_ds = dataset.MergedDataset(model_config, dataset_type='train', dummy_synth_params_tensor=True)
-    valid_ds = dataset.MergedDataset(model_config, dataset_type='validation', dummy_synth_params_tensor=True)
+    train_ds = dataset.MergedDataset(
+        model_config, dataset_type='train', dummy_synth_params_tensor=True,
+        k_folds_count=train_config.k_folds, test_holdout_proportion=train_config.test_holdout_proportion)
+    valid_ds = dataset.MergedDataset(
+        model_config, dataset_type='validation', dummy_synth_params_tensor=True,
+        k_folds_count=train_config.k_folds, test_holdout_proportion=train_config.test_holdout_proportion)
     return train_ds, valid_ds
 
 
@@ -86,8 +90,10 @@ def get_split_dataloaders(train_config, full_dataset,
         # contains only 8 elements, mostly sfx: these hard to learn (or generate) item would have a much higher
         # equivalent learning rate because all losses are minibatch-size normalized. No issue for eval though
         drop_last = (k.lower() == 'train')
+        ds = copy.deepcopy(full_dataset)
+        ds._data_augmentation = (k.lower() == 'train')
         # Dataloaders based on previously built samplers
-        dataloaders[k] = torch.utils.data.DataLoader(full_dataset, batch_size=batch_size, drop_last=drop_last,
+        dataloaders[k] = torch.utils.data.DataLoader(ds, batch_size=batch_size, drop_last=drop_last,
                                                      sampler=sampler, num_workers=num_workers,
                                                      pin_memory=train_config.dataloader_pin_memory,
                                                      persistent_workers=((num_workers > 0) and persistent_workers))
@@ -120,6 +126,11 @@ def get_pretrain_dataloaders(model_config, train_config,
                                 num_workers=get_num_workers(train_config),
                                 pin_memory=train_config.dataloader_pin_memory,
                                 persistent_workers=train_config.dataloader_persistent_workers)
+    if train_config.verbosity >= 1:
+        print("[data/build.py] Dataset 'train' contains {}/{} samples ({:.1f}% of train dataset)"
+              .format(train_nb_items, len(train_ds), 100.0 * train_nb_items / len(train_ds)))
+        print("[data/build.py] Dataset 'validation' contains {}/{} samples ({:.1f}% of validation dataset)"
+              .format(valid_nb_items, len(valid_ds), 100.0 * valid_nb_items / len(valid_ds)))
     return ({'train': train_dl, 'validation': valid_dl},
             {'train': train_nb_items, 'validation': valid_nb_items})
 

@@ -7,6 +7,7 @@ Only a few methods are abstract, most of the implementation is ready-to-use for 
 
 import os
 import pathlib
+import pickle
 import shutil
 import warnings
 from abc import ABC, abstractmethod  # Abstract Base Class
@@ -181,7 +182,9 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     @property
     def excluded_patches_UIDs(self) -> List[int]:
         """ A list of UIDs of presets which are available but are excluded for this dataset
-        (see details in .txt files located in the data/excluded_preset folder). """
+        (see details in .txt files located in the data/excluded_preset folder).
+
+        WARNING: using this will mix the train/validation/test datasets. It's ok to use for pre-train datasets only. """
         # Those files are located inside this Python code folder to be included in the git repo
         try:
             excluded_UIDs = list()
@@ -486,10 +489,35 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         dirs_to_del = [d for d in self.data_storage_path.glob("Specs_*") if d.is_dir()]
         for d in dirs_to_del:
             shutil.rmtree(d)
-            print("Removed {}".format(d))
-        shutil.rmtree(self._spectrogram_stats_folder)
-        print("Removed {}".format(self._spectrogram_stats_folder))
+            if verbose:
+                print("Removed {}".format(d))
+        try:
+            shutil.rmtree(self._spectrogram_stats_folder)
+        except FileNotFoundError:
+            warnings.warn("Spectrograms stats folder {} could not be deleted because it does not exist"
+                          .format(self._spectrogram_stats_folder))
+        if verbose:
+            print("Removed {}".format(self._spectrogram_stats_folder))
 
+    def zero_volume_preset_indices(self, verbose=True):
+        """ Returns the list of indices of presets/instruments which give at least one zero-only spectrogram. They
+         should have been deleted during data curation, but data augmentation might lead to a few inaudible sounds. 
+        
+        This method is intended to be used by a subset sampler building method. Those invalid presets should NEVER
+         be removed before building the train/validation/test subsets, otherwise the subsets would be mixed. """
+        specs_full_stats = pd.read_csv(self._spectrogram_full_stats_file)
+        specs_zero_volume_stats = specs_full_stats[np.isclose(specs_full_stats['max'], self.compute_spectrogram.min_dB)]
+        UIDs_to_exclude = set(specs_zero_volume_stats['UID'].values)
+        indices_to_exclude = list()
+        for UID in UIDs_to_exclude:
+            # TODO different behavior if self.valid_preset_UIDs is not a numpy array (e.g. a list)
+            idx = np.where(self.valid_preset_UIDs == UID)[0]
+            if len(idx) == 0:
+                warnings.warn("Preset UID={} is zero-volume but is not part of this dataset (UID cannot be found)"
+                              .format(UID))
+            else:
+                indices_to_exclude.append(idx.item())
+        return indices_to_exclude
 
 
 class PresetDataset(AudioDataset):
@@ -518,10 +546,12 @@ class PresetDataset(AudioDataset):
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
 
     def __str__(self):
-        return "{}\n{} learnable synth params, {} fixed params. Learnable representation: '{}'" \
+        return "{}\n{} learnable synth params, {} fixed params. Learnable representation: '{}'\n" \
+               "{}x audio delay data augmentation, {}x preset data augmentation." \
             .format(super().__str__(),
                     len(self.learnable_params_idx), self.total_nb_params - len(self.learnable_params_idx),
-                    self.learnable_representation_name)
+                    self.learnable_representation_name,
+                    self._nb_audio_delay_variations_per_note, self._nb_preset_variations_per_note)
 
     def __getitem__(self, i):
         spectrograms, notes_and_UID, labels = super().__getitem__(i)

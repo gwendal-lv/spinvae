@@ -8,6 +8,7 @@ import os
 import pathlib
 import json
 import shutil
+import sys
 from typing import Optional, Iterable, List
 import multiprocessing
 from datetime import datetime
@@ -17,7 +18,7 @@ import torch.utils
 import soundfile
 import numpy as np
 
-from synth import dexed
+from synth import dexed, dexedpermutations
 from data import abstractbasedataset  # 'from .' raises ImportError when run from PyCharm as __main__
 from data.preset import DexedPresetsParams, PresetIndexesHelper
 
@@ -264,7 +265,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def get_full_preset_params(self, preset_UID, preset_variation=0):
         raw_full_preset = dexed.PresetDatabase.get_preset_params_values_from_file(preset_UID)
         if preset_variation > 0:
-            raise NotImplementedError()  # TODO data augmentation if required
+            raw_full_preset = dexedpermutations.change_algorithm_to_similar(
+                raw_full_preset, preset_variation, random_seed=preset_UID)
         return DexedPresetsParams(full_presets=torch.unsqueeze(torch.tensor(raw_full_preset, dtype=torch.float32), 0),
                                   dataset=self)
 
@@ -315,7 +317,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
 
     @property
     def _nb_preset_variations_per_note(self):
-        return 1
+        return 2
 
     @property
     def _nb_audio_delay_variations_per_note(self):
@@ -369,10 +371,13 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         self.write_audio_render_constraints_file()
         self._delete_all_spectrogram_data()
         # multi-processed audio rendering
-        num_workers = os.cpu_count()
-        split_preset_UIDs = np.array_split(self.valid_preset_UIDs, num_workers)
-        with multiprocessing.Pool(num_workers) as p:  # automatically closes and joins all workers
-            p.map(self._generate_wav_files_batch, split_preset_UIDs)
+        if sys.gettrace() is None:  # if No PyCharm debugger
+            num_workers = os.cpu_count()
+            split_preset_UIDs = np.array_split(self.valid_preset_UIDs, num_workers)
+            with multiprocessing.Pool(num_workers) as p:  # automatically closes and joins all workers
+                p.map(self._generate_wav_files_batch, split_preset_UIDs)
+        else:  # Debugging
+            self._generate_wav_files_batch(self.valid_preset_UIDs)
         # final display
         delta_t = (datetime.now() - t_start).total_seconds()
         num_wav_written = len(self.valid_preset_UIDs) * len(self.midi_notes)
@@ -394,12 +399,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         if audio_delay > 0:
             # We do not need to render all variations (do not render delayed audio to save some SSD storage)
             raise ValueError("Audio files should all be rendered with a 0 note-on delay.")
-        if preset_variation > 0:
-            raise NotImplementedError()
         # Constrained params (1-element batch)
-        preset_params = self.get_full_preset_params(preset_UID)
-        # TODO handle preset variation - should be the same for all notes of a given preset
-
+        preset_params = self.get_full_preset_params(preset_UID, preset_variation)
         x_wav, Fs = self._render_audio(torch.squeeze(preset_params.get_full(apply_constraints=True), 0),
                                        midi_pitch, midi_velocity)  # Re-Loads the VST
         soundfile.write(self._get_wav_file_path(preset_UID, midi_pitch, midi_velocity, variation),

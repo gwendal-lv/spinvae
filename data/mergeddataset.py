@@ -22,7 +22,8 @@ from data import sampler
 
 
 class MergedDataset(AudioDataset):
-    def __init__(self, model_config, dataset_type: str, dummy_synth_params_tensor=False):
+    def __init__(self, model_config, dataset_type: str, dummy_synth_params_tensor=False,
+                 k_folds_count=5, test_holdout_proportion=0.2):
         """
 
         Subsets of data:
@@ -72,10 +73,12 @@ class MergedDataset(AudioDataset):
                 self._local_indexes[synth_name] = np.arange(len(self._datasets[synth_name]))
         else:
             # retrieve Surge and Dexed indexes - no 'test' set for Surge (will be used for pretrain only)
-            dexed_split_indexes = sampler.get_subsets_indexes(self._datasets['Dexed'], k_fold=-1,
-                                                              random_seed=self._random_seed)
-            surge_split_indexes = sampler.get_subsets_indexes(self._datasets['Surge'], k_fold=0, k_folds_count=5,
-                                                              test_holdout_proportion=0.0, random_seed=self._random_seed)
+            dexed_split_indexes = sampler.get_subsets_indexes(
+                self._datasets['Dexed'], k_fold=-1, k_folds_count=k_folds_count,
+                test_holdout_proportion=test_holdout_proportion, random_seed=self._random_seed)
+            surge_split_indexes = sampler.get_subsets_indexes(
+                self._datasets['Surge'], k_fold=-1, k_folds_count=k_folds_count,
+                test_holdout_proportion=0.0, random_seed=self._random_seed)
             self._local_indexes['Surge'] = np.sort(surge_split_indexes[self.dataset_type])
             self._local_indexes['Dexed'] = np.sort(dexed_split_indexes[self.dataset_type])
 

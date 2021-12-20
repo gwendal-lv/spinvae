@@ -78,6 +78,14 @@ def build_subset_samplers(dataset: AudioDataset,
     Args description: see get_subsets_indexes(...)
     """
     final_indexes = get_subsets_indexes(dataset, k_fold, k_folds_count, test_holdout_proportion, random_seed)
+    # remove some indices from final indices (AFTER train/valid/test sets have been split)
+    indices_to_exclude = dataset.zero_volume_preset_indices()
+    for preset_idx_to_exclude in indices_to_exclude:
+        for k in final_indexes.keys():
+            sampler_idx = np.where(final_indexes[k] == preset_idx_to_exclude)[0]
+            if len(sampler_idx) > 0:
+                final_indexes[k] = np.delete(final_indexes[k], sampler_idx.item())
+                break  # go to next preset idx to exclude
     subset_samplers = dict()
     for k in final_indexes:
         torch_rng = torch.Generator().manual_seed(_SEED_OFFSET + random_seed)

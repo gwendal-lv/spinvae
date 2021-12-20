@@ -1,12 +1,58 @@
 """
 Extension of the dexed.py file - because it's very large already
 """
-
+import copy
+import warnings
 from itertools import permutations
 
 import numpy as np
 
-# TODO automatic test of all of those permutations (check that no algo is found 2 times, etc...)
+
+# Similar algorithms (will be used for data augmentation)
+# The idea is: a similar (artificial) preset should also give a non-zero output
+__similar_algorithms = {
+    1: [2],
+    3: [4, 19],  # 19 is kind of 'alone' but the 3->2->1 chain is only found in those 3 algorithms
+    5: [6],
+    7: [8, 9, 12, 13],
+    10: [11],
+    14: [15],
+    16: [17, 18],
+    20: [26, 27],
+    21: [23],
+    22: [24],
+    25: [29, 31, 32],
+    28: [30]
+}
+similar_algorithms = dict()
+for ref_algo, similar_algos in __similar_algorithms.items():
+    similar_algorithms[ref_algo] = similar_algos
+    for new_ref_algo in similar_algos:
+        new_sim_algos = copy.deepcopy(similar_algos)
+        new_sim_algos.remove(new_ref_algo)
+        new_sim_algos.append(ref_algo)
+        similar_algorithms[new_ref_algo] = new_sim_algos
+del ref_algo, new_ref_algo, new_sim_algos, similar_algos, __similar_algorithms
+
+
+def change_algorithm_to_similar(raw_preset: np.ndarray, preset_variation: int, random_seed=0):
+    _old_algo = 1.0 + raw_preset[4] * 31.0
+    old_algo = int(np.round(_old_algo))
+    if not np.isclose(_old_algo, old_algo):
+        raise AssertionError("Quantization issue")  # This small test doesn't hurt
+    similar_algos = np.asarray(similar_algorithms[old_algo])
+    # TODO handle variation > num similar algos
+    if preset_variation > len(similar_algos):
+        raise NotImplementedError()
+    elif preset_variation == 0:
+        warnings.warn("This function should not be called when preset_variation is 0 (no variation)")
+        return raw_preset
+    if len(similar_algos) > 1:
+        rng = np.random.default_rng(random_seed)
+        rng.shuffle(similar_algos)  # in-place shuffling
+    new_algo = similar_algos[0 + (preset_variation - 1)]
+    raw_preset[4] = (new_algo - 1) / 31.0
+    return raw_preset
 
 
 # Symmetric permutations of oscillators, for each algorithm, considering there is feedback
@@ -154,7 +200,7 @@ _osc_permutations_per_algo_without_feedback[4] = _osc_permutations_per_algo_with
 _osc_permutations_per_algo_without_feedback[6] = _osc_permutations_per_algo_without_feedback[5]
 
 
-# TODO build dict of symmetric osc+algos when there is no feedback. Each element is a list of algos (including itself)
+# build dict of symmetric osc+algos when there is no feedback. Each element is a list of algos (including itself)
 # an algo can become identical to other algos, such that all of their combined permutations are symmetries
 _identical_algos_without_feedback \
     = {1: [1, 2], 2: [1, 2],  # Algos 1 and 2
@@ -186,7 +232,6 @@ def get_algorithms_and_oscillators_permutations(algo: int, feedback: bool):
 
     https://scsynth.org/uploads/default/optimized/1X/983d97a124e5b4c61890bb4c7b1454ef2ef0f012_2_1023x544.jpeg
     """
-    # TODO try to optimize this (after it works properly...)
     # To prevent errors, algos and operators indexes will be translated to [1, 32] instead of [0, 31]
     algo += 1
 

@@ -63,6 +63,7 @@ def train_config():
         train_audio_dataset, validation_audio_dataset = None, None
         preset_indexes_helper = dataset.preset_indexes_helper
         # dataloader is a dict of 3 subsets dataloaders ('train', 'validation' and 'test')
+        # This function will make copies of the original dataset (some with, some without data augmentation)
         dataloader, dataloaders_nb_items = data.build.get_split_dataloaders(config.train, dataset)
 
 
