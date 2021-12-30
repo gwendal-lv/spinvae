@@ -268,8 +268,8 @@ class RunLogger:
 
     def plot_decoder_interpolation(self, epoch, generative_model, z_minibatch, sample_info, dataset: AudioDataset,
                                    output_channel_to_plot=0):
-        from evaluation.interp import LatentInterpolationEval  # local import to prevent circular import
-        interpolator = LatentInterpolationEval(generative_model, device=z_minibatch.device)
+        from evaluation.interp import LatentInterpolation  # local import to prevent circular import
+        interpolator = LatentInterpolation(generator=generative_model, device=z_minibatch.device)
         # z start/end tensors must be be provided as 1 x D vectors
         u, z, x = interpolator.interpolate_spectrograms_from_latent(z_minibatch[0:1, :], z_minibatch[1:2, :])
         if x.shape[1] > 1:
