@@ -97,7 +97,8 @@ class SynthParamsLoss(SynthParamsLossBase):
                  prevent_useless_params_loss=True, compute_symmetrical_presets=False,
                  cat_bce=False, cat_softmax=True, cat_softmax_t=1.0,
                  cat_label_smoothing=0.0, target_noise=0.0, cat_use_class_weights=False,
-                 cuda_device='cuda:0'):
+                 dequantized_dense_loss='None',
+                 device='cuda:0'):
         """
 
         :param idx_helper: PresetIndexesHelper instance, created by a PresetDatabase, to convert vst<->learnable params
@@ -113,8 +114,11 @@ class SynthParamsLoss(SynthParamsLossBase):
         :param cat_softmax_t: Temperature of the softmax activation applied to cat parameters
         :param cat_bce: Binary Cross-Entropy applied to independent outputs (see InverSynth 2019). Very bad
             perfs but option remains available.
+        :param dequantized_dense_loss: TODO doc
         """
         super().__init__(idx_helper, compute_symmetrical_presets)
+        self.rng = torch.Generator(device=device)
+        self.rng.manual_seed(0)
         # Pre-compute indexes lists (to use less CPU). 'num' stands for 'numerical' (not number)
         self.num_indexes = self.idx_helper.get_numerical_learnable_indexes()
         self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()
@@ -123,23 +127,40 @@ class SynthParamsLoss(SynthParamsLossBase):
         if cat_bce and cat_softmax:
             raise ValueError("'cat_bce' (Binary Cross-Entropy) and 'cat_softmax' (implies Categorical Cross-Entropy) "
                              "cannot be both set to True")
+        self.dequantized_dense_loss = dequantized_dense_loss
+        self.dequantized_criterion = None
         self.cat_bce = cat_bce
         self.cat_softmax = cat_softmax
         self.cat_softmax_t = cat_softmax_t
         self.target_noise = target_noise
-        if np.isclose(self.cat_softmax_t, 1.0) and not cat_bce:  # Soft T° close to 1.0: directly use pytorch's CE loss
+        if self.dequantized_dense_loss is not None and self.dequantized_dense_loss != 'None':  # Preempts all others
+            self.target_noise = 0  # Dequantization noise cannot be set
+            self.cross_entropy_criteria = None
+            if self.dequantized_dense_loss.lower() == 'l1':
+                self.dequantized_criterion = torch.nn.L1Loss(reduction='none')
+            elif self.dequantized_dense_loss.lower() == 'l2' or self.dequantized_dense_loss.lower() == 'mse':
+                self.dequantized_criterion = torch.nn.MSELoss(reduction='none')
+            else:
+                raise ValueError("Dequantized dense loss '{}' is not available".format(self.dequantized_dense_loss))
+            # mask remains zero for non-logit outputs
+            self.averaging_mask = torch.zeros((1, self.idx_helper.learnable_preset_size), device='cpu')
+            for cat_column, cat_learn_indexes in enumerate(self.cat_indexes):
+                self.averaging_mask[:, cat_learn_indexes] = 1.0 / len(cat_learn_indexes)
+        elif np.isclose(self.cat_softmax_t, 1.0) and not cat_bce:  # Soft T° close to 1.0: directly use pytorch's CE loss
             samples_count = self.idx_helper.cat_params_class_samples_count
             self.cross_entropy_criteria = list()  # 1 criterion per cat-learned synth param
             for vst_idx, learn_model in enumerate(self.idx_helper.vst_param_learnable_model):
                 if learn_model == 'cat':
                     # to prevent un-represented labels to get an infinite weight
                     min_sample_count = (30000 // len(self.idx_helper.full_to_learnable[vst_idx])) // 5
-                    weights = np.maximum(samples_count[vst_idx], min_sample_count)
-                    weights = 1.0 / weights
-                    weights = torch.from_numpy(weights / weights.mean()).to(cuda_device)
+                    if cat_use_class_weights:
+                        weights = np.maximum(samples_count[vst_idx], min_sample_count)
+                        weights = 1.0 / weights
+                        weights = torch.from_numpy(weights / weights.mean()).to(device)
+                    else:
+                        weights = None
                     self.cross_entropy_criteria.append(nn.CrossEntropyLoss(
-                        reduction='none', label_smoothing=cat_label_smoothing,
-                        weight=(weights if cat_use_class_weights else None)))
+                        reduction='none', label_smoothing=cat_label_smoothing, weight=weights))
             if not cat_softmax:
                 raise AssertionError("Softmax should always be True - the False value is to be deprecated anyway")
         else:
@@ -193,56 +214,84 @@ class SynthParamsLoss(SynthParamsLossBase):
                 num_losses = torch.sum(num_losses, dim=1)
         else:
             num_losses = torch.zeros((u_in_w_s.shape[0],), device=u_in_w_s.device)
+
         # - - - categorical loss - - -
-        # We'll store all losses in a matrix, then sum all elements of each line to obtain a per-preset cat loss
-        cat_losses = torch.zeros((u_in_w_s.shape[0], len(self.cat_indexes)), device=u_in_w_s.device)
-        cat_losses_useless_factors = torch.ones((u_in_w_s.shape[0], len(self.cat_indexes)), device='cpu')
-        # For each categorical output (separate loss computations...)
-        for cat_column, cat_learn_indexes in enumerate(self.cat_indexes):
-            # used at the end - don't backprop cat loss for disabled parameters
-            if self.prevent_useless_params_loss:
-                for row in range(u_in_w_s.shape[0]):  # Need to check cat index 0 only
-                    if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
-                        cat_losses_useless_factors[row, cat_column] = 0.0
-            if self.cross_entropy_criteria is not None:  # Baseline categorical cross-entropy loss
-                # pytorch >= 1.10: target can be given as class probabilities (lower perf. but allows for noise regul.)
-                target_probabilities = u_in_w_s[:, cat_learn_indexes]
-                cat_losses[:, cat_column] = self.cross_entropy_criteria[cat_column](
-                    u_out_w_s[:, cat_learn_indexes], target_probabilities)
-            else:  # Other losses
-                # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
-                # corresponding to target classes with p=1. We only need a limited number of output probabilities
-                # (they actually all depend on each other thanks to the softmax (output) layer).
-                if not self.cat_bce:  # Categorical CE
-                    target_one_hot = u_in_w_s[:, cat_learn_indexes].bool()  # Will be used for tensor-element selection
-                else:  # Binary CE: float values required
-                    target_one_hot = u_in_w_s[:, cat_learn_indexes]
-                q_odds = u_out_w_s[:, cat_learn_indexes]  # contains all q odds required for BCE or CCE
-                if not self.cat_bce:  # - - - - - NOT Binary CE => Categorical CE with custom T° - - - - -
-                    # softmax T° if required: q_odds might not sum to 1.0 already if no softmax was applied before
-                    if self.cat_softmax:  # FIXME use combined softmax and CE for stability, if T° close to 1.0
-                        q_odds = torch.softmax(q_odds / self.cat_softmax_t, dim=1)
-                    # Then the cross-entropy can be computed (simplified formula thanks to p=1.0 one-hot odds)
-                    q_odds = q_odds[target_one_hot]  # CE uses only 1 odd per output vector (thanks to softmax)
-                    param_cat_loss = - torch.log(q_odds)
-                else:  # - - - - - Binary Cross-Entropy - - - - -
-                    raise AssertionError("BCE is currently disabled")
-                    # empirical normalization factor - works quite well to get similar CCE and BCE values
-                    param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
-                # CCE and BCE: add the temp loss for the current synth parameter
-                cat_losses[:, cat_column] = param_cat_loss
+
+        if self.dequantized_criterion is None:  # - - - (binary) Cross-entropy, ... - - -
+            # We'll store all losses in a matrix, then sum all elements of each line to obtain a per-preset cat loss
+            cat_losses = torch.zeros((u_in_w_s.shape[0], len(self.cat_indexes)), device=u_in_w_s.device)
+            cat_losses_useless_factors = torch.ones((u_in_w_s.shape[0], len(self.cat_indexes)), device='cpu')
+            for cat_column, cat_learn_indexes in enumerate(self.cat_indexes):
+                # Pre-compute 0-factor for useless params
+                if self.prevent_useless_params_loss:  # used at the end - don't backprop cat loss for disabled params
+                    for row in range(u_in_w_s.shape[0]):  # Need to check cat index 0 only
+                        if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
+                            cat_losses_useless_factors[row, cat_column] = 0.0
+            # For each categorical output (separate loss computations...)
+            for cat_column, cat_learn_indexes in enumerate(self.cat_indexes):
+                if self.cross_entropy_criteria is not None:  # Baseline categorical cross-entropy loss
+                    # pytorch >= 1.10: target can be given as class probs (lower perf. but allows for noise regul.)
+                    target_probabilities = u_in_w_s[:, cat_learn_indexes]
+                    cat_losses[:, cat_column] = self.cross_entropy_criteria[cat_column](
+                        u_out_w_s[:, cat_learn_indexes], target_probabilities)
+                else:  # Other losses
+                    # Direct cross-entropy computation. The one-hot target is used to select only q output probabilities
+                    # corresponding to target classes with p=1. We only need a limited number of output probabilities
+                    # (they actually all depend on each other thanks to the softmax (output) layer).
+                    if not self.cat_bce:  # Categorical CE
+                        target_one_hot = u_in_w_s[:, cat_learn_indexes].bool()  # Used for tensor-element selection
+                    else:  # Binary CE: float values required
+                        target_one_hot = u_in_w_s[:, cat_learn_indexes]
+                    q_odds = u_out_w_s[:, cat_learn_indexes]  # contains all q odds required for BCE or CCE
+                    if not self.cat_bce:  # - - - - - NOT Binary CE => Categorical CE with custom T° - - - - -
+                        # softmax T° if required: q_odds might not sum to 1.0 already if no softmax was applied before
+                        if self.cat_softmax:  # FIXME use combined softmax and CE for stability, if T° close to 1.0
+                            q_odds = torch.softmax(q_odds / self.cat_softmax_t, dim=1)
+                        # Then the cross-entropy can be computed (simplified formula thanks to p=1.0 one-hot odds)
+                        q_odds = q_odds[target_one_hot]  # CE uses only 1 odd per output vector (thanks to softmax)
+                        param_cat_loss = - torch.log(q_odds)
+                    else:  # - - - - - Binary Cross-Entropy - - - - -
+                        raise AssertionError("BCE is currently disabled")
+                        # empirical normalization factor - works quite well to get similar CCE and BCE values
+                        param_cat_loss = F.binary_cross_entropy(q_odds, target_one_hot, reduction='mean') / 8.0
+                    # CCE and BCE: add the temp loss for the current synth parameter
+                    cat_losses[:, cat_column] = param_cat_loss
+        else:  # - - - "dequantized" categorical loss - - -
+            cat_losses_useless_factors = torch.ones_like(u_in_w_s, device='cpu')
+            for cat_column, cat_learn_indexes in enumerate(self.cat_indexes):
+                # Pre-compute 0-factor for useless params
+                if self.prevent_useless_params_loss:  # used at the end - don't backprop cat loss for disabled params
+                    for row in range(u_in_w_s.shape[0]):        # Need to check cat index 0 only
+                        if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
+                            cat_losses_useless_factors[row, cat_learn_indexes] = 0.0
+            # Dequantize all inputs (including numerical inputs, which won't be used)
+            # TODO increase the noise range to -2.0,0.0 ; 0.0,+2.0
+            #    such that the L2 loss gives a very large value if the model outputs the wrong logit
+            if not training:
+                u_dequant = u_in_w_s - 0.5
+            else:
+                u_dequant = u_in_w_s - torch.rand(u_in_w_s.shape, generator=self.rng, device=u_in_w_s.device)
+            all_logits_loss = self.dequantized_criterion(u_out_w_s, u_dequant)
+            # per-synthparam reduction (consider number of output categories)
+            self.averaging_mask = self.averaging_mask.to(all_logits_loss.device)
+            cat_losses = all_logits_loss * self.averaging_mask.expand(all_logits_loss.shape[0], -1)
+
         cat_losses *= cat_losses_useless_factors.to(u_in_w_s.device)
-        cat_losses = torch.sum(cat_losses, 1)  # Sum all cat losses for a given preset
+        cat_losses = torch.sum(cat_losses, 1)  # Sum all cat losses for each preset
+
         if self.normalize_losses:  # Normalization vs. number of categorical-learned params
             cat_losses = cat_losses / len(self.cat_indexes)
 
         # losses weighting - Cross-Entropy is usually be much bigger than MSE. num_loss
-        total_losses = num_losses + cat_losses * self.cat_loss_factor
-        # keep only the best loss from each group of symmetrical presets
-        best_losses_summed = 0.0
-        for preset_idx, perm_r in enumerate(permutations_groups):  # Permutation range
-            best_idx = torch.argmin(total_losses[perm_r.start:perm_r.stop])
-            best_losses_summed += total_losses[best_idx + perm_r.start]  # Convert perm group idx to minibatch idx
+        total_losses = num_losses + cat_losses * self.cat_loss_factor  # type: torch.Tensor
+        if self.compute_symmetrical_presets:
+            # keep only the best loss from each group of symmetrical presets
+            best_losses_summed = 0.0
+            for preset_idx, perm_r in enumerate(permutations_groups):  # Permutation range
+                best_idx = torch.argmin(total_losses[perm_r.start:perm_r.stop])
+                best_losses_summed += total_losses[best_idx + perm_r.start]  # Convert perm group idx to minibatch idx
+        else:
+            best_losses_summed = torch.sum(total_losses)
 
         # average over batch dimension (always)
         return best_losses_summed / len(permutations_groups)

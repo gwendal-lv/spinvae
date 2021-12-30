@@ -1,3 +1,4 @@
+import warnings
 
 import numpy as np
 
@@ -5,7 +6,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.tensorboard.summary import hparams
 
-from .metrics import BufferedMetric, LatentMetric
+from .metrics import BufferedMetric, LatentMetric, VectorMetric
 
 import utils.stat
 
@@ -123,6 +124,18 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
             else:
                 metrics_dict[k] = metric
         self.add_hparams(self.hyper_params, metrics_dict, hparam_domain_discrete=self.hparams_domain_discrete)
+
+    def add_vector_histograms(self, metric: VectorMetric, metric_name: str, global_step: int, bins='fd'):
+        """ Plots flattened data as Tensorboard native histograms, with and without outliers.
+        Name must contain a '/Train' or '/Valid' suffix """
+        data = metric.get().flatten()
+        self.add_histogram(metric_name, data, global_step=global_step, bins=bins)
+        if '/' in metric_name:
+            no_outlier_name = metric_name.replace('/', '_no_outlier/')
+            self.add_histogram(no_outlier_name, utils.stat.remove_outliers(data), global_step=global_step, bins=bins)
+        else:
+            warnings.warn("Metric name '{}' does not contain a dataset type (e.g. /Train or /Validation)"
+                          .format(metric_name))
 
     def add_latent_histograms(self, latent_metric: LatentMetric, dataset_type: str, global_step: int, bins='fd'):
         """

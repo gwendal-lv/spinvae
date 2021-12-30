@@ -9,10 +9,13 @@ import utils.figures
 
 
 def get_stats_figures(epoch, super_metrics, networks_layers_params):
-    figs_dict = {'LatentStats': utils.figures.plot_latent_distributions_stats(
-        latent_metric=super_metrics['LatentMetric/Valid'])[0],
-                 # 'LatentRhoCorr': utils.figures.plot_spearman_correlation(  # disabled, useless for big latent vectors
-                 #    latent_metric=super_metrics['LatentMetric/Valid'])[0]
+    # TODO output values plot
+    figs_dict = {
+        'LatentStats': utils.figures.plot_latent_distributions_stats(
+            latent_metric=super_metrics['LatentMetric/Valid'])[0],
+        # 'LatentRhoCorr': utils.figures.plot_spearman_correlation(  # disabled, useless for big latent vectors
+        #    latent_metric=super_metrics['LatentMetric/Valid'])[0]
+        'RegOut': utils.figures.plot_vector_distributions_stats(super_metrics, 'RegOutValues')[0]
         }
     for network_name, layers_params in networks_layers_params.items():  # key: e.g. 'Decoder'
         figs_dict['{}ParamsStats'.format(network_name)] = \

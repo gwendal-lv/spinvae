@@ -29,7 +29,7 @@ import model.extendedAE
 import model.flows
 import logs.logger
 import logs.metrics
-from logs.metrics import SimpleMetric, EpochMetric, LatentMetric, LatentCorrMetric
+from logs.metrics import SimpleMetric, EpochMetric, VectorMetric, LatentMetric, LatentCorrMetric
 import data.dataset
 import data.build
 import utils.profile
@@ -133,7 +133,9 @@ def train_config():
     # Some of these metrics might be unused during pre-training
     # Special 'super-metrics', used by 1D scalars or metrics to retrieve stored data. Not directly logged
     super_metrics = {'LatentMetric/Train': LatentMetric(config.model.dim_z, dataloaders_nb_items['train']),
-                     'LatentMetric/Valid': LatentMetric(config.model.dim_z, dataloaders_nb_items['validation'])}
+                     'LatentMetric/Valid': LatentMetric(config.model.dim_z, dataloaders_nb_items['validation']),
+                     'RegOutValues/Train': VectorMetric(dataloaders_nb_items['train']),
+                     'RegOutValues/Valid': VectorMetric(dataloaders_nb_items['validation'])}
     # 1D scalars with a .get() method. All of these will be automatically added to Tensorboard
     scalars = {  # Reconstruction loss (variable scale) + monitoring metrics comparable across all models
                'ReconsLoss/Backprop/Train': EpochMetric(), 'ReconsLoss/Backprop/Valid': EpochMetric(),
@@ -206,8 +208,9 @@ def train_config():
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
                 reg_model.precompute_u_out_with_symmetries(v_out)
-                # Losses
                 super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
+                super_metrics['RegOutValues/Train'].append(v_out)
+                # Losses
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
                 # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
@@ -249,6 +252,7 @@ def train_config():
             reg_model_parallel.eval()
             v_out_backup = torch.Tensor().to(device=recons_loss.device)  # Params inference error (Tensorboard plot)
             v_in_backup = torch.Tensor().to(device=recons_loss.device)
+            i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
             for i, sample in enumerate(dataloader['validation']):
                 x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 reg_model.precompute_u_in_permutations(v_in)
@@ -257,6 +261,7 @@ def train_config():
                 v_out = reg_model_parallel(z_K_sampled)
                 reg_model.precompute_u_out_with_symmetries(v_out)
                 super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
+                super_metrics['RegOutValues/Valid'].append(v_out)
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
@@ -279,11 +284,11 @@ def train_config():
                 if should_plot:
                     v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
                     v_in_backup = torch.cat([v_in_backup, v_in])
-                    if i == 0:  # tensorboard samples for minibatch 'eval' [0] only
+                    if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
                         logger.plot_train_spectrograms(epoch, x_in, x_out, sample_info,
                                                        dataset if dataset is not None else validation_audio_dataset,
                                                        config.model, config.train)
-                        # CUDA illegal memory access (stacktrace might be incorrect...) - fixed by torch 1.10, CUDA 11.3
+                        # "CUDA illegal memory access (stacktrace might be incorrect)" - fixed by torch 1.10, CUDA 11.3
                         logger.plot_decoder_interpolation(epoch, ae_model, z_K_sampled, sample_info,
                                                           dataset if dataset is not None else validation_audio_dataset)
         metrics['Latent/MaxAbsVal/Valid_'].append(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())

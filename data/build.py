@@ -92,7 +92,7 @@ def get_split_dataloaders(train_config, full_dataset,
         drop_last = (k.lower() == 'train')
         ds = copy.deepcopy(full_dataset)
         ds._data_augmentation = (k.lower() == 'train')
-        # Dataloaders based on previously built samplers
+        # Dataloaders based on previously built samplers (don't need to set shuffle to True)
         dataloaders[k] = torch.utils.data.DataLoader(ds, batch_size=batch_size, drop_last=drop_last,
                                                      sampler=sampler, num_workers=num_workers,
                                                      pin_memory=train_config.dataloader_pin_memory,

@@ -321,6 +321,10 @@ class RunLogger:
             self.tensorboard.add_figure(fig_name, fig, epoch, close=True)
 
         # Those plots do not need to be here, but multi threading might help improve perfs a bit...
+        # TODO maybe don't plot epoch 0
+        if epoch >= 0:
+            for metric_name in ['RegOutValues/Train', 'RegOutValues/Valid']:
+                self.tensorboard.add_vector_histograms(super_metrics[metric_name], metric_name, epoch)
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
         for network_name, network_layers in networks_layers_params.items():  # key: e.g. 'Decoder'

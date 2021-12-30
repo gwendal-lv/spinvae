@@ -17,6 +17,24 @@ from data.abstractbasedataset import AudioDataset
 _SEED_OFFSET = 6357396522630986725  # because PyTorch recommends to use a seed "with a lot of 0 and 1 bits"
 
 
+#
+class SubsetDeterministicSampler(torch.utils.data.Sampler):
+    r""" Samples elements from a given list of indices, without replacement. Deterministic subset sampler for
+    validation and test datasets (to replace PyTorch's SubsetRandomSampler)
+    Arguments:
+        indices (sequence): a sequence of indices
+    """
+
+    def __init__(self, indices):
+        self.indices = indices
+
+    def __iter__(self):
+        return iter(list(self.indices))
+
+    def __len__(self):
+        return len(self.indices)
+
+
 def get_subsets_indexes(dataset: AudioDataset,
                         k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
                         random_seed=0
@@ -80,16 +98,26 @@ def build_subset_samplers(dataset: AudioDataset,
     final_indexes = get_subsets_indexes(dataset, k_fold, k_folds_count, test_holdout_proportion, random_seed)
     # remove some indices from final indices (AFTER train/valid/test sets have been split)
     indices_to_exclude = dataset.zero_volume_preset_indices()
+    excluded_UIDs_per_dataset = dict()
+    for k in final_indexes.keys():
+        excluded_UIDs_per_dataset[k] = list()
     for preset_idx_to_exclude in indices_to_exclude:
         for k in final_indexes.keys():
+            # TODO double check this
             sampler_idx = np.where(final_indexes[k] == preset_idx_to_exclude)[0]
             if len(sampler_idx) > 0:
-                final_indexes[k] = np.delete(final_indexes[k], sampler_idx.item())
+                sampler_idx = sampler_idx.item()
+                excluded_UIDs_per_dataset[k].append(dataset.valid_preset_UIDs[final_indexes[k][sampler_idx]])
+                final_indexes[k] = np.delete(final_indexes[k], sampler_idx)
                 break  # go to next preset idx to exclude
+    print('[sampler.py] Zero-volume preset UIDs excluded from subset samplers: {}'.format(excluded_UIDs_per_dataset))
     subset_samplers = dict()
     for k in final_indexes:
-        torch_rng = torch.Generator().manual_seed(_SEED_OFFSET + random_seed)
-        subset_samplers[k] = torch.utils.data.SubsetRandomSampler(final_indexes[k], generator=torch_rng)
+        if k.lower() == 'train':
+            torch_rng = torch.Generator().manual_seed(_SEED_OFFSET + random_seed)
+            subset_samplers[k] = torch.utils.data.SubsetRandomSampler(final_indexes[k], generator=torch_rng)
+        else:
+            subset_samplers[k] = SubsetDeterministicSampler(final_indexes[k])
     return subset_samplers
 
 

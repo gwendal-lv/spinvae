@@ -2,7 +2,7 @@
 """
 Script for cleaning the logs of a learning run, as described in the __main__ section
 
-Useful to fully-clean Tensorboard logs:
+Useful to fully clean Tensorboard logs:
 - run this script
 - refresh tensorboard
 - tensorboard is ready for a new run with identical name
@@ -19,14 +19,14 @@ from utils.config import _Config
 
 if __name__ == "__main__":
 
-    if False:  # True to erase config from config.py, False to erase custom config given below
+    if True:  # True to erase config from config.py, False to erase custom config given below
         model_config = config.model
     else:
         model_config = _Config
         model_config.logs_root_dir = "saved"
         # = = = = = Insert here model and run to be erased = = = = =
-        model_config.name = 'LatentSize'
-        model_config.run_name = 'dimz1240'
+        model_config.name = 'FlowReg_dimz5020'
+        model_config.run_name = 'dev_test__dense_dequant_loss'
         # = = = = = Insert here model and run to be erased = = = = =
 
 

@@ -86,6 +86,38 @@ class EpochMetric:
         return self.get()
 
 
+
+class VectorMetric:
+    """ Can be used to accumulate vector values during evaluation or training.
+        dataset_len should be provided to improve performance (reduce memory allocations) """
+    def __init__(self, dataset_len=-1):
+        self.dataset_len = dataset_len
+        if self.dataset_len < 0:
+            raise NotImplementedError("[VectorMetric] Warning: not initialized with dataset_len "
+                                      "- no memory pre-allocation (slow and currently not implemented)")
+        self.on_new_epoch()
+
+    def on_new_epoch(self):
+        self._data = np.empty((0, 0))
+        self.next_dataset_idx = 0
+
+    def append(self, minibatch_data: torch.Tensor):
+        if len(minibatch_data.shape) != 2:
+            raise AssertionError("This class handles 2D data only (mini-batches of 1D vectors")
+        if self.next_dataset_idx == 0:  # Memory allocation when the very first element is appended
+            self._data = np.zeros((self.dataset_len, minibatch_data.shape[1]))
+        batch_len = minibatch_data.shape[0]
+        self._data[self.next_dataset_idx:(self.next_dataset_idx+batch_len), :] = \
+            minibatch_data.detach().clone().cpu().numpy()
+        self.next_dataset_idx += batch_len
+
+    def get(self):
+        if self.dataset_len > 0 and self.next_dataset_idx != self.dataset_len:
+            raise AssertionError("Too few items were appended before calling this get() method")
+        return self._data
+
+
+
 class LatentMetric:
     """ Can be used to accumulate latent values during evaluation or training.
     dim_z and dataset_len should be provided to improve performance (reduce memory allocations) """

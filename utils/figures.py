@@ -245,6 +245,42 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
     return fig, axes
 
 
+def plot_vector_distributions_stats(metrics: Dict[str, logs.metrics.VectorMetric], metric_name: str):
+    """
+
+    :param metrics:
+    :param metric_name: The base name of the metric to be plotted. 'metric_name/Train' and 'metric_name/Valid'
+        keys must be found in the dict.
+    :return:
+    """
+    num_coord_to_plot = 50
+    gen_plot_eq_num_coord = 5
+    fig, axes = plt.subplots(2, 3, figsize=(1.1 * __param_width * (num_coord_to_plot + 2*gen_plot_eq_num_coord), 4),
+                             gridspec_kw={'width_ratios': [gen_plot_eq_num_coord, gen_plot_eq_num_coord,
+                                                           num_coord_to_plot - 2*gen_plot_eq_num_coord]})
+    # TODO KDE / histplots ????? et séparer >0 et <0
+    # Retrieve data (non-flattened), per dataset
+    data = {'Train': metrics[metric_name + '/Train'].get(), 'Valid': metrics[metric_name + '/Valid'].get()}
+    flierprops = dict(marker='.', markerfacecolor='k', markersize=0.5, markeredgecolor='none')
+    for row, ds_type in enumerate(['Train', 'Valid']):
+        # Plot flattened data
+        axes[row, 0].boxplot(x=data[ds_type].flatten(), vert=True, sym='.k', flierprops=flierprops)
+        axes[row, 0].set(ylabel=ds_type, title="All datapoints")
+        # plot flattened data, without outliers
+        axes[row, 1].hist(x=utils.stat.remove_outliers(data[ds_type].flatten()), orientation='horizontal', bins=25)
+        axes[row, 1].set(title="(w/o outliers)")
+        # plot the 50 first per-coordinate output distributions
+        sns.violinplot(data=data[ds_type][:, 0:num_coord_to_plot], ax=axes[row, 2], inner='quartile',
+                       linewidth=0.5)
+        axes[row, 2].set(title="Per-coordinate distributions ({} to {} not represented)"
+                               .format(num_coord_to_plot, data[ds_type].shape[1]-1))
+
+    fig.tight_layout()
+    _configure_params_plot_x_tick_labels(axes[0, 2])
+    _configure_params_plot_x_tick_labels(axes[1, 2])
+    return fig, axes
+
+
 def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, figsize=None, eps=1e-7,
                                     max_displayed_latent_coords=150):
     """ Uses boxplots to represent the distribution of the mu and/or sigma parameters of
@@ -289,7 +325,7 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     axes[0][1].set(ylabel='$q_{\phi}(z_0|x) : \mu_0$', ylim=outlier_limits['mu'])
     axes[1][1].set(ylabel='$q_{\phi}(z_0|x) : \log_{10}(\sigma_0)$', ylim=outlier_limits['sigma'])
     axes[2][1].set(xlabel=('z index' if x_label is None else x_label), ylabel='$z_K$ samples', ylim=[-4.0, 4.0])
-    # TODO Target 25 and 75 percentiles as horizontal lines (+/- 0.6745 for standard normal distributions)
+    # Target 25 and 75 percentiles as horizontal lines (+/- 0.6745 for standard normal distributions)
     axes[2][1].hlines([-0.6745, 0.0, 0.6745], -0.5, data_limited['mu'].shape[1]-0.5, colors='grey', linewidth=0.5)
     #     And target outliers limits (Q1/Q3 +/- 1.5 IQR) as dotted lines
     # Small ticks for right subplots only (component indexes)

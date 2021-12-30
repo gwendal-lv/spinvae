@@ -24,25 +24,26 @@ model = _Config()
 # ----------------------------------------------- Data ---------------------------------------------------
 model.data_root_path = "/media/gwendal/Data/Datasets"
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "FlowReg"
-model.run_name = 'dev_test_4'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "FlowReg_dimz5020"
+model.run_name = 'CEloss_plot_test'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
-                                  "LatentSize/dimz5020_smallernets/checkpoints/00500.tar"
+                                  "SpecCNN_dimz5020/speccnn8l1_res_big_schedT70/checkpoints/00499.tar"
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
 # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
-# Arch args: '_adain', '_big', '_res', '_time+' (increases time resolution in the deepest layers)
-model.encoder_architecture = 'speccnn8l1_res'
+# Arch args: '_adain', '_big', '_bigger', '_res', '_time+' (increases time resolution in the deepest layers)
+model.encoder_architecture = 'speccnn8l1_res_big'
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 # e.g. 8l1024: 8 layers, 1024 units per layer
-model.style_architecture = 'mlp_8l512_outputbn'  # batch norm layers are always added inside the mlp
+model.style_architecture = 'mlp_2l128_outputbn'  # batch norm layers are always added inside the mlp
 # Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
-model.params_regression_architecture = 'flow_realnvp_6l300'
-model.params_reg_hardtanh_out = False  # Applies to categorical params only (numerical are always hardtanh-activated)
+# TODO random permutations when building flows
+model.params_regression_architecture = 'flow_realnvp_6l300'  # TODO try bigger flow (if does not overfit anymore)
+model.params_reg_hardtanh_out = False  # Applies to categorical params (numerical are always hardtanh-activated)
 model.params_reg_softmax = False  # Apply softmax at the end of the reg model itself?
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
@@ -114,9 +115,9 @@ train = _Config()
 train.pretrain_ae_only = False  # Should we pre-train the auto-encoder model only?
 train.start_datetime = datetime.datetime.now().isoformat()
 train.minibatch_size = 128
-train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
-train.test_holdout_proportion = 0.2  # This can be reduced without mixing the train and test subsets
-train.k_folds = 5
+train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...). -1 indicates CPU (untested)
+train.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
+train.k_folds = 9  # 10% for validation set, 80% for training
 train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
@@ -144,14 +145,18 @@ train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very 
 # Epochs of warmup increase from start_value to beta
 train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only
 # - - - Synth parameters losses - - -
+# - General options
 train.params_loss_compensation_factor = 1.0  # because MSE loss of the pre-trained VAE if much lower (approx. 1e-2)
+train.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
+train.params_loss_with_permutations = False  # Applies to the backprop loss only; monitoring losses always use True
+# - Loss for a dense dequantized output loss (set to 'None' to activate other losses)
+train.params_dense_dequantized_loss = 'None'  # Preempts CE losses
+# - Cross-Entropy loss (deactivated when using dequantized outputs)
 train.params_cat_CE_label_smoothing = 0.1  # https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html
 train.params_target_noise = 0.05
 train.params_cat_CE_use_weights = False
 train.params_cat_bceloss = False  # If True, disables the CE loss to compute BCE loss instead (deprecated)
 train.params_cat_softmax_temperature = 1.0  # Temperature if softmax if applied in the loss only (!=0 is deprecated)
-train.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
-train.params_loss_with_permutations = False  # Applies to the backprop loss only; monitoring losses always use True
 
 # ------------------------------------------- Optimizer + scheduler -------------------------------------------
 # Different optimizers for the pre-trained AE and the regression networks ('ae_' or 'reg_' prefixes or dict keys)
