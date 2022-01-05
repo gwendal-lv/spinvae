@@ -143,16 +143,17 @@ def train_config():
                # 'ReconsLoss/SC/Train': EpochMetric(), 'ReconsLoss/SC/Valid': EpochMetric(),  # TODO
                # Controls losses used for backprop + monitoring metrics (quantized numerical loss, categorical accuracy)
                'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),
+               'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
                'Controls/QLoss/Train': EpochMetric(), 'Controls/QLoss/Valid': EpochMetric(),
                'Controls/Accuracy/Train': EpochMetric(), 'Controls/Accuracy/Valid': EpochMetric(),
                # Latent-space and VAE losses
                'Latent/BackpropLoss/Train': EpochMetric(), 'Latent/BackpropLoss/Valid': EpochMetric(),
                'Latent/MMD/Train': EpochMetric(), 'Latent/MMD/Valid': EpochMetric(),
                'VAELoss/Train': SimpleMetric(), 'VAELoss/Valid': SimpleMetric(),
-               'LatCorr/z0/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'z0'),
-               'LatCorr/z0/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'z0'),
-               'LatCorr/zK/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'zK'),
-               'LatCorr/zK/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'zK'),
+               # 'LatCorr/z0/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'z0'),  # Disabled
+               # 'LatCorr/z0/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'z0'),  # (unused and
+               # 'LatCorr/zK/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'zK'),  # very expensive)
+               # 'LatCorr/zK/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'zK'),
                # Other misc. metrics
                'Sched/LRwarmup': LinearDynamicParam(config.train.lr_warmup_start_factor, 1.0,
                                                     end_epoch=config.train.lr_warmup_epochs,
@@ -209,7 +210,6 @@ def train_config():
                 v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
                 reg_model.precompute_u_out_with_symmetries(v_out)
                 super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
-                super_metrics['RegOutValues/Train'].append(v_out)
                 # Losses
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
@@ -224,6 +224,7 @@ def train_config():
                         accuracy, numerical_error = reg_model.eval_criterion_values
                         scalars['Controls/QLoss/Train'].append(numerical_error)
                         scalars['Controls/Accuracy/Train'].append(accuracy)
+                        super_metrics['RegOutValues/Train'].append(v_out)
                 extra_lat_reg_loss = ae_model.additional_latent_regularization_loss(z_0_mu_logvar)  # Might be 0.0
                 extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
                 if not pretrain_vae:
@@ -233,11 +234,14 @@ def train_config():
                         cont_loss = reg_model.backprop_criterion(z_0_mu_logvar, v_in)  # FIXME
                     cont_loss *= config.train.params_loss_compensation_factor
                     scalars['Controls/BackpropLoss/Train'].append(cont_loss)
+                    cont_reg_loss = reg_model.regularization_loss(v_out, v_in)
+                    scalars['Controls/RegulLoss/Train'].append(cont_reg_loss)
                 else:
-                    cont_loss = torch.zeros((1,), device=device)
-                utils.exception.check_nan_values(epoch, recons_loss, lat_loss, extra_lat_reg_loss, cont_loss)
+                    cont_loss, cont_reg_loss = torch.zeros((1,), device=device), torch.zeros((1,), device=device)
+                utils.exception.check_nan_values(
+                    epoch, recons_loss, lat_loss, extra_lat_reg_loss, cont_loss, cont_reg_loss)
                 # Backprop and optimizers' step (before schedulers' step)
-                (recons_loss + lat_loss + extra_lat_reg_loss + cont_loss).backward()
+                (recons_loss + lat_loss + extra_lat_reg_loss + cont_loss + cont_reg_loss).backward()
                 ae_model.optimizer.step(), reg_model.optimizer.step()
                 # End of mini-batch (step)
                 logger.on_minibatch_finished(i)
@@ -261,7 +265,6 @@ def train_config():
                 v_out = reg_model_parallel(z_K_sampled)
                 reg_model.precompute_u_out_with_symmetries(v_out)
                 super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
-                super_metrics['RegOutValues/Valid'].append(v_out)
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
@@ -274,12 +277,15 @@ def train_config():
                     accuracy, numerical_error = reg_model.eval_criterion_values
                     scalars['Controls/QLoss/Valid'].append(numerical_error)
                     scalars['Controls/Accuracy/Valid'].append(accuracy)
+                    super_metrics['RegOutValues/Valid'].append(v_out)
                     if config.model.forward_controls_loss:
                         cont_loss = reg_model.backprop_loss_value
                     else:
                         cont_loss = reg_model.backprop_criterion(z_0_mu_logvar, v_in)
                     cont_loss *= config.train.params_loss_compensation_factor
                     scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
+                    cont_reg_loss = reg_model.regularization_loss(v_out, v_in)
+                    scalars['Controls/RegulLoss/Valid'].append(cont_reg_loss)
                 # Validation plots
                 if should_plot:
                     v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
@@ -333,9 +339,9 @@ def train_config():
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
         metrics['Latent/MMD/Valid_'].append(scalars['Latent/MMD/Valid'].get())
-        metrics['LatCorr/z0/Valid_'].append(scalars['LatCorr/z0/Valid'].get())
+        # metrics['LatCorr/z0/Valid_'].append(scalars['LatCorr/z0/Valid'].get())
         if config.model.latent_flow_arch is not None:
-            metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
+            pass  # metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
         if not pretrain_vae:
             metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
             metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())

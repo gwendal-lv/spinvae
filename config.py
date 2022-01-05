@@ -22,10 +22,10 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 model = _Config()
 
 # ----------------------------------------------- Data ---------------------------------------------------
-model.data_root_path = "/media/gwendal/Data/Datasets"
+model.data_root_path = "/media/gwendal/Data/Datasets"  # TODO anonymize path
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "FlowReg_dimz5020"
-model.run_name = 'CEloss_plot_test'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "VAE_MMD_5020"
+model.run_name = 'base'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                   "SpecCNN_dimz5020/speccnn8l1_res_big_schedT70/checkpoints/00499.tar"
@@ -35,7 +35,7 @@ model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/"
 # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
 # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
 # Arch args: '_adain', '_big', '_bigger', '_res', '_time+' (increases time resolution in the deepest layers)
-model.encoder_architecture = 'speccnn8l1_res_big'
+model.encoder_architecture = 'speccnn8l1_res'  # TODO implement self-attention
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 # e.g. 8l1024: 8 layers, 1024 units per layer
@@ -112,7 +112,7 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # ======================================= Training procedure configuration ==========================================
 # ===================================================================================================================
 train = _Config()
-train.pretrain_ae_only = False  # Should we pre-train the auto-encoder model only?
+train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
 train.start_datetime = datetime.datetime.now().isoformat()
 train.minibatch_size = 128
 train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...). -1 indicates CPU (untested)
@@ -120,8 +120,8 @@ train.test_holdout_proportion = 0.1  # This can be reduced without mixing the tr
 train.k_folds = 9  # 10% for validation set, 80% for training
 train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
-# Total number of epochs (including previous training epochs)
-train.n_epochs = 275  # See update_dynamic_config_params().  275 for StepLR regression model training
+# Total number of epochs (including previous training epochs).  275 for StepLR regression model training
+train.n_epochs = 400 if train.pretrain_ae_only else 275  # See update_dynamic_config_params().
 # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
 # more than 30x more instruments than NSynth). All available data will always be used for validation.
 train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -132,7 +132,7 @@ train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the wei
 train.reconstruction_loss = 'MSE'
 # Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' or 'MMD' loss with flow-VAE
 # 'MMD_determ_enc' also available: use a deterministic encoder
-train.latent_loss = 'MMD_determ_enc'
+train.latent_loss = 'MMD'
 train.mmd_compensation_factor = 5.0  # Loss factor applied to MMD backprop losses
 train.mmd_num_estimates = 1  # Number of MMD estimates per batch (maybe increase if small batch size)
 # Losses normalization allow to get losses in the same order of magnitude, but does not optimize the true ELBO.
@@ -146,6 +146,7 @@ train.beta_start_value = train.beta / 2.0  # Should not be zero (risk of a very 
 train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only
 # - - - Synth parameters losses - - -
 # - General options
+train.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
 train.params_loss_compensation_factor = 1.0  # because MSE loss of the pre-trained VAE if much lower (approx. 1e-2)
 train.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
 train.params_loss_with_permutations = False  # Applies to the backprop loss only; monitoring losses always use True
@@ -175,7 +176,7 @@ train.scheduler_name = 'StepLR'  # use ReduceLROnPlateau during pre-train (stabl
 train.enable_ae_scheduler_after_pretrain = False
 train.scheduler_lr_factor = {'ae': 0.4, 'reg': 0.2}
 # - - - StepLR scheduler options - - -
-train.scheduler_period = 50
+train.scheduler_period = 50  # Will be increased during pre-train
 # - - - ReduceLROnPlateau scheduler options - - -
 # Possible values: 'VAELoss' (total), 'ReconsLoss', 'Controls/BackpropLoss', ... All required losses will be summed
 train.scheduler_losses = {'ae': ('ReconsLoss/Backprop', ), 'reg': ('Controls/BackpropLoss', )}
@@ -232,6 +233,7 @@ def update_dynamic_config_params():  # Required before any actual train
         model.params_regression_architecture = 'None'
         train.lr_warmup_epochs = train.lr_warmup_epochs // 2
         train.lr_warmup_start_factor *= 2
+        train.scheduler_period += train.scheduler_period // 2
     else:
         train.initial_learning_rate['ae'] *= train.initial_ae_lr_factor_after_pretrain
         train.beta_warmup_epochs = 0

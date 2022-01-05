@@ -265,12 +265,12 @@ class SynthParamsLoss(SynthParamsLossBase):
                         if cat_learn_indexes[0] in useless_cat_learn_param_indexes[row]:
                             cat_losses_useless_factors[row, cat_learn_indexes] = 0.0
             # Dequantize all inputs (including numerical inputs, which won't be used)
-            # TODO increase the noise range to -2.0,0.0 ; 0.0,+2.0
-            #    such that the L2 loss gives a very large value if the model outputs the wrong logit
+            # increased noise range to -2.0,0.0 ; 0.0,+2.0
+            #    such that the L2 loss gives a larger value if the model outputs the wrong logit
             if not training:
-                u_dequant = u_in_w_s - 0.5
+                u_dequant = 2.0 * (u_in_w_s - 0.5)
             else:
-                u_dequant = u_in_w_s - torch.rand(u_in_w_s.shape, generator=self.rng, device=u_in_w_s.device)
+                u_dequant = 2.0 * (u_in_w_s - torch.rand(u_in_w_s.shape, generator=self.rng, device=u_in_w_s.device))
             all_logits_loss = self.dequantized_criterion(u_out_w_s, u_dequant)
             # per-synthparam reduction (consider number of output categories)
             self.averaging_mask = self.averaging_mask.to(all_logits_loss.device)

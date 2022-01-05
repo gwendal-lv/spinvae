@@ -15,8 +15,12 @@ def get_stats_figures(epoch, super_metrics, networks_layers_params):
             latent_metric=super_metrics['LatentMetric/Valid'])[0],
         # 'LatentRhoCorr': utils.figures.plot_spearman_correlation(  # disabled, useless for big latent vectors
         #    latent_metric=super_metrics['LatentMetric/Valid'])[0]
-        'RegOut': utils.figures.plot_vector_distributions_stats(super_metrics, 'RegOutValues')[0]
         }
+    try:
+        fig, ax = utils.figures.plot_vector_distributions_stats(super_metrics, 'RegOutValues')
+        figs_dict['RegOut'] = fig
+    except AssertionError:  # The 'reg out' metrics will raise errors during pre-train (there were not filled)
+        pass
     for network_name, layers_params in networks_layers_params.items():  # key: e.g. 'Decoder'
         figs_dict['{}ParamsStats'.format(network_name)] = \
             utils.figures.plot_network_parameters(layers_params)[0]  # Retrieve fig only, not the axes

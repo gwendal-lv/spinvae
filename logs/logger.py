@@ -277,7 +277,7 @@ class RunLogger:
         preset_UIDs = [sample_info[i, 0].item() for i in range(2)]
         preset_names = [dataset.get_name_from_preset_UID(UID) for UID in preset_UIDs]
         title = "{} '{}' ----> {} '{}'".format(preset_UIDs[0], preset_names[0], preset_UIDs[1], preset_names[1])
-        fig, _ = utils.figures.plot_spectrograms_interp(u, x, z, title=title)
+        fig, _ = utils.figures.plot_spectrograms_interp(u, x, z=z, title=title, plot_delta_spectrograms=True)
         self.tensorboard.add_figure("DecoderInterpolation", fig, epoch)
 
     # - - - - - Multi threaded + multiprocessing plots to tensorboard - - - - -
@@ -304,10 +304,8 @@ class RunLogger:
         if not self.use_multiprocessing:
             figs_dict = logs.logger_mp.get_stats_figures(epoch, super_metrics, networks_layers_params)
         else:
-            # FIXME tentative de résolution du deadlock (probablement au join)
-            #  deadlock seems to be caused by serializing this instance
-            #  'spawn' context is slower, but creates an
-            # TODO check si ça résoud bien le pb (train du mercredi 10/11/21 à 21h)
+            # 'spawn' context is slower, but solves observed deadlock
+            #     deadlock seems to be caused by serializing this instance
             ctx = multiprocessing.get_context('spawn')  # Utilisé au lieu de multiproc
             q = ctx.Queue()
             p = ctx.Process(target=logs.logger_mp.get_stats_figs__multiproc,
@@ -321,10 +319,12 @@ class RunLogger:
             self.tensorboard.add_figure(fig_name, fig, epoch, close=True)
 
         # Those plots do not need to be here, but multi threading might help improve perfs a bit...
-        # TODO maybe don't plot epoch 0
-        if epoch >= 0:
-            for metric_name in ['RegOutValues/Train', 'RegOutValues/Valid']:
-                self.tensorboard.add_vector_histograms(super_metrics[metric_name], metric_name, epoch)
+        if epoch > 0:
+            try:
+                for metric_name in ['RegOutValues/Train', 'RegOutValues/Valid']:
+                    self.tensorboard.add_vector_histograms(super_metrics[metric_name], metric_name, epoch)
+            except AssertionError:
+                pass  # RegOut metric are not filled during pretrain, and will raise errors
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
         for network_name, network_layers in networks_layers_params.items():  # key: e.g. 'Decoder'

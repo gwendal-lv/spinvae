@@ -11,12 +11,13 @@ from torch.distributions.normal import Normal
 __log_2_pi = np.log(2*np.pi)
 
 
-def standard_gaussian_log_probability(samples):
+def standard_gaussian_log_probability(samples, add_log_2pi_term=True):
     """
     Computes the log-probabilities of given batch of samples using a multivariate gaussian distribution
     of independent components (zero-mean, identity covariance matrix).
     """
-    return -0.5 * (samples.shape[1] * __log_2_pi + torch.sum(samples**2, dim=1))
+    return -0.5 * ((samples.shape[1] * __log_2_pi if add_log_2pi_term else 0.0) +
+                   torch.sum(samples**2, dim=1))
 
 
 def gaussian_log_probability(samples, mu, log_var):

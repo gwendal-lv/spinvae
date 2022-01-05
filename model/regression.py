@@ -7,6 +7,7 @@ extended AE models.
 import threading
 from collections.abc import Iterable
 from abc import ABC, abstractmethod  # Abstract Base Class
+from typing import Optional
 
 import numpy as np
 import torch
@@ -17,6 +18,7 @@ from nflows.transforms.base import CompositeTransform
 from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 
+import utils.probability
 from data.preset import PresetIndexesHelper
 import model.base
 import model.flows
@@ -73,6 +75,8 @@ class RegressionModel(model.base.TrainableModel, ABC):
         self.arch_args = architecture.split('_')  # Split between base args and opt args (e.g. _nobn)
         self.dim_z = dim_z
         self.idx_helper = idx_helper
+        self.rng = torch.Generator()
+        self.rng.manual_seed(0)
 
         self.activation_layer = PresetActivation(
             self.idx_helper, cat_hardtanh_activation=cat_hardtanh_activation,
@@ -103,10 +107,12 @@ class RegressionModel(model.base.TrainableModel, ABC):
                 dequantized_dense_loss=train_config.params_dense_dequantized_loss,
                 device=device
             )
+            self.additional_regularization = train_config.params_model_additional_regularization
         else:
             self.loss_wih_permutations = True
             self._backprop_criterion = None
             self.dropout_p = 0.0
+            self.additional_regularization = None
         # Those will be stored during train or eval, after associated method have been called
         self.current_u_in, self.current_u_out = None, None
         self.current_permutation_groups, self.current_u_in_w_s, self.current_u_out_w_s = None, None, None
@@ -161,7 +167,11 @@ class RegressionModel(model.base.TrainableModel, ABC):
 
     def regularization_loss(self, v_out, v_in):
         """ Returns an additional loss, which is intended to improve the overall regularization of the model. """
-        return 0.0
+        if self.additional_regularization is not None:
+            raise NotImplementedError("Additional regularization '{}' not available for this model."
+                                      .format(self.additional_regularization))
+        else:
+            return 0.0
 
     @property
     def eval_criterion_values(self):
@@ -170,6 +180,27 @@ class RegressionModel(model.base.TrainableModel, ABC):
         self._assert_pre_computed_symmetries_available()
         return self._eval_criterion.losses_with_permutations(
             self.current_permutation_groups, self.current_u_out_w_s, self.current_u_in_w_s)
+
+    @property
+    def cat_indexes_1d_list(self):
+        """ A list of all """
+        return self.activation_layer.cat_indexes_1d_list
+
+    def one_hot_to_logits(self, v, dequantization_noise: Optional[bool] = None):
+        """ Convert all one-hot encoded coordinates into their 'logitized' version (TODO to be improved)
+
+        :param v: Batch of learnable presets
+        :param dequantization_noise: If None, will be automatically set True during training
+        """
+        v_logits = v.clone()
+        if dequantization_noise is None:
+            dequantization_noise = self.training
+        if dequantization_noise:
+            eps = torch.rand(v[:, self.cat_indexes_1d_list].shape, generator=self.rng).to(v.device)  # [0.0, 1.0[
+            v_logits[:, self.cat_indexes_1d_list] = 2.0 * (v_logits[:, self.cat_indexes_1d_list] - eps)
+        else:
+            v_logits[:, self.cat_indexes_1d_list] = 2.0 * (v_logits[:, self.cat_indexes_1d_list] - 0.5)  # -1.0 or +1.0
+        return v_logits
 
     def find_preset_inverse_SGD(self, u_target: torch.Tensor, z_first_guess: torch.Tensor):
         return self.find_preset_inverse(u_target, z_first_guess)
@@ -251,6 +282,7 @@ class FlowControlsRegression(RegressionModel):
     def __init__(self, architecture: str, dim_z: int, idx_helper: PresetIndexesHelper,
                  fast_forward_flow=True,
                  cat_hardtanh_activation=False, cat_softmax_activation=False,
+                 inverse_method='keep_output_logits',  # TODO use model_config arg
                  model_config=None, train_config=None):
         """
         :param architecture: Flow automatically built from architecture string. E.g. 'realnvp_16l200' means
@@ -258,17 +290,18 @@ class FlowControlsRegression(RegressionModel):
             (e.g. '16l200_bn' adds batch norm). See implementation for more details.  TODO implement suffix options
         :param dim_z: Size of a z_K latent vector, which is also the output size for this invertible normalizing flow.
         :param idx_helper:
-        :param dropout_p:
         :param fast_forward_flow: If True, the flow transform will be built such that it is fast (and memory-efficient)
             in the forward direction (else, it will be fast in the inverse direction). Moreover, if batch-norm is used
             between layers, the flow can be trained only its 'fast' direction (which can be forward or inverse
             depending on this argument).
+        :param inverse_method: 'constant_logits' or 'keep_output_logits'
         """
         super().__init__(architecture, dim_z, idx_helper, cat_hardtanh_activation, cat_softmax_activation,
                          model_config, train_config)
         self._fast_forward_flow = fast_forward_flow
         self.flow_type, self.num_flow_layers, self.num_flow_hidden_features, _, _, _ = \
             model.flows.parse_flow_args(architecture, authorize_options=False)
+        self.inverse_method = inverse_method
         # Default: BN usage everywhere but between the 2 last layers
         self.bn_between_flows = True
         self.bn_within_flows = True
@@ -324,15 +357,76 @@ class FlowControlsRegression(RegressionModel):
         else:
             return self._forward_flow_transform.inverse
 
-    def regularization_loss(self, v_out, v_in):
-        pass  # FIXME
-        # TODO disable batch norm between flow layers, also disable dropout
-        lol = 0
+    def regularization_loss(self, v_out, v_target):
+        if self.additional_regularization == 'inverse_log_prob':
+            v_target = self.one_hot_to_logits(v_target)  # Uses dequantization during train only
+            train_status = self._forward_flow_transform.training
+            self._forward_flow_transform.eval()  # Reverse batch-norm requires eval mode
+            z, inv_log_abs_det_jac = self.flow_inverse_function(v_target)
+            # "Forward" KL divergence (Papamakarios19: unknown p*(v) distribution, but we can sample v ~ p*(v))
+            log_prob_z = utils.probability.standard_gaussian_log_probability(z)
+            loss = - (log_prob_z + inv_log_abs_det_jac) / v_target.shape[1]
+            self._forward_flow_transform.train(train_status)  # Go back to the original training mode (which may be False)
+            return torch.mean(loss)
+        else:
+            return super().regularization_loss(v_out, v_target)
 
     # TODO override backprop_loss_value property if flow is trained in reverse mode
 
+    # TODO use mu and log var if given (add optional args)
     def find_preset_inverse_SGD(self, u_target: torch.Tensor, z_first_guess: torch.Tensor):
-        return super().find_preset_inverse(u_target, z_first_guess)
+        # TODO custom SGD: first, find preset inverse using reverse-Flow
+        #   then, optimize log(p(z)) (some z coordinates might be very big) + CE-loss
+        #         and stop optimization when acc < 100% or num error > 0.0
+        z_start, z_first_guess, _, _ = self.find_preset_inverse(u_target, z_first_guess)
+        z_start.requires_grad = False
+        z_offset = torch.zeros_like(z_start, requires_grad=True)  # We'll optimize this one
+        optimizer = torch.optim.Adam([z_offset], lr=0.1, weight_decay=0.0)
+        backprop_criterion = model.loss.SynthParamsLoss(
+            self.idx_helper, normalize_losses=True,
+            compute_symmetrical_presets=False, prevent_useless_params_loss=False,
+            cat_label_smoothing=0.1,
+            device=u_target.device
+        )
+        eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
+            self.idx_helper, compute_symmetrical_presets=False
+        )
+        # Searching loop
+        acc, num_loss = 100.0, 0.0
+        # keep the best z, and run that loop for a fixed number of iterations
+        z_best = z_start.clone()
+        # TODO try MMD instead of log prob - use ctor arg
+        use_MDD = False  # MMD gives nans only...
+        mmd_crit = utils.probability.MMD()
+        lat_loss_best = - utils.probability.standard_gaussian_log_probability(z_start, add_log_2pi_term=False) \
+            if not use_MDD else mmd_crit(z_start)
+        max_abs_z_best = torch.max(torch.abs(z_start)).item()
+        # TODO keep optimizing until log_prob is high enough?
+        for i in range(100):  # FIXME dummy test
+            optimizer.zero_grad()
+            z_estimated = z_start + z_offset
+            u_out = self.forward(z_estimated)
+            backprop_loss = backprop_criterion(u_out, u_target)
+            if use_MDD:
+                lat_loss = mmd_crit(z_estimated)
+            else:
+                lat_loss = - utils.probability.standard_gaussian_log_probability(
+                    z_estimated, add_log_2pi_term=False) / z_estimated.shape[1]
+            (backprop_loss + 10 * lat_loss).backward()  # FIXME ctor arg
+            optimizer.step()
+            acc, num_loss = eval_criterion(u_out, u_target)
+            max_abs_z = torch.max(torch.abs(z_estimated)).item()
+            if i % 10 == 0:  # print deactivated
+                print("Accuracy = {:.1f}%, num_loss = {:.3f}, max_abs_z = {:.1f}, lat_loss = {:.2f}"
+                      .format(acc, num_loss, max_abs_z, lat_loss.item()))
+            # keep this one if the preset if perfectly reconstructed
+            if np.isclose(acc, 100.0) and np.isclose(num_loss, 0.0):  # TODO double-check this
+                if max_abs_z_best > max_abs_z and lat_loss_best > lat_loss:  # and if log prob increases
+                    z_best = (z_start + z_offset).detach().clone()
+                    if not use_MDD and lat_loss < 0.5:  # Works with log prob only TODO HPARAM HERE
+                        break  # Exit loop and function
+        z_offset.requires_grad = False
+        return z_best, z_first_guess, 100.0, 0.0
 
     def find_preset_inverse(self, u_target: torch.Tensor, z_first_guess: torch.Tensor):
         """ Returns a z latent vector that leads to a 100% accuracy and 0.0 numerical error compared to u_target,
@@ -341,33 +435,42 @@ class FlowControlsRegression(RegressionModel):
         Inputs must be a 1-item minibatch. """
         if u_target.shape[0] != 1 or z_first_guess.shape[0] != 1:  # check 1d input (batch of 1 element)
             raise AssertionError("This method handles only 1 preset at a time.")
-        with torch.no_grad():  # Compute first guess
-            u_out = self._reg_model_without_activation(z_first_guess)
-        # check accuracy of each independent output parameter
-        #    and modify post-activation wrong outputs only (keep correct non-activated outputs)
-        u_identical_to_first_guess = True
-        for vst_idx, learn_indices in enumerate(self.idx_helper.full_to_learnable):
-            if learn_indices is not None:
-                if len(learn_indices) == 1:
-                    return NotImplementedError("Params learned as numerical are not supported at the moment.")
-                else:  # We change the partial u
-                    target_class = torch.argmax(u_target[0, learn_indices]).item()
-                    if torch.argmax(u_out[0, learn_indices]) != target_class:
-                        u_identical_to_first_guess = False
-                        # Set the proper logit output 5% beyond the wrong max logit
-                        old_mean, old_std = torch.mean(u_out[0, learn_indices]), torch.std(u_out[0, learn_indices])
-                        logits_range = torch.max(u_out[0, learn_indices]) - torch.min(u_out[0, learn_indices])
-                        u_out[0, learn_indices[0]+target_class] = \
-                            torch.max(u_out[0, learn_indices]) + 0.05 * logits_range
-                        # TODO try reduce all logits? To keep the same mean and std
-                        u_out[0, learn_indices] = (u_out[0, learn_indices] - torch.mean(u_out[0, learn_indices])) \
-                                                   / torch.std(u_out[0, learn_indices])
-                        u_out[0, learn_indices] = u_out[0, learn_indices] * old_std + old_mean
-        # use inverse only if first guess was not 100% correct (might happen!)
-        if not u_identical_to_first_guess:
+        if self.inverse_method == 'constant_logits':
+            # FIXME logits output range should be a config argument
+            v_expected_output = self.one_hot_to_logits(u_target, dequantization_noise=False)
             with torch.no_grad():
-                z_out = self.flow_inverse_function(u_out)[0]  # discard jacobian
+                z_out = self.flow_inverse_function(v_expected_output)[0]  # discard jacobian
+            return z_out, z_first_guess, 100.0, 0.0
+        elif self.inverse_method == 'keep_output_logits':
+            with torch.no_grad():  # Compute first guess
+                u_out = self._reg_model_without_activation(z_first_guess)
+            # check accuracy of each independent output parameter
+            #    and modify post-activation wrong outputs only (keep correct non-activated outputs)
+            u_identical_to_first_guess = True
+            for vst_idx, learn_indices in enumerate(self.idx_helper.full_to_learnable):
+                if learn_indices is not None:
+                    if len(learn_indices) == 1:
+                        return NotImplementedError("Params learned as numerical are not supported at the moment.")
+                    else:  # We change the partial u
+                        target_class = torch.argmax(u_target[0, learn_indices]).item()
+                        if torch.argmax(u_out[0, learn_indices]) != target_class:
+                            u_identical_to_first_guess = False
+                            # Set the proper logit output 5% beyond the wrong max logit
+                            old_mean, old_std = torch.mean(u_out[0, learn_indices]), torch.std(u_out[0, learn_indices])
+                            logits_range = torch.max(u_out[0, learn_indices]) - torch.min(u_out[0, learn_indices])
+                            u_out[0, learn_indices[0]+target_class] = \
+                                torch.max(u_out[0, learn_indices]) + 0.05 * logits_range
+                            # TODO try reduce all logits? To keep the same mean and std
+                            u_out[0, learn_indices] = (u_out[0, learn_indices] - torch.mean(u_out[0, learn_indices])) \
+                                                       / torch.std(u_out[0, learn_indices])
+                            u_out[0, learn_indices] = u_out[0, learn_indices] * old_std + old_mean
+            # use inverse only if first guess was not 100% correct (might happen!)
+            if not u_identical_to_first_guess:
+                with torch.no_grad():
+                    z_out = self.flow_inverse_function(u_out)[0]  # discard jacobian
+            else:
+                z_out = z_first_guess
+            return z_out, z_first_guess, 100.0, 0.0
         else:
-            z_out = z_first_guess
-        return z_out, z_first_guess, 100.0, 0.0
+            raise NotImplementedError("Unknown inverse method '{}'".format(self.inverse_method))
 
