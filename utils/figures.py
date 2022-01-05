@@ -173,27 +173,32 @@ def remove_axes_spines_and_ticks(ax):
     ax.get_yaxis().set_ticks([])
 
 
-def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO allow MFCCs
+def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,
+                             plot_delta_spectrograms=True,
                              z: Optional[torch.Tensor] = None, num_z_coords_to_show=40,
+                             metrics: Optional[Dict[str, np.ndarray]] = None,
                              subplot_w_h=(1.5, 1.5), title: Optional[str] = None):
     """ Plots a "batch" of interpolated spectrograms. The number of spectrograms must be the same as the number of
     interpolation abscissae u. """
-    if u.shape[0] != spectrograms.shape[0] or u.shape[0] != z.shape[0]:  # TODO all tests
+    if u.shape[0] != spectrograms.shape[0] or (z is not None and u.shape[0] != z.shape[0]):  # TODO all tests
         raise AssertionError("All input arrays/tensor must have the same length along dimension 0.")
     if u.shape[0] < 2:
         raise ValueError("This function requires 2 spectrograms or more")
     if spectrograms.shape[1] > 1:
         raise ValueError("This function supports single-channel spectrograms only.")
-    n_rows = 2 + (1 if z is not None else 0)  # TODO add rows for other plots
+    n_rows = 2 if plot_delta_spectrograms else 1
+    n_rows += (1 if z is not None else 0)
+    n_rows += (1 if metrics is not None else 0)
     fig, axes = plt.subplots(n_rows, u.shape[0], sharey='row',
                              figsize=(u.shape[0]*subplot_w_h[0], n_rows*subplot_w_h[1] + (0 if title is None else 0.3)))
     # Data converted to numpy, compute deltas
     if spectrograms.shape[1] > 1:
         raise AssertionError("Input spectrograms must be single-channel.")
     specs_np = spectrograms[:, 0, :, :].clone().detach().cpu().numpy()
-    delta_specs_np = np.zeros_like(specs_np)
-    for u_idx in range(1, u.shape[0]):  # First delta will remain zero
-        delta_specs_np[u_idx, :, :] = (specs_np[u_idx, :, :] - specs_np[u_idx-1, :, :]) / (u[u_idx] - u[u_idx-1])
+    if plot_delta_spectrograms:
+        delta_specs_np = np.zeros_like(specs_np)
+        for u_idx in range(1, u.shape[0]):  # First delta will remain zero
+            delta_specs_np[u_idx, :, :] = (specs_np[u_idx, :, :] - specs_np[u_idx-1, :, :]) / (u[u_idx] - u[u_idx-1])
     z_np = z.clone().detach().cpu().numpy() if z is not None else None
     z_indices_range = None
     if z_np is not None:
@@ -202,10 +207,15 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
             z_np = z_np[:, z_indices_range]
         else:
             z_indices_range = np.arange(z_np.shape[1])
-    delta_z_np = np.zeros_like(z_np) if z_np is not None else None
-    if z_np is not None:
-        for u_idx in range(1, u.shape[0]):  # First delta will remain zero
-            delta_z_np[u_idx, :] = (z_np[u_idx, :] - z_np[u_idx-1, :]) / (u[u_idx] - u[u_idx-1])
+    # Prepare merged axes to plot interpolation metrics
+    #    (https://matplotlib.org/stable/gallery/subplots_axes_and_figures/gridspec_and_subplots.html)
+    m_axes = None
+    if metrics is not None:  # Always on the last row
+        row = n_rows - 1
+        gs = axes[row, 0].get_gridspec()
+        for ax in axes[row, :]:
+            ax.remove()
+        m_axes = fig.add_subplot(gs[row, :])
     # Plots
     delta_specs_cbar_ax = None
     for u_idx in range(u.shape[0]):
@@ -214,18 +224,34 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
         # Spectrograms
         im = librosa.display.specshow(specs_np[u_idx, :, :], shading='flat', ax=axes[0, u_idx], cmap='magma',
                                       vmin=specs_np.min(), vmax=specs_np.max())
-        if u_idx > 0:
+        if u_idx > 0 and plot_delta_spectrograms:
             max_abs_error = max(np.abs(delta_specs_np.min()), np.abs(delta_specs_np.max()))
             im = librosa.display.specshow(delta_specs_np[u_idx, :, :], shading='flat', ax=axes[1, u_idx], cmap='bwr',
                                           vmin=-max_abs_error, vmax=max_abs_error)
             if u_idx == 1:
                 delta_specs_cbar_ax = fig.add_axes(axes[1, 0].get_position())
                 clb = fig.colorbar(im, cax=delta_specs_cbar_ax)
-        # Latent vectors
+        # Latent vectors  TODO display min/max values?
         if z_np is not None:
             colors = [mpl_colors.hsv_to_rgb([((c * 63.2) % 100)/100.0, 1.0, 0.85]) for c in z_indices_range]
             axes[2, u_idx].scatter(z_indices_range, z_np[u_idx, :], s=1, c=colors)
             axes[2, u_idx].grid(axis='y')
+    # Interpolation metrics (pre-computed, display each dict key as a line)
+    #     Normalize each metric before display (we don't care about the scale)
+    if metrics is not None:
+        legend_keys = list()
+        row = 0
+        for k, v in metrics.items():
+            if len(v.shape) == 1:  # 1D metrics only
+                legend_keys.append(k)
+                normalized_values = v - v.min()
+                normalized_values = normalized_values / normalized_values.max()
+                m_axes.plot(np.arange(v.shape[0]), normalized_values, linestyle=('-' if row < 10 else '--'))
+                m_axes.set_xlim([-0.5, v.shape[0] - 0.5])
+                row += 1
+        m_axes.legend(legend_keys, prop={'size': 5})
+        m_axes.get_yaxis().set_visible(False)
+        lol = 0
     # Display: labels, ...
     axes[0, 0].set_ylabel(r'Spectrogram $\mathbf{s}$')
     remove_axes_spines_and_ticks(axes[1, 0])
@@ -238,10 +264,11 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,  # TODO 
         warnings.simplefilter("ignore")
         fig.tight_layout()  # 'UserWarning: This figure includes Axes that are not compatible with tight_layout, ...'
     # Re-set colorbar axes positions, after layout has been tightened
-    axes_to_reposition = [(delta_specs_cbar_ax, axes[1, 0])]  # TODO ajouter autres axes à repos (si non-None)
-    for cb_ax, original_ax in axes_to_reposition:
-        pos = original_ax.get_position().bounds  # (x0, y0, width, height)
-        cb_ax.set_position([pos[0] + pos[2]*0.45, pos[1], pos[2]*0.1, pos[3]])
+    if delta_specs_cbar_ax is not None:
+        axes_to_reposition = [(delta_specs_cbar_ax, axes[1, 0])]  # TODO ajouter autres axes à repos (si non-None)
+        for cb_ax, original_ax in axes_to_reposition:
+            pos = original_ax.get_position().bounds  # (x0, y0, width, height)
+            cb_ax.set_position([pos[0] + pos[2]*0.45, pos[1], pos[2]*0.1, pos[3]])
     return fig, axes
 
 

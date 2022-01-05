@@ -1,7 +1,7 @@
 """
 Classes to generate and evaluate interpolations between samples.
 """
-
+import pathlib
 from pathlib import Path
 from typing import Tuple, Optional
 
@@ -11,6 +11,7 @@ import torch
 
 import data.abstractbasedataset
 import data.build
+import data.preset
 import logs.logger
 import model.build
 import utils.config
@@ -74,6 +75,9 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
         u, z = self.interpolate_latent(z_start, z_end)
         return u, z, self.gen.generate_from_latent_vector(z)
 
+    def generate_audio_and_spectrograms(self, z: torch.Tensor):
+        raise NotImplementedError()
+
 
 # TODO don't inherit from LatentInterpolation
 class SynthPresetLatentInterpolation(LatentInterpolation):
@@ -99,20 +103,46 @@ class SynthPresetLatentInterpolation(LatentInterpolation):
             z_first_guess = ae_outputs[2]
         self.reg_model.eval()  # Dropout must be de-activated
         # TODO proper ctor arg to use flow inverse, or not
-        return self.reg_model.find_preset_inverse(u_target, z_first_guess)  # Flow inverse
-        # return self.reg_model.find_preset_inverse_SGD(u_target, z_first_guess)  # SGD
+        # return self.reg_model.find_preset_inverse(u_target, z_first_guess)  # Flow inverse
+        return self.reg_model.find_preset_inverse_SGD(u_target, z_first_guess)  # SGD
 
     @property
     def gen(self):
-        # TODO apply reg model and generate sound+spectrogram
-        return None
+        raise NotImplementedError()
+
+    def generate_audio_and_spectrograms(self, z: torch.Tensor):
+        v_out = self.reg_model(z)
+        # Convert learnable presets to VST presets  FIXME works for Dexed only
+        presets = data.preset.DexedPresetsParams(self.dataset, learnable_presets=v_out)
+        vst_presets = presets.get_full()
+        midi_pitch, midi_vel = self.dataset.default_midi_note
+        audio_renders = [self.dataset._render_audio(vst_presets[i, :], midi_pitch, midi_vel)
+                         for i in range(vst_presets.shape[0])]
+        spectrograms = [self.dataset.compute_spectrogram(audio_renders[i][0])
+                        for i in range(len(audio_renders))]
+        return audio_renders, spectrograms
 
 
 if __name__ == "__main__":
     _device = 'cpu'
-    _model_loader = evaluation.load.ModelLoader("saved/FlowReg_dimz5020/dequantized_out_L2_loss__permsFalse",
-                                                _device, 'validation')
+    model_path = "saved/FlowReg_dimz5020/CElabels_smooth0.2_noise0.1__permsFalse"
+    # model_path = "saved/FlowReg_dimz5020/dequantL2loss_out-2+2_regulloss0.001"
+    _model_loader = evaluation.load.ModelLoader(model_path, _device, 'validation')
 
-    preset_interpolator = SynthPresetLatentInterpolation(_model_loader)
+    _num_steps = 9
+
+    if False:  # Gen naive interpolations ? (THRESHOLD)
+        naive_preset_interpolator = evaluation.interpbase.NaivePresetInterpolation(
+            _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
+            '/media/gwendal/Data/Interpolations/ThresholdNaive', u_curve='threshold', num_steps=_num_steps)
+        naive_preset_interpolator.process_dataset()
+    if True:  # Gen naive interpolations ? (LINEAR)
+        naive_preset_interpolator = evaluation.interpbase.NaivePresetInterpolation(
+            _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
+            '/media/gwendal/Data/Interpolations/LinearNaive', num_steps=_num_steps)
+        naive_preset_interpolator.process_dataset()
+
+    # TODO additional path suffix for different interp hparams
+    preset_interpolator = SynthPresetLatentInterpolation(_model_loader, num_steps=_num_steps)
     preset_interpolator.process_dataset()
 

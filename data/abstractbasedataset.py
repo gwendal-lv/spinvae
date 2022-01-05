@@ -229,7 +229,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     @property
     def default_midi_note(self):
         """ Default MIDI pitch and velocity, e.g. for audio renders evaluation, labelling, ... """
-        return 60, 85
+        return 56, 75   # 60, 85
 
     @property
     def midi_notes_per_preset(self):
