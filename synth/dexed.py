@@ -446,6 +446,14 @@ class Dexed:
         return indexes
 
     @staticmethod
+    def get_op_output_level_indices():
+        return [31 + 22*i for i in range(6)]
+
+    @staticmethod
+    def get_L_R_scale_indices():
+        return [39 + 22*i for i in range(6)] + [40 + 22*i for i in range(6)]
+
+    @staticmethod
     def get_operators_params_indexes_groups() -> List[range]:
         """ Returns a list of 6 ranges, where each range contains the indices of all parameters of an operator. """
         return [range(23 + 22 * i, 23 + 22 * (i+1)) for i in range(6)]
@@ -453,6 +461,55 @@ class Dexed:
     @staticmethod
     def get_algorithms_and_oscillators_permutations(algo: int, feedback: bool):
         return synth.dexedpermutations.get_algorithms_and_oscillators_permutations(algo, feedback)
+
+    @staticmethod
+    def get_similar_preset(preset: np.ndarray, variation: int, learnable_indices: List[int], random_seed=0):
+        """ Data augmentation method: returns a slightly modified preset, which is (hopefully) quite similar
+            to the input preset. """
+        if variation == 0:
+            return preset
+        rng = np.random.default_rng((random_seed + 987654321 * variation))
+        # First: change algorithm to a similar one
+        preset = synth.dexedpermutations.change_algorithm_to_similar(preset, variation, random_seed)
+        # Then: change a few learned parameters if variation > 1: algorithm is the hardest parameter to learn,
+        # so we provide a special data augmentation for this parameter only.
+        if variation == 1:
+            return preset
+        # If variation >= 2: random noise applied to most of parameters
+        cat_indexes = Dexed.get_categorical_params_indexes()
+        # don't choose a limited subset of param to augment, but use a <1.0 noise std
+        for idx in learnable_indices:
+            if idx == 4:  # algorithm
+                pass
+            # cat params: depends
+            elif idx in cat_indexes:
+                card = Dexed.get_param_cardinality(idx)
+                # General cat params: key sync, lfo sync, lfo wave: 100% randomization
+                if idx in [6, 11, 12]:
+                    preset[idx] = rng.integers(0, card) / (card - 1.0)
+                # OP mode: quite risky to change it... (likely to lead to inaudible/unlikely sounds)
+                elif idx > 32 and ((idx - 32) % 22 == 0):
+                    pass
+                # L/R scales: invert lin/exp (keep +/- sign)
+                elif idx in Dexed.get_L_R_scale_indices():
+                    if preset[idx] < 0.5:
+                        preset[idx] = rng.integers(0, 1, endpoint=True) / 3
+                    else:
+                        preset[idx] = rng.integers(2, 3, endpoint=True) / 3
+            # "continuous" (discrete ordinal) params: triangle or gaussian noise, std depends on cardinality
+            else:
+                card = Dexed.get_param_cardinality(idx)
+                if card < 100:  # Discrete ordinal params with a few values: smaller probability of change
+                    noise = rng.choice([-1, 0, 1], p=[0.05, 0.9, 0.05]) / (card - 1.0)
+                    lol = 0
+                else:
+                    # Noise with 1 discrete increment of 0.5 standard deviation
+                    noise = rng.normal(0.0, 0.5 / (card - 1.0))
+                    # Very small volume values: only positive noise
+                    if idx in Dexed.get_op_output_level_indices() and preset[idx] < 0.1:
+                        noise = np.abs(noise)
+                preset[idx] += noise
+        return np.clip(preset, 0.0, 1.0)
 
 
 if __name__ == "__main__":

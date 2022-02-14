@@ -117,10 +117,11 @@ class PresetIndexesHelper:
                     raise ValueError("Unknown learnable representation '{}'".format(learnable_model))
 
         try:
-            self.cat_params_class_samples_count = dataset.cat_params_class_samples_count
+            self.cat_params_class_samples_count = dataset.cat_params_class_samples_count  # FIXME
         except FileNotFoundError:  # build default count if classes samples counts were not computed yet
-            warnings.warn("Number of class samples for each categorical-learned were not computed. Using default "
-                          "counts of 1. Please re-compute dataset learnable presets.")
+            warnings.warn("[PresetIndexesHelper] Number of class samples for each categorical-learned were not "
+                          "computed. Using default counts of 1. Please re-compute dataset learnable presets. (ignore "
+                          "this message if synth presets are not used, e.g. during pre-train)")
             self.cat_params_class_samples_count = dict()
             for vst_idx, learn_indices in enumerate(self.full_to_learnable):
                 if self.vst_param_learnable_model[vst_idx] == 'cat':

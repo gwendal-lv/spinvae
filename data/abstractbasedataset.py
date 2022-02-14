@@ -510,8 +510,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         UIDs_to_exclude = set(specs_zero_volume_stats['UID'].values)
         indices_to_exclude = list()
         for UID in UIDs_to_exclude:
-            # TODO different behavior if self.valid_preset_UIDs is not a numpy array (e.g. a list)
-            idx = np.where(self.valid_preset_UIDs == UID)[0]
+            idx = np.where(np.asarray(self.valid_preset_UIDs) == UID)[0]
             if len(idx) == 0:
                 warnings.warn("Preset UID={} is zero-volume but is not part of this dataset (UID cannot be found)"
                               .format(UID))

@@ -20,11 +20,13 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool, regen
     """
     Approx audio rendering time:
         10.8 minutes (3.6ms/file) for 30293 patches, 6 notes and 1 variations / patch (48-core CPU),
-        Total 44 Go
+        Total 44 GB
+        --> w/ data augmentation (4 presets variations): 44 min (3.6ms/file), 727k files, 175 GB
+
     Approx spectrograms computation time: (2 variations)
         Compute and store:    Mel: 26.6 min (4.4 ms / spectrogram)   ;     STFT only: 8.3 min (1.4 ms/spec)
         Normalize and store: 1.7 ms / spectrogram
-        Total / spectrogram config: 90 Go
+        Total / spectrogram config: 90 GB
 
     If both params are set to False, the entire dataset will be read on 1 CPU (testing procedure)
         (4.4 ms / __getitem__ call (6 notes / item ; 1 CPU) - live learnable representations computation)
@@ -143,7 +145,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=False, regenerate_learnable_presets=True)
+    gen_dexed_dataset(regenerate_wav=True, regenerate_spectrograms=True, regenerate_learnable_presets=True)
     # gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
     # gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
 

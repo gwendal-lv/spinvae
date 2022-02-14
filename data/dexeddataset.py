@@ -265,8 +265,9 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def get_full_preset_params(self, preset_UID, preset_variation=0):
         raw_full_preset = dexed.PresetDatabase.get_preset_params_values_from_file(preset_UID)
         if preset_variation > 0:
-            raw_full_preset = dexedpermutations.change_algorithm_to_similar(
-                raw_full_preset, preset_variation, random_seed=preset_UID)
+            # TODO send VST indexes which are learned (data augmentation on these ones only)
+            raw_full_preset = dexed.Dexed.get_similar_preset(
+                raw_full_preset, preset_variation, self.learnable_params_idx, random_seed=preset_UID)
         return DexedPresetsParams(full_presets=torch.unsqueeze(torch.tensor(raw_full_preset, dtype=torch.float32), 0),
                                   dataset=self)
 
@@ -317,7 +318,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
 
     @property
     def _nb_preset_variations_per_note(self):
-        return 2
+        return 4
 
     @property
     def _nb_audio_delay_variations_per_note(self):
@@ -380,7 +381,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             self._generate_wav_files_batch(self.valid_preset_UIDs)
         # final display
         delta_t = (datetime.now() - t_start).total_seconds()
-        num_wav_written = len(self.valid_preset_UIDs) * len(self.midi_notes)
+        num_wav_written = len(self.valid_preset_UIDs) * len(self.midi_notes) * self._nb_preset_variations_per_note
         print("Finished writing {} .wav files ({:.1f} min total, {:.1f} ms / file)"
               .format(num_wav_written, delta_t/60.0, 1000.0*delta_t/num_wav_written))
 

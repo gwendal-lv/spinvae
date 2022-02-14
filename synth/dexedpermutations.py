@@ -41,16 +41,12 @@ def change_algorithm_to_similar(raw_preset: np.ndarray, preset_variation: int, r
     if not np.isclose(_old_algo, old_algo):
         raise AssertionError("Quantization issue")  # This small test doesn't hurt
     similar_algos = np.asarray(similar_algorithms[old_algo])
-    # TODO handle variation > num similar algos
-    if preset_variation > len(similar_algos):
-        raise NotImplementedError()
-    elif preset_variation == 0:
-        warnings.warn("This function should not be called when preset_variation is 0 (no variation)")
+    # If these are more variations than similar algos: we use the GT algorithm again (it's similar to itself...)
+    if preset_variation % (len(similar_algos) + 1) == 0:
         return raw_preset
-    if len(similar_algos) > 1:
-        rng = np.random.default_rng(random_seed)
-        rng.shuffle(similar_algos)  # in-place shuffling
-    new_algo = similar_algos[0 + (preset_variation - 1)]
+    # Otherwise: return a random similar preset
+    rng = np.random.default_rng(random_seed + preset_variation)
+    new_algo = similar_algos[rng.integers(0, high=len(similar_algos))]
     raw_preset[4] = (new_algo - 1) / 31.0
     return raw_preset
 
