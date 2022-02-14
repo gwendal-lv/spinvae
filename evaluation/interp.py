@@ -100,11 +100,13 @@ class SynthPresetLatentInterpolation(LatentInterpolation):
         self.ae_model.eval()
         with torch.no_grad():
             ae_outputs = self.ae_model(x_in, sample_info)
-            z_first_guess = ae_outputs[2]
+            z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_outputs
         self.reg_model.eval()  # Dropout must be de-activated
         # TODO proper ctor arg to use flow inverse, or not
         # return self.reg_model.find_preset_inverse(u_target, z_first_guess)  # Flow inverse
-        return self.reg_model.find_preset_inverse_SGD(u_target, z_first_guess)  # SGD
+        if not torch.all(torch.isclose(z_0_sampled, z_K_sampled)).item():
+            raise AssertionError("z_0 must be equal to z_K to use this preset inversion method.")
+        return self.reg_model.find_preset_inverse_SGD(u_target, z_0_sampled, z_0_mu_logvar)
 
     @property
     def gen(self):
@@ -125,7 +127,7 @@ class SynthPresetLatentInterpolation(LatentInterpolation):
 
 if __name__ == "__main__":
     _device = 'cpu'
-    model_path = "saved/FlowReg_dimz5020/CElabels_smooth0.2_noise0.1__permsFalse"
+    model_path = "saved/FlowInterp/labelsmooth0.0_FCdrop0.1"
     # model_path = "saved/FlowReg_dimz5020/dequantL2loss_out-2+2_regulloss0.001"
     _model_loader = evaluation.load.ModelLoader(model_path, _device, 'validation')
 
@@ -136,7 +138,7 @@ if __name__ == "__main__":
             _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
             '/media/gwendal/Data/Interpolations/ThresholdNaive', u_curve='threshold', num_steps=_num_steps)
         naive_preset_interpolator.process_dataset()
-    if True:  # Gen naive interpolations ? (LINEAR)
+    if False:  # Gen naive interpolations ? (LINEAR)
         naive_preset_interpolator = evaluation.interpbase.NaivePresetInterpolation(
             _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
             '/media/gwendal/Data/Interpolations/LinearNaive', num_steps=_num_steps)

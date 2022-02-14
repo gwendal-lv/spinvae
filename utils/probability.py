@@ -20,14 +20,14 @@ def standard_gaussian_log_probability(samples, add_log_2pi_term=True):
                    torch.sum(samples**2, dim=1))
 
 
-def gaussian_log_probability(samples, mu, log_var):
+def gaussian_log_probability(samples, mu, log_var, add_log_2pi_term=True):
     """
     Computes the log-probabilities of given batch of samples using a multivariate gaussian distribution
     of independent components (diagonal covariance matrix).
     """
     # if samples and mu do not have the same size,
     # torch automatically properly performs the subtract if mu is 1 dim smaller than samples
-    return -0.5 * (samples.shape[1] * __log_2_pi +
+    return -0.5 * ((samples.shape[1] * __log_2_pi if add_log_2pi_term else 0.0) +
                    torch.sum( log_var + ((samples - mu)**2 / torch.exp(log_var)), dim=1))
 
 
@@ -50,9 +50,10 @@ class MMD:
 
     def __call__(self, x_samples, y_samples=None):
         """ Computes the Maximum Mean Discrepancy between the two sets of samples. If y is None, it will
-        drawn from a standard normal distribution (identity covariance matrix).
+        be drawn from a standard normal distribution (identity covariance matrix).
 
         Expected size for input tensors is N_minibatch x D. """
+        # FIXME gets stuck around a caller of this (exceptions are raise, where are they catched???)
         N, D = x_samples.shape[0], x_samples.shape[1]  # minibatch size, length of random vector
         if y_samples is None:  # generate y if None
             y_samples = Normal(torch.zeros((N, D), device=x_samples.device),

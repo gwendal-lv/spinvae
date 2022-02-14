@@ -171,7 +171,7 @@ class RegressionModel(model.base.TrainableModel, ABC):
             raise NotImplementedError("Additional regularization '{}' not available for this model."
                                       .format(self.additional_regularization))
         else:
-            return 0.0
+            return torch.zeros((1, ), device=v_out.device)
 
     @property
     def eval_criterion_values(self):
@@ -202,7 +202,10 @@ class RegressionModel(model.base.TrainableModel, ABC):
             v_logits[:, self.cat_indexes_1d_list] = 2.0 * (v_logits[:, self.cat_indexes_1d_list] - 0.5)  # -1.0 or +1.0
         return v_logits
 
-    def find_preset_inverse_SGD(self, u_target: torch.Tensor, z_first_guess: torch.Tensor):
+    def find_preset_inverse_SGD(self, u_target: torch.Tensor, z_first_guess: torch.Tensor,
+                                z_mu_logvar: Optional[torch.Tensor] = None):
+        if z_mu_logvar is not None:
+            raise AssertionError("z_mu_logvar input argument cannot be handled by this method.")
         return self.find_preset_inverse(u_target, z_first_guess)
 
     def find_preset_inverse(self, u_target: torch.Tensor, z_first_guess: torch.Tensor):
@@ -366,7 +369,7 @@ class FlowControlsRegression(RegressionModel):
             # "Forward" KL divergence (Papamakarios19: unknown p*(v) distribution, but we can sample v ~ p*(v))
             log_prob_z = utils.probability.standard_gaussian_log_probability(z)
             loss = - (log_prob_z + inv_log_abs_det_jac) / v_target.shape[1]
-            self._forward_flow_transform.train(train_status)  # Go back to the original training mode (which may be False)
+            self._forward_flow_transform.train(train_status)  # Go back to the original training mode (may be False)
             return torch.mean(loss)
         else:
             return super().regularization_loss(v_out, v_target)
@@ -374,7 +377,8 @@ class FlowControlsRegression(RegressionModel):
     # TODO override backprop_loss_value property if flow is trained in reverse mode
 
     # TODO use mu and log var if given (add optional args)
-    def find_preset_inverse_SGD(self, u_target: torch.Tensor, z_first_guess: torch.Tensor):
+    def find_preset_inverse_SGD(self, u_target: torch.Tensor, z_first_guess: torch.Tensor,
+                                z_mu_logvar: Optional[torch.Tensor] = None):
         # TODO custom SGD: first, find preset inverse using reverse-Flow
         #   then, optimize log(p(z)) (some z coordinates might be very big) + CE-loss
         #         and stop optimization when acc < 100% or num error > 0.0
@@ -391,40 +395,51 @@ class FlowControlsRegression(RegressionModel):
         eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
             self.idx_helper, compute_symmetrical_presets=False
         )
+        use_MDD = False  # MMD gives nans only...
+        mmd_crit = utils.probability.MMD()
+
+        def __get_lat_loss(__z):  # TODO This should be turned into a proper class method...
+            if use_MDD:
+                if z_mu_logvar is not None:
+                    raise NotImplementedError("MMD with non-standard gaussian posterior p(z|x) not implemented.")
+                else:
+                    __lat_loss = mmd_crit(__z)
+            else:
+                if z_mu_logvar is not None:
+                    __lat_loss = - utils.probability.gaussian_log_probability(
+                        __z, z_mu_logvar[:, 0, :], z_mu_logvar[:, 1, :], add_log_2pi_term=False) / __z.shape[1]
+                else:
+                    __lat_loss = - utils.probability.standard_gaussian_log_probability(
+                        __z, add_log_2pi_term=False) / __z.shape[1]
+            return __lat_loss
+
         # Searching loop
         acc, num_loss = 100.0, 0.0
         # keep the best z, and run that loop for a fixed number of iterations
         z_best = z_start.clone()
-        # TODO try MMD instead of log prob - use ctor arg
-        use_MDD = False  # MMD gives nans only...
-        mmd_crit = utils.probability.MMD()
-        lat_loss_best = - utils.probability.standard_gaussian_log_probability(z_start, add_log_2pi_term=False) \
-            if not use_MDD else mmd_crit(z_start)
-        max_abs_z_best = torch.max(torch.abs(z_start)).item()
+        lat_loss_best = __get_lat_loss(z_start)
+        max_abs_z_best = torch.max(torch.abs(z_start - z_mu_logvar[:, 0, :])).item()
         # TODO keep optimizing until log_prob is high enough?
         for i in range(100):  # FIXME dummy test
             optimizer.zero_grad()
             z_estimated = z_start + z_offset
             u_out = self.forward(z_estimated)
             backprop_loss = backprop_criterion(u_out, u_target)
-            if use_MDD:
-                lat_loss = mmd_crit(z_estimated)
-            else:
-                lat_loss = - utils.probability.standard_gaussian_log_probability(
-                    z_estimated, add_log_2pi_term=False) / z_estimated.shape[1]
-            (backprop_loss + 10 * lat_loss).backward()  # FIXME ctor arg
+            lat_loss = __get_lat_loss(z_estimated)
+            (backprop_loss + lat_loss).backward()  # FIXME hparam / ctor arg
             optimizer.step()
-            acc, num_loss = eval_criterion(u_out, u_target)
-            max_abs_z = torch.max(torch.abs(z_estimated)).item()
-            if i % 10 == 0:  # print deactivated
-                print("Accuracy = {:.1f}%, num_loss = {:.3f}, max_abs_z = {:.1f}, lat_loss = {:.2f}"
-                      .format(acc, num_loss, max_abs_z, lat_loss.item()))
-            # keep this one if the preset if perfectly reconstructed
-            if np.isclose(acc, 100.0) and np.isclose(num_loss, 0.0):  # TODO double-check this
-                if max_abs_z_best > max_abs_z and lat_loss_best > lat_loss:  # and if log prob increases
-                    z_best = (z_start + z_offset).detach().clone()
-                    if not use_MDD and lat_loss < 0.5:  # Works with log prob only TODO HPARAM HERE
-                        break  # Exit loop and function
+            with torch.no_grad():
+                acc, num_loss = eval_criterion(u_out, u_target)
+                max_abs_z = torch.max(torch.abs(z_estimated - z_mu_logvar[:, 0, :])).item()
+                if i % 10 == 0:  # print deactivated
+                    print("Accuracy = {:.1f}%, num_loss = {:.3f}, max_abs_(z-z0) = {:.1f}, lat_loss = {:.2f}"
+                          .format(acc, num_loss, max_abs_z, lat_loss.item()))
+                # keep this one if the preset if perfectly reconstructed
+                if np.isclose(acc, 100.0) and np.isclose(num_loss, 0.0):  # TODO double-check this
+                    if max_abs_z_best > max_abs_z and lat_loss_best > lat_loss:  # and if log prob increases
+                        z_best = (z_start + z_offset).detach().clone()
+                        if not use_MDD and lat_loss < 0.5:  # Works with log prob only TODO HPARAM HERE
+                            break  # Exit loop and function
         z_offset.requires_grad = False
         return z_best, z_first_guess, 100.0, 0.0
 
@@ -460,7 +475,7 @@ class FlowControlsRegression(RegressionModel):
                             logits_range = torch.max(u_out[0, learn_indices]) - torch.min(u_out[0, learn_indices])
                             u_out[0, learn_indices[0]+target_class] = \
                                 torch.max(u_out[0, learn_indices]) + 0.05 * logits_range
-                            # TODO try reduce all logits? To keep the same mean and std
+                            # try reduce all logits - To keep the same mean and std
                             u_out[0, learn_indices] = (u_out[0, learn_indices] - torch.mean(u_out[0, learn_indices])) \
                                                        / torch.std(u_out[0, learn_indices])
                             u_out[0, learn_indices] = u_out[0, learn_indices] * old_std + old_mean

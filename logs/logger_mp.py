@@ -21,9 +21,13 @@ def get_stats_figures(epoch, super_metrics, networks_layers_params):
         figs_dict['RegOut'] = fig
     except AssertionError:  # The 'reg out' metrics will raise errors during pre-train (there were not filled)
         pass
+    # Violin plots are too big to be computed and/or to be stored as tensorboard images... Disabled.
+    #    But: tensorboard histograms are kind of OK (issue: scaling...)
+    """
     for network_name, layers_params in networks_layers_params.items():  # key: e.g. 'Decoder'
         figs_dict['{}ParamsStats'.format(network_name)] = \
             utils.figures.plot_network_parameters(layers_params)[0]  # Retrieve fig only, not the axes
+    """
     return figs_dict
 
 
