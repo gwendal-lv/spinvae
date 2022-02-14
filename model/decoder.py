@@ -119,15 +119,20 @@ class SpectrogramDecoder(nn.Module):
                 else:
                     norm = None
                     act = nn.Identity()
-                if self.arch_args['res'] and i in [1, 3]:
+                # Don't use attention for small (useless) or big (too costly) feature maps
+                self_attention = (self.arch_args['att'] and (2 <= (i-1) < (self.num_cnn_layers-3)),
+                                  self.arch_args['att'] and (2 <= i < (self.num_cnn_layers-3)))
+                if self.arch_args['res'] and i in [1, 3, 5]:  # FIXME 5-6 RES BLOCK ????
                     _in_ch, _out_ch = in_ch, out_ch
-                elif self.arch_args['res'] and i in [2, 4]:
-                    l = convlayer.ResTConv2D(_in_ch, in_ch, out_ch, kernel, stride, padding, output_padding, act=act,
-                                             norm_layer=norm, adain_num_style_features=self.dim_w_single_ch_cnn)
+                elif self.arch_args['res'] and i in [2, 4, 6]:
+                    l = convlayer.ResTConv2D(
+                        _in_ch, in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
+                        adain_num_style_features=self.dim_w_single_ch_cnn, self_attention=self_attention)
                     self.single_ch_cnn.add_module('dec_{}_{}'.format(i-1, i), l)
                 else:
-                    l = convlayer.TConv2D(in_ch, out_ch, kernel, stride, padding, output_padding, act=act,
-                                          norm_layer=norm, adain_num_style_features=self.dim_w_single_ch_cnn)
+                    l = convlayer.TConv2D(
+                        in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
+                        adain_num_style_features=self.dim_w_single_ch_cnn, self_attention=self_attention[1])
                     self.single_ch_cnn.add_module('dec{}'.format(i), l)
 
         elif self.base_arch_name.startswith('sprescnn'):
@@ -212,6 +217,11 @@ class SpectrogramDecoder(nn.Module):
         # Final activation
         return self.single_ch_cnn_act(single_ch_cnn_outputs)
 
+    def set_attention_gamma(self, gamma):
+        self.features_unmixer_cnn.set_attention_gamma(gamma)
+        for mod in self.single_ch_cnn:
+            mod.set_attention_gamma(gamma)
+
     def get_fc_layers_parameters(self) -> Dict[str, Dict[str, np.ndarray]]:
         """ Returns a dict of dicts: weights and biases of all FC layers at the decoder's input.
         1st dict keys are layers names, 2nd dict keys are 'weight' and 'bias'. To be used for Tensorboard hists.
@@ -235,7 +245,8 @@ if __name__ == "__main__":
     import torchinfo
     output_size = (160, 1, 257, 251)
     dim_z = 200
-    dec = SpectrogramDecoder('speccnn8l1', dim_z, output_size, 0.1)  # sprescnn_time+
+    dec = SpectrogramDecoder('speccnn8l1_res_att', dim_z, output_size, 0.1)  # sprescnn_time+
+    dec.set_attention_gamma(0.7)
     p = dec.get_fc_layers_parameters()
 
     #out_test = dec(torch.zeros((160, dim_z)))

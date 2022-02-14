@@ -48,7 +48,7 @@ class ActAndNorm(nn.Module):
         self.conv = None  # can be assigned by child class - otherwise, not applied
         self.act = act
         self.norm_layer_description = norm_layer
-        if self.norm_layer_description is None:
+        if self.norm_layer_description is None or self.norm_layer_description == 'None':
             self.norm = None
         elif self.norm_layer_description == 'bn':
             self.norm = nn.BatchNorm2d(out_ch if not reverse_order else in_ch)
@@ -71,95 +71,79 @@ class ActAndNorm(nn.Module):
                 raise AssertionError("w_style cannot be None when using AdaIN")
             x = self.norm(x, w_style)
         else:
-            pass
+            pass  # Norm layer disabled (other possibly wrong values raised error in the ctor)
         if self.reverse_order:  # reversed order: norm->act->conv (used in res blocks)
             x = self.act(x)
             if self.conv is not None:
                 x = self.conv(x)
         return x, w_style
 
+    def set_attention_gamma(self, gamma):
+        if isinstance(self.conv, nn.Sequential):
+            self.conv[1].gamma = gamma  # Self-attention is always after the usual 'local' conv
+
+
+class SelfAttentionConv2D(nn.Module):
+    def __init__(self, n_ch, internal_n_ch: Optional[int] = None):
+        """ Based on Self-Attention GAN (SAGAN, ICML19) """
+        super().__init__()
+        self._gamma = 0.1  # FIXME
+        self.C = n_ch
+        self.Cint = ((self.C // 8) if internal_n_ch is None else internal_n_ch)
+        # Key, Query and Value matrices implemented using 1x1 1D convolutions (flattened input) without bias
+        self.Wq = nn.Conv1d(self.C, self.Cint, kernel_size=(1,), bias=False)
+        self.Wk = nn.Conv1d(self.C, self.Cint, kernel_size=(1,), bias=False)
+        self.Wv = nn.Conv1d(self.C, self.Cint, kernel_size=(1,), bias=False)
+        self.W_out_v = nn.Conv1d(self.Cint, self.C, kernel_size=(1,), bias=False)
+
+    @property
+    def gamma(self):
+        return self._gamma
+
+    @gamma.setter
+    def gamma(self, v):
+        self._gamma = v
+
+    def forward(self, x):
+        # SAGAN paper: Feature maps are represented as 2D (with C input channels) in Fig.2,
+        # but input features are described as flattened to CxN (1D, not CxWxH 2D data) in the paper itself
+        N = x.shape[2] * x.shape[3]
+        x_flat = x.view(x.shape[0], x.shape[1], N)  # compatible strides, shared memory
+        # Query, key and value shape: Cint x N     where N = W*H
+        query, key, value = self.Wq(x_flat), self.Wk(x_flat), self.Wv(x_flat)
+        # Attention output size: N x N
+        # Different from the transformer:
+        #     - QT.K to compute similarity between pixels (instead of Q.KT)
+        #     - Compute a softmax on each column (such that sum of row (dim=1) values is 1.0), not on each row
+        #     - no scaling before softmax.  TODO TRY SCALING (/ sqrt(N))
+        att = F.softmax(torch.bmm(query.transpose(1, 2), key) / np.sqrt(N), dim=1)
+        att_output = torch.bmm(value, att)
+        # Increase number of channels before adding to the input
+        return x + self.W_out_v(att_output).view(x.shape) * self.gamma  # TODO use contiguous after final reshape ?
+
 
 class Conv2D(ActAndNorm):
     """ A basic conv layer with activation and normalization layers """
     def __init__(self, in_ch, out_ch, kernel_size, stride, padding, dilation=(1, 1),
                  padding_mode='zeros', act=nn.ReLU(),
-                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None, reverse_order=False):
+                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None, reverse_order=False,
+                 self_attention=False):
         super().__init__(in_ch, out_ch, act, norm_layer, adain_num_style_features, reverse_order)
-        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
+        # Self-attention conv is computed after the usual local convolution, but we should rather
+        #   consider that it's a parallel computation: self-attention values are added to local conv outputs
+        local_conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
+        self.conv = nn.Sequential(local_conv, SelfAttentionConv2D(out_ch)) if self_attention else local_conv
 
 
 class TConv2D(ActAndNorm):
     """ A basic Transposed conv layer with activation and normalization layers """
     def __init__(self, in_ch, out_ch, kernel_size, stride, padding, output_padding=0, dilation=1, padding_mode='zeros',
-                 act=nn.ReLU(),
-                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None, reverse_order=False):
+                 act=nn.ReLU(), norm_layer: Optional[str] = 'bn',
+                 adain_num_style_features: Optional[int] = None, reverse_order=False, self_attention=False):
         super().__init__(in_ch, out_ch, act, norm_layer, adain_num_style_features, reverse_order)
-        self.conv = nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride, padding, output_padding,
-                                       dilation=dilation, padding_mode=padding_mode)
-
-
-
-class DenseConv2D(nn.Module):
-    """ 2 convolutional layers with input concatenated to the output (and downsampled if strided convs).
-    All input channels are stacked at the end (no activation is applied to concatenated inputs). """
-    def __init__(self, in_ch, hidden_ch, out_ch,
-                 kernel_size, stride, padding, dilation, padding_mode='zeros',
-                 activation=nn.ReLU(), name_prefix='', batch_norm='after',
-                 pool_type='avg'):
-        """
-
-        :param batch_norm: 'after' activation, 'before' activation, or None
-        """
-        super().__init__()
-        raise AssertionError("deprecated")
-        self.conv1 = Conv2D(in_ch, hidden_ch, kernel_size, stride, padding, dilation,
-                            padding_mode, activation, batch_norm)
-        pre_concat_num_ch = out_ch - in_ch
-        self.conv2 = Conv2D(hidden_ch, pre_concat_num_ch, kernel_size, stride, padding, dilation,
-                            padding_mode, activation, name_prefix, batch_norm)
-
-    def forward(self, x):
-        x_hidden = self.conv1(x)
-        x_before_concat = self.conv2(x_hidden)
-        output_feature_maps_size = x_before_concat.shape[2:4]
-        # Residuals obtained from automatic average pool
-        return torch.cat((x_before_concat, F.adaptive_avg_pool2d(x, output_feature_maps_size)), dim=1)
-
-
-class DenseTConv2D(nn.Module):
-    """ 2 transpose convolution layers with input upsampled (bilinear interp) and concatenated to the output """
-    def __init__(self, in_ch, hidden_ch, res_ch, out_ch,
-                 kernel_size, stride, padding, output_padding, dilation=1, padding_mode='zeros',
-                 activation=nn.ReLU(), name_prefix='', batch_norm='after'):
-        """
-
-        :param res_ch: Number of residual (skip-connection) channels after the 1x1 conv applied to the input.
-            Should be (much) less than the number of output channels
-        :param batch_norm: 'after' activation, 'before' activation, or None
-        """
-        super().__init__()
-        raise AssertionError("deprecated")
-        self.conv1_act_bn = TConv2D(in_ch, hidden_ch, kernel_size, stride, padding, output_padding, dilation,
-                                    padding_mode, activation, name_prefix, batch_norm)
-        pre_concat_num_ch = out_ch - res_ch
-        self.conv2 = nn.ConvTranspose2d(hidden_ch, pre_concat_num_ch, kernel_size, stride, padding, output_padding,
+        local_conv = nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride, padding, output_padding,
                                         dilation=dilation, padding_mode=padding_mode)
-        self.skip_conv_1x1 = nn.Conv2d(in_ch, res_ch, kernel_size=(1, 1))
-        # TODO sequence, choose BN/act ordering
-        self.act2 = activation
-        self.bn2 = nn.BatchNorm2d(out_ch)
-
-    def forward(self, x):
-        x_hidden = self.conv1_act_bn(x)
-        x_before_concat = self.conv2(x_hidden)
-        output_feature_maps_size = x_before_concat.shape[2:4]
-        # 1x1 conv to reduce nb of channels to be concatenated
-        x_res = self.skip_conv_1x1(x)
-        # Upsampled residuals obtained from bilinear interpolation
-        x_cat = torch.cat((x_before_concat,
-                           F.interpolate(x_res, output_feature_maps_size, mode='bilinear', align_corners=False)), dim=1)
-        return self.bn2(self.act2(x_cat))
-
+        self.conv = nn.Sequential(local_conv, SelfAttentionConv2D(out_ch)) if self_attention else local_conv
 
 
 class ResConv2DBase(nn.Module, ABC):
@@ -191,18 +175,27 @@ class ResConv2DBase(nn.Module, ABC):
             x_skip = self._resize_x_skip(x_skip, output_feature_maps_size)
         return self.act_norm_2((x_before_add + x_skip, w))
 
+    def set_attention_gamma(self, gamma):
+        self.conv1_act_bn.set_attention_gamma(gamma)
+        if isinstance(self.conv2, nn.Sequential):
+            self.conv2[1].gamma = gamma   # Self-attention is always in 2nd position
+
 
 class ResConv2D(ResConv2DBase):
     """ An automatic average pooling is performed on the residuals if necessary,
     in order to reduce the size of the feature maps."""
-    def __init__(self, in_ch, hidden_ch, out_ch,
-                 kernel_size, stride, padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
-                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
+    def __init__(self, in_ch, hidden_ch, out_ch, kernel_size, stride, padding, dilation=(1, 1), padding_mode='zeros',
+                 act=nn.ReLU(), norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None,
+                 self_attention=(False, False)):
         super().__init__(in_ch, out_ch, act, norm_layer, adain_num_style_features)
-        # TODO "hybrid" norm: adain inside, batch norm for residuals+skip output
-        self.conv1_act_bn = Conv2D(in_ch, hidden_ch, kernel_size, stride, padding, dilation,
-                                   padding_mode, act, norm_layer, adain_num_style_features)
-        self.conv2 = nn.Conv2d(hidden_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
+        # Conv1 with act and norm - requires a style vector (tuple input/output)
+        self.conv1_act_bn = Conv2D(
+            in_ch, hidden_ch, kernel_size, stride, padding, dilation, padding_mode,
+            act, norm_layer, adain_num_style_features, self_attention=self_attention[0])
+        # Conv2 must have no norm and no activation (applied after residuals are summed)
+        # Doesn't require a style vector (modules which inherit from nn.Module directly)
+        conv2 = nn.Conv2d(hidden_ch, out_ch, kernel_size, stride, padding, dilation, padding_mode=padding_mode)
+        self.conv2 = (nn.Sequential(conv2, SelfAttentionConv2D(out_ch)) if self_attention[1] else conv2)
 
     def _resize_x_skip(self, x_skip, output_feature_maps_size):
         return F.adaptive_avg_pool2d(x_skip, output_feature_maps_size)
@@ -212,16 +205,20 @@ class ResTConv2D(ResConv2DBase):
     """  An automatic upsampling bilinear interpolation is performed to increase the size of the feature maps. """
     def __init__(self, in_ch, hidden_ch, out_ch,
                  kernel_size, stride, padding, output_padding, dilation=(1, 1), padding_mode='zeros', act=nn.ReLU(),
-                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None):
+                 norm_layer: Optional[str] = 'bn', adain_num_style_features: Optional[int] = None,
+                 self_attention=(False, False)):
         if norm_layer == 'bn+adain' or norm_layer == 'adain+bn':
             norm1, norm2 = 'adain', 'bn'
         else:
             norm1, norm2 = norm_layer, norm_layer
         super().__init__(in_ch, out_ch, act, norm2, adain_num_style_features)
-        self.conv1_act_bn = TConv2D(in_ch, hidden_ch, kernel_size, stride, padding, output_padding, dilation,
-                                    padding_mode, act, norm1, adain_num_style_features)
-        self.conv2 = nn.ConvTranspose2d(hidden_ch, out_ch, kernel_size, stride, padding, output_padding,
-                                        dilation=dilation, padding_mode=padding_mode)
+        self.conv1_act_bn = TConv2D(
+            in_ch, hidden_ch, kernel_size, stride, padding, output_padding, dilation, padding_mode, act, norm1,
+            adain_num_style_features, self_attention=self_attention[0])
+        # No act and norm for conv2 (doesn't require an input style vector)
+        conv2 = nn.ConvTranspose2d(hidden_ch, out_ch, kernel_size, stride, padding, output_padding,
+                                   dilation=dilation, padding_mode=padding_mode)
+        self.conv2 = (nn.Sequential(conv2, SelfAttentionConv2D(out_ch)) if self_attention[1] else conv2)
 
     def _resize_x_skip(self, x_skip, output_feature_maps_size):
         return F.interpolate(x_skip, output_feature_maps_size, mode='bilinear', align_corners=False)

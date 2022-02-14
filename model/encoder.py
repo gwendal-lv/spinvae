@@ -24,10 +24,8 @@ def parse_architecture(full_architecture: str):
     # Check arch args, transform
     arch_args_dict = {'adain': False, 'big': False, 'bigger': False, 'res': False, 'att': False, 'time+': False}
     for arch_arg in arch_args:
-        if arch_arg in ['adain', 'big', 'bigger', 'res', 'time+']:
+        if arch_arg in ['adain', 'big', 'bigger', 'res', 'time+', 'att']:
             arch_args_dict[arch_arg] = True  # Authorized arguments
-        elif arch_arg == 'att':
-            raise NotImplementedError("Self-attention encoder argument (_att) not implemented.")
         else:
             raise ValueError("Unvalid encoder argument '{}' from architecture '{}'".format(arch_arg, full_architecture))
     return base_arch_name, num_cnn_layers, num_fc_layers, arch_args_dict
@@ -158,17 +156,23 @@ class SpectrogramEncoder(nn.Module):
                     norm = 'bn'
                 else:
                     norm = None
+                # involves matrix multiplications on flattened 1D feature maps -> for smaller 2D feature maps only
+                # Also: attention is not useful when convolution kernel size is close to the feature maps' size
+                self_attention = (self.arch_args['att'] and (2 <= (i-1) < (self.num_cnn_layers-2)),
+                                  self.arch_args['att'] and (2 <= i < (self.num_cnn_layers-2)))
                 if building_res_block:
                     _in_ch, _out_ch = in_ch, out_ch
                 else:
                     if finish_res_block:
                         name = 'enc_{}_{}'.format(i-1, i)
-                        conv_layer = convlayer.ResConv2D(_in_ch, in_ch, out_ch, kernel_size, stride, padding,
-                                                         act=act, norm_layer=norm, adain_num_style_features=None)
+                        conv_layer = convlayer.ResConv2D(
+                            _in_ch, in_ch, out_ch, kernel_size, stride, padding, act=act, norm_layer=norm,
+                            adain_num_style_features=None, self_attention=self_attention)
                     else:
                         name = 'enc{}'.format(i)
-                        conv_layer = convlayer.Conv2D(in_ch, out_ch, kernel_size, stride, padding,
-                                                      act=act, norm_layer=norm, adain_num_style_features=None)
+                        conv_layer = convlayer.Conv2D(
+                            in_ch, out_ch, kernel_size, stride, padding, act=act, norm_layer=norm,
+                            adain_num_style_features=None, self_attention=self_attention[1])
                     if i < (self.num_cnn_layers + self.deep_feat_mix_level):  # negative mix level
                         self.single_ch_cnn.add_module(name, conv_layer)
                     else:
@@ -245,6 +249,16 @@ class SpectrogramEncoder(nn.Module):
             z_logvar = torch.ones_like(z_mu) * (- 1e-10)
             return torch.cat([z_mu, z_logvar], 1)
 
+    def set_attention_gamma(self, gamma):
+        for mod in self.features_mixer_cnn:
+            mod.set_attention_gamma(gamma)
+        for mod in self.single_ch_cnn:
+            mod.set_attention_gamma(gamma)
 
 
-
+if __name__ == '__main__':  # for debugging
+    import config
+    config.update_dynamic_config_params()
+    import model.build
+    encoder_model, decoder_model, ae_model = model.build.build_ae_model(config.model, config.train)
+    encoder_model.set_attention_gamma(0.7)

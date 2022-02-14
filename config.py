@@ -24,25 +24,33 @@ model = _Config()
 # ----------------------------------------------- Data ---------------------------------------------------
 model.data_root_path = "/media/gwendal/Data/Datasets"  # TODO anonymize path
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "VAE_MMD_5020"
-model.run_name = 'base'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "FlowInterp"
+model.run_name = 'dummy_test'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
-                                  "SpecCNN_dimz5020/speccnn8l1_res_big_schedT70/checkpoints/00499.tar"
+                                  "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
 # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
-# Arch args: '_adain', '_big', '_bigger', '_res', '_time+' (increases time resolution in the deepest layers)
-model.encoder_architecture = 'speccnn8l1_res'  # TODO implement self-attention
+# Arch args:
+#    '_adain' some BN layers are replaced by AdaIN (fed with a style vector w, dim_w < dim_z)
+#    '_att' self-attention in deep conv layers  TODO encoder and decoder
+#    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
+#    '_res' residual connections (blocks of 2 conv layer)
+#    '_time+' increases time resolution in the deepest layers
+model.encoder_architecture = 'speccnn8l1_res_big'
+model.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
 # e.g. 8l1024: 8 layers, 1024 units per layer
 model.style_architecture = 'mlp_2l128_outputbn'  # batch norm layers are always added inside the mlp
 # Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
 # TODO random permutations when building flows
-model.params_regression_architecture = 'flow_realnvp_6l300'  # TODO try bigger flow (if does not overfit anymore)
+# 3l600 is associated to bad MMD values and "dirac-like" posteriors.
+# Maybe try a bigger flow to prevent a to strong constraint on the latent space?
+model.params_regression_architecture = 'flow_realnvp_8l500'  # TODO try bigger flow (if does not overfit anymore)
 model.params_reg_hardtanh_out = False  # Applies to categorical params (numerical are always hardtanh-activated)
 model.params_reg_softmax = False  # Apply softmax at the end of the reg model itself?
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
@@ -112,9 +120,9 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # ======================================= Training procedure configuration ==========================================
 # ===================================================================================================================
 train = _Config()
-train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
+train.pretrain_ae_only = False  # Should we pre-train the auto-encoder model only?
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 128
+train.minibatch_size = 64  # 128: faster train but lower higher MMD (more posterior collapse)
 train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...). -1 indicates CPU (untested)
 train.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
 train.k_folds = 9  # 10% for validation set, 80% for training
@@ -125,6 +133,7 @@ train.n_epochs = 400 if train.pretrain_ae_only else 275  # See update_dynamic_co
 # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed has
 # more than 30x more instruments than NSynth). All available data will always be used for validation.
 train.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
+train.attention_gamma_warmup_period = 50
 
 # ------------------------------------------------ Losses -------------------------------------------------
 # Reconstruction loss: 'MSE' corresponds to free-mean, fixed-variance per-pixel Gaussian probability distributions.
@@ -133,7 +142,7 @@ train.reconstruction_loss = 'MSE'
 # Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' or 'MMD' loss with flow-VAE
 # 'MMD_determ_enc' also available: use a deterministic encoder
 train.latent_loss = 'MMD'
-train.mmd_compensation_factor = 5.0  # Loss factor applied to MMD backprop losses
+train.mmd_compensation_factor = 5.0  # Factor applied to MMD backprop losses only
 train.mmd_num_estimates = 1  # Number of MMD estimates per batch (maybe increase if small batch size)
 # Losses normalization allow to get losses in the same order of magnitude, but does not optimize the true ELBO.
 # When un-normalized, the reconstruction loss (log-probability of a multivariate gaussian) is orders of magnitude
@@ -153,8 +162,8 @@ train.params_loss_with_permutations = False  # Applies to the backprop loss only
 # - Loss for a dense dequantized output loss (set to 'None' to activate other losses)
 train.params_dense_dequantized_loss = 'None'  # Preempts CE losses
 # - Cross-Entropy loss (deactivated when using dequantized outputs)
-train.params_cat_CE_label_smoothing = 0.1  # https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html
-train.params_target_noise = 0.05
+train.params_cat_CE_label_smoothing = 0.0  # https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html
+train.params_target_noise = 0.00
 train.params_cat_CE_use_weights = False
 train.params_cat_bceloss = False  # If True, disables the CE loss to compute BCE loss instead (deprecated)
 train.params_cat_softmax_temperature = 1.0  # Temperature if softmax if applied in the loss only (!=0 is deprecated)
