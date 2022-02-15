@@ -1,6 +1,9 @@
-
+import queue
 import subprocess
 import pathlib
+import threading
+import time
+import warnings
 from datetime import datetime
 
 
@@ -28,6 +31,18 @@ class TimbreToolboxProcess:
         if verbose:
             print("Current path for the timbre.m Matlab function: {}".format(self.current_path))
 
+    def _enqueue_std_output(self, std_output, q: queue.Queue):
+        """
+        To be launched as a Thread (contains a blocking readline() call)
+        Related question: https://stackoverflow.com/questions/375427/a-non-blocking-read-on-a-subprocess-pipe-in-python
+
+        :param std_output: std::cout or std::cerr
+        """
+        while self.continue_queue_threads:
+            line = std_output.readline()
+            if line:
+                q.put(line)
+
     def run(self):
         # Matlab args From https://arc.umich.edu/software/matlab/
         # and https://stackoverflow.com/questions/38723138/matlab-execute-script-from-command-linux-line/38723505
@@ -37,32 +52,61 @@ class TimbreToolboxProcess:
                   'Subprocess args: {}\n'.format(datetime.now().strftime("%Y/%m/%d, %H:%M:%S"), proc_args)
         self._log_and_print(log_str, erase_file=True)
 
-        # Subprocess: use a single string if shell is True, otherwise use a list of command and args
-        # TODO
-        #  - time out? dur de prévoir combien un calcul complet va prendre...
-        #  - récupérer std cout en live ?
-        proc_results = subprocess.run(proc_args, shell=False, capture_output=True)
-        stdout_str = proc_results.stdout.decode('utf-8')
+        # Poll process.stdout to show stdout live
+        proc = subprocess.Popen(proc_args, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        matlab_error_time = None
 
-        log_str = "================== Matlab (in Python-subprocess) std out: ==================\n"
-        log_str += stdout_str
-        log_str += "\n=============== Matlab (in Python-subprocess) std err: ==================\n"
-        log_str += proc_results.stderr.decode('utf-8')
-        log_str += "\n==================== Matlab subprocess has ended ========================\n"
-        self._log_and_print(log_str)
+        # Retrieve std::cout and std::cerr from Threads (to raise an exception is any Matlab error happens)
+        std_out_queue, std_err_queue = queue.Queue(), queue.Queue()
+        self.continue_queue_threads = True
+        std_out_thread = threading.Thread(target=self._enqueue_std_output, args=(proc.stdout, std_out_queue))
+        std_err_thread = threading.Thread(target=self._enqueue_std_output, args=(proc.stderr, std_err_queue))
+        std_out_thread.start(), std_err_thread.start()
 
-        # TODO check for errors - display std cout if not verbose
-        if len(proc_results.stderr) > 0:
-            raise RuntimeError("Matlab std::err: \n{}".format(proc_results.stderr.decode('utf-8')))
-        elif False:
-            pass  #TODO
-        rien = 0
+        matlab_error_time = None
+        while True:
+            while not std_out_queue.empty():  # Does not guarantee get will not block
+                try:
+                    line = std_out_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._log_and_print('[MATLAB] {}'.format(line.decode('utf-8').rstrip()))
+            while not std_err_queue.empty():  # Does not guarantee get will not block
+                try:
+                    line = std_err_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._log_and_print('[MATLAB ERROR] {}'.format(line.decode('utf-8').rstrip()), force_print=True)
+                if matlab_error_time is None:  # Write this only once
+                    matlab_error_time = datetime.now()
+            time.sleep(0.001)
 
-    def _log_and_print(self, log_str, erase_file=False):
+            if proc.poll() is not None:  # Natural ending (when script has been fully executed)
+                if self.verbose:
+                    print("Matlab process has ended by itself.")
+                break
+            if matlab_error_time is not None:  # Forced ending (after a small delay, to retrieve all std err data)
+                if (datetime.now() - matlab_error_time).total_seconds() > 2.0:
+                    break
+
+        if matlab_error_time is not None:
+            # TODO display cerr data, if not verbose
+            raise RuntimeError("Matlab has raised an error - please check console outputs above")
+        rc = proc.poll()
+        if rc != 0:
+            warnings.warn('Matlab exit code was {}. Please check console outputs.'.format(rc))
+
+        self.continue_queue_threads = False
+        std_out_thread.join()
+        std_err_thread.join()
+
+        self._log_and_print("\n==================== Matlab subprocess has ended ========================\n")
+
+    def _log_and_print(self, log_str, erase_file=False, force_print=False):
         open_mode = 'w' if erase_file else 'a'
         with open(self.data_root_path.joinpath('timbre_matlab_log.txt'), open_mode) as f:
-            f.write(log_str)
-        if self.verbose:
+            f.writelines([log_str])
+        if self.verbose or force_print:
             print(log_str)
 
 
