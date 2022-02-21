@@ -1,19 +1,25 @@
-function rc = timbre(audio_root_path)
+function rc = timbre(directories_list_file)
     disp(strcat('Script starts: ', datestr(now, 'yy/mm/dd-HH:MM:SS')));
 
-    disp('audio_root_path: ')
-    disp(audio_root_path)
+    disp('Input args file: ')
+    disp(directories_list_file)
 
     % FIXME replace audio_root_path
-    sub_folders = dir(audio_root_path);
-    sub_folders = sub_folders( [sub_folders.isdir] );
-    sub_folders = sub_folders(3:end);  % remove . and ..
-    sub_folders_names = {sub_folders.folder};  % TODO
+    %sub_folders = readlines(directories_list_file)  % Matlab 2020...
+    fid = fopen(directories_list_file);
+    sub_folders = {};  % Empty array
+    tline = fgetl(fid);
+    while ischar(tline)
+        sub_folders(end+1) = {tline};
+        tline = fgetl(fid);
+    end
+    fclose(fid);
+
 
     % Process folders one by one
-    for folder_index = 1 : length(sub_folders)  % FIXME TEMP: process only 1 folder
+    for folder_index = 1 : length(sub_folders)
 
-        soundsDirectory = strcat(sub_folders(folder_index).folder, '/', sub_folders(folder_index).name);
+        soundsDirectory = sub_folders{folder_index};  % Get the contents of a cell
 
         % Parts of: https://github.com/VincentPerreault0/timbretoolbox/blob/master/doc/Full_Config_Example.m
         singleFileName = '';

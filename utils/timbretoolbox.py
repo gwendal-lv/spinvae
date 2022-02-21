@@ -1,3 +1,4 @@
+import multiprocessing.pool
 import pickle
 import queue
 import subprocess
@@ -7,50 +8,45 @@ import time
 import warnings
 from datetime import datetime
 from typing import Optional
+from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
 
 
+class ToolboxLogger(ABC):
+    @abstractmethod
+    def log_and_print(self, log_str: str, erase_file=False, force_print=False):
+        pass
+
+
 class TimbreToolboxProcess:
-    def __init__(self, timbre_toolbox_path: str, data_root_path: str, verbose=True):
+    def __init__(self, timbre_toolbox_path: pathlib.Path, directories_list_file: pathlib.Path, verbose=True,
+                 logger: Optional[ToolboxLogger] = None, process_index: Optional[int] = None):
         """
-        Runs the TimbreToolbox to process sub-folders of audio files.
+        Runs the TimbreToolbox to process folders of audio files (folders' paths given in a separate text file).
         The 'matlab' command must be available system-wide.
 
         :param timbre_toolbox_path: Path the TimbreToolbox https://github.com/VincentPerreault0/timbretoolbox
-        :param data_root_path: Folder whose sub-folders contain audio samples to be analyzed.
+        :param directories_list_file: Text file which contains a list of directories to be analyzed by the toolbox.
         :param verbose:
         """
-        self.timbre_toolbox_path = pathlib.Path(timbre_toolbox_path)
-        self.data_root_path = pathlib.Path(data_root_path)
+        self.process_index = process_index
+        self.logger = logger
         self.verbose = verbose
         self.current_path = pathlib.Path(__file__).parent
-        # TODO send a subset of folders to analyze
         self.matlab_commands = "addpath(genpath('{}')); " \
                                "cd '{}'; " \
                                "timbre('{}'); " \
                                "exit " \
-            .format(str(self.timbre_toolbox_path),
+            .format(str(timbre_toolbox_path),
                     str(self.current_path),  # Path to the local timbre.m file
-                    str(self.data_root_path)
+                    str(directories_list_file)
                     )
-        if verbose:
-            print("Current path for the timbre.m Matlab function: {}".format(self.current_path))
         self.continue_queue_threads = False
 
-    def get_audio_sub_folders(self):
-        """ :returns: The List of sub-folders of the data_root_path folder. """
-        return [f for f in self.data_root_path.iterdir() if f.is_dir()]
-
-    def _clean_sub_folders(self):
-        """ Removes all .csv and .mat files (written by TimbreToolbox) from sub-folders of the data_root_path folder.
-        """
-        for sub_dir in self.get_audio_sub_folders():
-            files_to_remove = list(sub_dir.glob('*.csv'))
-            files_to_remove += list(sub_dir.glob('*.mat'))
-            for f in files_to_remove:
-                f.unlink(missing_ok=False)
+    def _get_process_str(self):
+        return '' if self.process_index is None else ' #{}'.format(self.process_index)
 
     def _enqueue_std_output(self, std_output, q: queue.Queue):
         """
@@ -65,8 +61,6 @@ class TimbreToolboxProcess:
                 q.put(line)
 
     def run(self):
-        self._log_and_print("Deleting all previously written .csv and .mat files...")
-        self._clean_sub_folders()
 
         # Matlab args From https://arc.umich.edu/software/matlab/
         # and https://stackoverflow.com/questions/38723138/matlab-execute-script-from-command-linux-line/38723505
@@ -74,11 +68,12 @@ class TimbreToolboxProcess:
         log_str = '============ Launching matlab commands (will block if a Matlab error happens) ============\n' \
                   '{}\n' \
                   'Subprocess args: {}\n'.format(datetime.now().strftime("%Y/%m/%d, %H:%M:%S"), proc_args)
-        self._log_and_print(log_str, erase_file=True)
+        if self.process_index is not None:
+            log_str = '[#{}]'.format(self.process_index) + log_str
+        self._log_and_print(log_str)
 
         # Poll process.stdout to show stdout live
         proc = subprocess.Popen(proc_args, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        matlab_error_time = None
 
         # Retrieve std::cout and std::cerr from Threads (to raise an exception is any Matlab error happens)
         std_out_queue, std_err_queue = queue.Queue(), queue.Queue()
@@ -96,59 +91,99 @@ class TimbreToolboxProcess:
                     line = std_out_queue.get_nowait()
                 except queue.Empty:
                     break
-                self._log_and_print('[MATLAB] {}'.format(line.decode('utf-8').rstrip()))
+                self._log_and_print('[MATLAB{}] {}'.format(self._get_process_str(), line.decode('utf-8').rstrip()))
             while not std_err_queue.empty():  # Does not guarantee get will not block
                 try:
                     line = std_err_queue.get_nowait()
                 except queue.Empty:
                     break
-                self._log_and_print('[MATLAB ERROR] {}'.format(line.decode('utf-8').rstrip()), force_print=True)
+                self._log_and_print('[MATLAB{} ERROR] {}'.format(self._get_process_str(),
+                                                                 line.decode('utf-8').rstrip()), force_print=True)
                 if matlab_error_time is None:  # Write this only once
                     matlab_error_time = datetime.now()
             time.sleep(0.001)
 
             if proc.poll() is not None:  # Natural ending (when script has been fully executed)
                 if self.verbose:
-                    print("Matlab process has ended by itself.")
+                    print("Matlab process{} has ended by itself.".format(self._get_process_str()))
                 keep_running = False
             if matlab_error_time is not None:  # Forced ending (after a small delay, to retrieve all std err data)
                 if (datetime.now() - matlab_error_time).total_seconds() > 2.0:
                     keep_running = False
 
         if matlab_error_time is not None:
-            raise RuntimeError("Matlab has raised an error - please check console outputs above")
+            raise RuntimeError("Matlab{} has raised an error - please check console outputs above"
+                               .format(self._get_process_str()))
         rc = proc.poll()
         if rc != 0:
-            warnings.warn('Matlab exit code was {}. Please check console outputs.'.format(rc))
+            warnings.warn('Matlab{} exit code was {}. Please check console outputs.'
+                          .format(self._get_process_str(), rc))
 
         self.continue_queue_threads = False
         std_out_thread.join()
         std_err_thread.join()
 
-        self._log_and_print("\n==================== Matlab subprocess has ended ========================\n")
+        self._log_and_print("\n==================== Matlab subprocess{} has ended ========================\n"
+                            .format(self._get_process_str()))
 
-    def _log_and_print(self, log_str: str, erase_file=False, force_print=False):
-        open_mode = 'w' if erase_file else 'a'
-        with open(self.data_root_path.joinpath('timbre_matlab_log.txt'), open_mode) as f:
-            f.write(log_str + '\n')  # Trailing spaces and newlines should have been removed
-        if self.verbose or force_print:
+    def _log_and_print(self, log_str: str, force_print=False):
+        """ Use the logger attribute if available, otherwise just print """
+        if self.logger is not None:
+            self.logger.log_and_print(log_str, force_print=force_print)
+        elif self.verbose or force_print:
             print(log_str)
 
 
-
-class InterpolationTimbreToolbox(TimbreToolboxProcess):
+class InterpolationTimbreToolbox(ToolboxLogger):
     def __init__(self, timbre_toolbox_path: str, data_root_path: str, verbose=True,
-                 remove_matlab_csv_after_usage=False):  # FIXME default to true
+                 remove_matlab_csv_after_usage=False,  # FIXME default to true (or auto set to False during debug)
+                 num_matlab_proc=1):
         """
         Can run the TimbreToolbox (in Matlab), then properly converts the computed audio features into Python
         data structures.
+        :param num_matlab_proc: Number of Matlab instances created to process the entire dataset (must be >= 1).
         """
-        super().__init__(timbre_toolbox_path, data_root_path, verbose)
+        self.timbre_toolbox_path = pathlib.Path(timbre_toolbox_path)
+        self.data_root_path = pathlib.Path(data_root_path)
+        self.verbose = verbose
         self._remove_csv_after_usage = remove_matlab_csv_after_usage
         self.all_sequences_features = None
+        self.num_matlab_proc = num_matlab_proc
+        self._logging_lock = threading.RLock()  # Re-entrant lock (with owner when acquired)
+
+    def log_and_print(self, log_str: str, erase_file=False, force_print=False):
+        with self._logging_lock:
+            open_mode = 'w' if erase_file else 'a'
+            with open(self.data_root_path.joinpath('timbre_matlab_log.txt'), open_mode) as f:
+                f.write(log_str + '\n')  # Trailing spaces and newlines should have been removed
+            if self.verbose or force_print:
+                print(log_str)
+
+    def get_audio_sub_folders(self):
+        """ :returns: The List of sub-folders of the data_root_path folder. """
+        return [f for f in self.data_root_path.iterdir() if f.is_dir()]
+
+    def _clean_folders(self):
+        """
+        Removes all .csv and .mat files (written by TimbreToolbox) from sub-folders of the data_root_path folder.
+        TODO Also remove list of folders to be analyzed by each Matlab subprocess.
+        """
+        for sub_dir in self.get_audio_sub_folders():
+            files_to_remove = list(sub_dir.glob('*.csv'))
+            files_to_remove += list(sub_dir.glob('*.mat'))
+            for f in files_to_remove:
+                f.unlink(missing_ok=False)
+        for f in list(self.data_root_path.glob("*_input_args.txt")):
+            f.unlink(missing_ok=False)
+
+    def _get_directories_list_file(self, proc_index: int):
+        """ Returns the path to the file that contains the folders that a Matlab instance will analyze. """
+        return self.data_root_path.joinpath('matlab{}_input_args.txt'.format(proc_index))
 
     def run(self):
-        super().run()  # Matlab stores CSV results
+        t_start = datetime.now()
+        self.log_and_print("Deleting all previously written .csv and .mat files...")
+        self._clean_folders()
 
         # Get indices of sequences, using the existing folder structure only
         audio_sub_folders = sorted(self.get_audio_sub_folders())  # Are supposed to be interpolation sequence names
@@ -158,9 +193,24 @@ class InterpolationTimbreToolbox(TimbreToolboxProcess):
         except ValueError:
             raise NameError("All sub-folders inside '{}' must be named as integers (indices of interpolation sequences)"
                             .format(self.data_root_path))
-        if list(sequence_indices) != list(range(len(sequence_indices))):
+        if sequence_indices != list(range(len(sequence_indices))):
             raise NameError("Sub-folders inside '{}' are not named as a continuous range of indices. Found indices: {}"
                             .format(self.data_root_path, sequence_indices))
+
+        # split list of audio folders, store them into files
+        split_audio_sub_folders = np.array_split(audio_sub_folders, self.num_matlab_proc)
+        for proc_index, proc_audio_folders in enumerate(split_audio_sub_folders):
+            with open(self._get_directories_list_file(proc_index), 'w') as f:
+                for audio_dir in proc_audio_folders:
+                    f.write(str(audio_dir) + '\n')
+        # run all processors in their own thread
+        threads = [threading.Thread(target=self._run_matlab_proc, args=(i, self._get_directories_list_file(i)))
+                   for i in range(self.num_matlab_proc)]
+        for t in threads:
+            t.start()
+            time.sleep(1.0)  # delay thread start in order to prevent mixed console outputs
+        for t in threads:
+            t.join()
 
         # Read CSVs from all interp sequences and all audio files
         self.all_sequences_features = list()
@@ -199,7 +249,16 @@ class InterpolationTimbreToolbox(TimbreToolboxProcess):
             pickle.dump(self.all_sequences_features, f)
 
         if self._remove_csv_after_usage:
-            self._clean_sub_folders()
+            self._clean_folders()
+        delta_t = (datetime.now() - t_start).total_seconds()
+        print("[InterpolationTimbreToolbox] Processed {} interpolation sequences in {:.1f} minutes ({:.2f}s/sequence)"
+              .format(len(audio_sub_folders), delta_t/60.0, delta_t/len(audio_sub_folders)))
+
+    def _run_matlab_proc(self, proc_index: int, directories_list_file: pathlib.Path):
+        timbre_processor = TimbreToolboxProcess(
+            self.timbre_toolbox_path, directories_list_file, verbose=self.verbose, logger=self, process_index=proc_index
+        )
+        timbre_processor.run()
 
     @staticmethod
     def _to_float(value: str, csv_file: Optional[pathlib.Path] = None, csv_line: Optional[int] = None):
@@ -259,7 +318,8 @@ if __name__ == "__main__":
 
     _timbre_toolbox_path = '/home/gwendal/Documents/MATLAB/timbretoolbox'
     _data_root_path = '/media/gwendal/Data/Interpolations/LinearNaive/interp_validation'
-    timbre_proc = InterpolationTimbreToolbox(_timbre_toolbox_path, _data_root_path)
+    timbre_proc = InterpolationTimbreToolbox(_timbre_toolbox_path, _data_root_path,
+                                             num_matlab_proc=12)
     timbre_proc.run()
 
 
