@@ -1,3 +1,4 @@
+import pickle
 import queue
 import subprocess
 import pathlib
@@ -5,31 +6,51 @@ import threading
 import time
 import warnings
 from datetime import datetime
+from typing import Optional
+
+import numpy as np
+import pandas as pd
 
 
 class TimbreToolboxProcess:
     def __init__(self, timbre_toolbox_path: str, data_root_path: str, verbose=True):
         """
-        Runs the TimbreToolbox.
+        Runs the TimbreToolbox to process sub-folders of audio files.
         The 'matlab' command must be available system-wide.
 
         :param timbre_toolbox_path: Path the TimbreToolbox https://github.com/VincentPerreault0/timbretoolbox
         :param data_root_path: Folder whose sub-folders contain audio samples to be analyzed.
         :param verbose:
         """
-        self.timbre_toolbox_path = timbre_toolbox_path
+        self.timbre_toolbox_path = pathlib.Path(timbre_toolbox_path)
         self.data_root_path = pathlib.Path(data_root_path)
         self.verbose = verbose
-        self.current_path = str(pathlib.Path(__file__).parent)
+        self.current_path = pathlib.Path(__file__).parent
+        # TODO send a subset of folders to analyze
         self.matlab_commands = "addpath(genpath('{}')); " \
                                "cd '{}'; " \
-                               "timbre; " \
+                               "timbre('{}'); " \
                                "exit " \
-            .format(self.timbre_toolbox_path,  # Path to the Timbre Toolbox
-                    self.current_path,  # Path to the local timbre.m file
+            .format(str(self.timbre_toolbox_path),
+                    str(self.current_path),  # Path to the local timbre.m file
+                    str(self.data_root_path)
                     )
         if verbose:
             print("Current path for the timbre.m Matlab function: {}".format(self.current_path))
+        self.continue_queue_threads = False
+
+    def get_audio_sub_folders(self):
+        """ :returns: The List of sub-folders of the data_root_path folder. """
+        return [f for f in self.data_root_path.iterdir() if f.is_dir()]
+
+    def _clean_sub_folders(self):
+        """ Removes all .csv and .mat files (written by TimbreToolbox) from sub-folders of the data_root_path folder.
+        """
+        for sub_dir in self.get_audio_sub_folders():
+            files_to_remove = list(sub_dir.glob('*.csv'))
+            files_to_remove += list(sub_dir.glob('*.mat'))
+            for f in files_to_remove:
+                f.unlink(missing_ok=False)
 
     def _enqueue_std_output(self, std_output, q: queue.Queue):
         """
@@ -44,6 +65,9 @@ class TimbreToolboxProcess:
                 q.put(line)
 
     def run(self):
+        self._log_and_print("Deleting all previously written .csv and .mat files...")
+        self._clean_sub_folders()
+
         # Matlab args From https://arc.umich.edu/software/matlab/
         # and https://stackoverflow.com/questions/38723138/matlab-execute-script-from-command-linux-line/38723505
         proc_args = ['matlab', '-nodisplay', '-nodesktop', '-nosplash', '-r', self.matlab_commands]
@@ -64,7 +88,9 @@ class TimbreToolboxProcess:
         std_out_thread.start(), std_err_thread.start()
 
         matlab_error_time = None
-        while True:
+        # We keep pooling the queues until the process ends, or an error happens
+        keep_running = True
+        while keep_running:
             while not std_out_queue.empty():  # Does not guarantee get will not block
                 try:
                     line = std_out_queue.get_nowait()
@@ -84,13 +110,12 @@ class TimbreToolboxProcess:
             if proc.poll() is not None:  # Natural ending (when script has been fully executed)
                 if self.verbose:
                     print("Matlab process has ended by itself.")
-                break
+                keep_running = False
             if matlab_error_time is not None:  # Forced ending (after a small delay, to retrieve all std err data)
                 if (datetime.now() - matlab_error_time).total_seconds() > 2.0:
-                    break
+                    keep_running = False
 
         if matlab_error_time is not None:
-            # TODO display cerr data, if not verbose
             raise RuntimeError("Matlab has raised an error - please check console outputs above")
         rc = proc.poll()
         if rc != 0:
@@ -102,19 +127,139 @@ class TimbreToolboxProcess:
 
         self._log_and_print("\n==================== Matlab subprocess has ended ========================\n")
 
-    def _log_and_print(self, log_str, erase_file=False, force_print=False):
+    def _log_and_print(self, log_str: str, erase_file=False, force_print=False):
         open_mode = 'w' if erase_file else 'a'
         with open(self.data_root_path.joinpath('timbre_matlab_log.txt'), open_mode) as f:
-            f.writelines([log_str])
+            f.write(log_str + '\n')  # Trailing spaces and newlines should have been removed
         if self.verbose or force_print:
             print(log_str)
+
+
+
+class InterpolationTimbreToolbox(TimbreToolboxProcess):
+    def __init__(self, timbre_toolbox_path: str, data_root_path: str, verbose=True,
+                 remove_matlab_csv_after_usage=False):  # FIXME default to true
+        """
+        Can run the TimbreToolbox (in Matlab), then properly converts the computed audio features into Python
+        data structures.
+        """
+        super().__init__(timbre_toolbox_path, data_root_path, verbose)
+        self._remove_csv_after_usage = remove_matlab_csv_after_usage
+        self.all_sequences_features = None
+
+    def run(self):
+        super().run()  # Matlab stores CSV results
+
+        # Get indices of sequences, using the existing folder structure only
+        audio_sub_folders = sorted(self.get_audio_sub_folders())  # Are supposed to be interpolation sequence names
+        sequence_names = [sub_dir.name for sub_dir in audio_sub_folders]
+        try:
+            sequence_indices = [int(name) for name in sequence_names]
+        except ValueError:
+            raise NameError("All sub-folders inside '{}' must be named as integers (indices of interpolation sequences)"
+                            .format(self.data_root_path))
+        if list(sequence_indices) != list(range(len(sequence_indices))):
+            raise NameError("Sub-folders inside '{}' are not named as a continuous range of indices. Found indices: {}"
+                            .format(self.data_root_path, sequence_indices))
+
+        # Read CSVs from all interp sequences and all audio files
+        self.all_sequences_features = list()
+        num_interp_steps = None
+        for sub_dir in audio_sub_folders:
+            if int(sub_dir.name) == 0:
+                pass  # TODO sequence zero: retrieve units of all descriptors
+
+            sequence_descriptors = list()
+            csv_files = sorted([f for f in sub_dir.glob('*.csv')])
+            if num_interp_steps is None:
+                num_interp_steps = len(csv_files)
+            elif len(csv_files) != num_interp_steps:
+                raise RuntimeError("Inconsistent number of interpolation steps: found {} in {} but {} in the "
+                                   "previous folder".format(len(csv_files), sub_dir, num_interp_steps))
+
+            for step_index, csv_file in enumerate(csv_files):
+                csv_index = int(csv_file.name.replace('audio_step', '').replace('_stats.csv', ''))
+                if step_index != csv_index:
+                    raise ValueError("Inconsistent indices. Expected step index: {}; found: {} in {}"
+                                     .format(step_index, csv_index, csv_file))
+                sequence_descriptors.append(self.read_stats_csv(csv_file))
+            # Aggregate per-file descriptors and stats, into a per-sequence dict
+            aggregated_seq_data = dict()
+            aggregated_seq_data['seq_index'] = list(range(len(sequence_descriptors)))
+            for descriptor_name in sequence_descriptors[0].keys():
+                aggregated_seq_data[descriptor_name] \
+                    = [audio_file_data[descriptor_name] for audio_file_data in sequence_descriptors]
+            # convert data for each sequence to DF
+            aggregated_seq_data = pd.DataFrame(aggregated_seq_data)
+            with open(sub_dir.joinpath('sequence_features.pkl'), 'wb') as f:
+                pickle.dump(aggregated_seq_data, f)
+            self.all_sequences_features.append(aggregated_seq_data)
+        # Easy-to-load list with features from all sequences
+        with open(self.data_root_path.joinpath('all_sequence_features.pkl'), 'wb') as f:
+            pickle.dump(self.all_sequences_features, f)
+
+        if self._remove_csv_after_usage:
+            self._clean_sub_folders()
+
+    @staticmethod
+    def _to_float(value: str, csv_file: Optional[pathlib.Path] = None, csv_line: Optional[int] = None):
+        try:  # detection of casting errors
+            float_value = float(value)
+        except ValueError as e:
+            if csv_line is not None and csv_line is not None:
+                warnings.warn("Cannot convert {} to float, will use complex module instead. File '{}' "
+                              "line {}: {}".format(value, csv_file, csv_line, e))
+            else:
+                warnings.warn("Cannot convert {} to float, will use complex module instead. {}".format(value, e))
+            float_value = np.abs(complex(value.replace('i', 'j')))  # Matlab uses 'i', Python uses 'j'
+        return float_value
+
+    def read_stats_csv(self, csv_file: pathlib.Path):
+        """
+        :return: A Dict of descriptors. Some of them
+        """
+        descr_data = dict()
+        with open(csv_file, 'r') as f:
+            lines = [line.rstrip() for line in f.readlines()]
+            current_repr, current_descr = None, None
+            for i, line in enumerate(lines):
+                if len(line) > 0:  # Non-empty line
+                    try:
+                        name, value = line.split(',')
+                    except ValueError:
+                        continue  # e.g. empty Unit, or STFT has oddly formatted data (single line with 'Minimums,')
+                    # First: we look for a new descriptor or representation
+                    if name.lower() == 'representation':  # New representation: next fields are related to the
+                        current_repr = value              # representation, not one of its descriptors
+                        current_descr = None
+                    elif name.lower() == 'descriptor':  # Next fields will be related to this descriptor
+                        current_descr = value
+                    else:  # At this point, the line contains a specific field
+                        if current_descr is not None:  # Representation fields (min/max/med/iqr + other fields, params?)
+                            if name.lower() == 'value':  # Global descriptors: single value
+                                descr_data[current_descr] = self._to_float(value, csv_file, i)
+                            elif name.lower() == 'minimum':
+                                descr_data[current_descr + '_min'] = self._to_float(value, csv_file, i)
+                            elif name.lower() == 'maximum':
+                                descr_data[current_descr + '_max'] = self._to_float(value, csv_file, i)
+                            elif name.lower() == 'median':
+                                descr_data[current_descr + '_med'] = self._to_float(value, csv_file, i)
+                            elif name.lower() == 'interquartile range':
+                                descr_data[current_descr + '_IQR'] = self._to_float(value, csv_file, i)
+                            else:  # Other descriptor fields (e.g. unit, parameters) are discarded
+                                pass
+                else:  # Empty line indicates a new descriptor (maybe a new representation)
+                    current_descr = None
+        return descr_data
+
+
 
 
 if __name__ == "__main__":
 
     _timbre_toolbox_path = '/home/gwendal/Documents/MATLAB/timbretoolbox'
     _data_root_path = '/media/gwendal/Data/Interpolations/LinearNaive/interp_validation'
-    timbre_proc = TimbreToolboxProcess(_timbre_toolbox_path, _data_root_path)
+    timbre_proc = InterpolationTimbreToolbox(_timbre_toolbox_path, _data_root_path)
     timbre_proc.run()
 
 
