@@ -125,7 +125,7 @@ class MergedDataset(AudioDataset):
     def total_nb_presets(self):  # Sum of available indexes for each dataset
         return sum([ds.total_nb_presets for _, ds in self._datasets.items()])
 
-    def get_name_from_preset_UID(self, preset_UID: int) -> str:
+    def get_name_from_preset_UID(self, preset_UID: int, long_name=False) -> str:
         local_UID, ds = self._global_to_local_UID_and_ds(preset_UID)
         return "[{}] {}".format(ds.synth_name[:3], ds.get_name_from_preset_UID(local_UID))
 

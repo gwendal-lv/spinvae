@@ -14,6 +14,9 @@ import multiprocessing
 from multiprocessing.pool import ThreadPool
 import time
 from typing import Iterable, List
+import warnings
+from abc import ABC, abstractmethod
+from datetime import datetime
 
 import librosa
 import numpy as np
@@ -54,8 +57,7 @@ def get_partial_presets_df(db_row_index_limits):
     (first and last included).
 
     Useful for fast DB reading, because it involves a lot of unpickling which can be parallelized. """
-    db_path = PresetDatabase._get_db_path()
-    conn = sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = PresetDatabaseABC._get_db_connection()
     nb_rows = db_row_index_limits[1] - db_row_index_limits[0] + 1
     presets_df = pd.read_sql_query("SELECT * FROM preset LIMIT {} OFFSET {}"
                                    .format(nb_rows, db_row_index_limits[0]), conn)
@@ -63,10 +65,58 @@ def get_partial_presets_df(db_row_index_limits):
     return presets_df
 
 
-class PresetDatabase:
+
+class PresetDatabaseABC(ABC):
+    def __init__(self):
+        # We also pre-load the names in order to close the sqlite DB
+        conn = self._get_db_connection()
+        names_df = pd.read_sql_query("SELECT * FROM param ORDER BY index_param", conn)
+        conn.close()
+        self._param_names = names_df['name'].to_list()
+
+    @staticmethod
+    def _get_db_path():
+        return pathlib.Path(__file__).parent.joinpath('dexed_presets.sqlite')  # pkgutil would be better
+
+    @staticmethod
+    def _get_db_connection():
+        db_path = PresetDatabaseABC._get_db_path()
+        return sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
+
+    @property
+    @abstractmethod
+    def nb_presets(self) -> int:
+        pass
+
+    @abstractmethod
+    def get_preset_name(self, preset_UID: int) -> str:
+        pass
+
+    @property
+    @abstractmethod
+    def nb_params_per_preset(self) -> int:
+        pass
+
+    @property
+    def param_names(self):
+        return self._param_names
+
+    @staticmethod
+    def get_params_in_plugin_format(params: Iterable):
+        """ Converts a 1D array of param values into an list of (idx, param_value) tuples """
+        preset_values = np.asarray(params, dtype=np.double)  # np.float32 is not valid for RenderMan
+        # Dexed parameters are nicely ordered from 0 to 154
+        return [(i, preset_values[i]) for i in range(preset_values.shape[0])]
+
+
+
+class PresetDatabase(PresetDatabaseABC):
     def __init__(self, num_workers=None):
-        """ Opens the SQLite DB and copies all presets internally. This uses a lot of memory
+        """ DEPRECATED - Opens the SQLite DB and copies all presets internally. This uses a lot of memory
         but allows easy multithreaded usage from multiple parallel dataloaders (1 db per dataloader). """
+        warnings.warn("PresetDatabase class uses the original SQLite database, which is very slow and "
+                      "is not up to date. Please use PresetDfDatabase instead", DeprecationWarning)
+        super().__init__()
         self._db_path = self._get_db_path()
         conn = sqlite3.connect(self._db_path, detect_types=sqlite3.PARSE_DECLTYPES)
         cur = conn.cursor()
@@ -80,9 +130,6 @@ class PresetDatabase:
         # Algorithms are also separately stored
         self._preset_algos = self.presets_mat[:, 4]
         self._preset_algos = np.asarray(np.round(1.0 + self._preset_algos * 31.0), dtype=np.int)
-        # We also pre-load the names in order to close the sqlite DB
-        names_df = pd.read_sql_query("SELECT * FROM param ORDER BY index_param", conn)
-        self._param_names = names_df['name'].to_list()
         conn.close()
 
     def _load_presets_df_multiprocess(self, conn, cur, num_workers):
@@ -106,20 +153,10 @@ class PresetDatabase:
                 partial_presets_dfs = p.map(get_partial_presets_df, row_index_limits)
         return pd.concat(partial_presets_dfs)
 
-    @staticmethod
-    def _get_db_path():
-        return pathlib.Path(__file__).parent.joinpath('dexed_presets.sqlite')  # pkgutil would be better
-
     def __str__(self):
         return "{} DX7 presets in database '{}'.".format(len(self.all_presets_df), self._db_path)
 
-    def get_nb_presets(self):
-        return len(self.all_presets_df)
-
-    def get_preset_name(self, idx):
-        return self.all_presets_df.iloc[idx]['name']
-
-    def get_preset_values(self, idx, plugin_format=False):
+    def get_preset_values(self, idx, plugin_format=False):  # FIXME move to ABC mother class
         """ Returns a preset from the DB.
 
         :param idx: the preset 'row line' in the DB (not the index_preset value, which is an ID)
@@ -130,13 +167,6 @@ class PresetDatabase:
             return self.get_params_in_plugin_format(preset_values)
         else:
             return preset_values
-
-    @staticmethod
-    def get_params_in_plugin_format(params: Iterable):
-        """ Converts a 1D array of param values into an list of (idx, param_value) tuples """
-        preset_values = np.asarray(params, dtype=np.double)  # np.float32 is not valid for RenderMan
-        # Dexed parameters are nicely ordered from 0 to 154
-        return [(i, preset_values[i]) for i in range(preset_values.shape[0])]
 
     def get_param_names(self):
         return self._param_names
@@ -196,11 +226,15 @@ class PresetDatabase:
 
     @staticmethod
     def get_preset_params_values_from_file(preset_UID):
+        warnings.warn("PresetDatabase class uses the original SQLite database, which is very slow and "
+                      "is not up to date. Please use PresetDfDatabase instead", DeprecationWarning)
         return np.load(PresetDatabase._get_presets_folder()
                        .joinpath( "preset{:06d}_params.pickle".format(preset_UID)), allow_pickle=True)
 
     @staticmethod
     def get_preset_name_from_file(preset_UID):
+        warnings.warn("PresetDatabase class uses the original SQLite database, which is very slow and "
+                      "is not up to date. Please use PresetDfDatabase instead", DeprecationWarning)
         with open(PresetDatabase._get_presets_folder()
                   .joinpath( "preset{:06d}_name.txt".format(preset_UID)), 'r') as f:
             name = f.read()
@@ -208,6 +242,7 @@ class PresetDatabase:
 
     @staticmethod
     def get_available_labels():
+        raise DeprecationWarning("These labels were extracted from the HPSS analysis and are obsolete.")
         return 'harmonic', 'percussive', 'sfx'
 
     @staticmethod
@@ -217,6 +252,73 @@ class PresetDatabase:
                   .joinpath("preset{:06d}_labels.txt".format(preset_UID)), 'r') as f:
             labels = f.read()
         return labels.split(',')
+
+
+
+class PresetDfDatabase(PresetDatabaseABC):
+    def __init__(self):
+        super().__init__()
+        with open(PresetDfDatabase._get_dataframe_db_path(), 'rb') as f:
+            self._presets_df = pickle.load(f)
+        # Build UID -> local idx dict, for faster access to data by UID
+        self._UID_to_local_idx = {self._presets_df.iloc[idx]['preset_UID']: idx
+                                  for idx in range(len(self._presets_df))}
+        # TODO get available labels
+
+    @property
+    def nb_presets(self) -> int:
+        return len(self._presets_df)
+
+    def get_preset_name(self, preset_UID: int, long_name=False) -> str:
+        df_idx = self._UID_to_local_idx[preset_UID]
+        name = self._presets_df.iloc[df_idx]['name']
+        if long_name:
+            name += ' ({})'.format(self._presets_df.iloc[df_idx]['cartridge_name'])
+        return name
+
+    def get_preset_params_values(self, preset_UID: int):
+        return self._presets_df.iloc[self._UID_to_local_idx[preset_UID]]['params_values']
+
+    @property
+    def nb_params_per_preset(self) -> int:
+        return self._presets_df.iloc[0]['params_values'].shape[0]
+
+    @property
+    def all_preset_UIDs(self):
+        return self._presets_df['preset_UID'].values
+
+    @staticmethod
+    def _get_dataframe_db_path():
+        return pathlib.Path(__file__).parent.joinpath('dexed_presets.df.pickle')
+
+    @staticmethod
+    def save_sqlite_to_df(verbose=False):
+        """ Saves the reference .sqlite presets database into an equivalent pandas dataframe. """
+        t_start = datetime.now()
+        conn = PresetDfDatabase._get_db_connection()
+        presets_df = pd.read_sql_query("SELECT * FROM preset", conn)
+        cartridges_df = pd.read_sql_query("SELECT * FROM cartridge", conn)
+        params_info_df = pd.read_sql_query("SELECT * FROM param", conn)  # Contains params' names
+        conn.close()
+        if verbose:
+            print("[PresetDfDatabase] SQLite tables were read in {:.1f}s"
+                  .format((datetime.now() - t_start).total_seconds()))
+        # Post-processing: remove/rename SQLite columns, add cartridges names
+        presets_df = presets_df.rename(columns={"index_preset": "preset_UID"})  # Corresponding Python variable name
+        presets_df = presets_df.rename(columns={"pickled_params_np_array": "params_values"})
+        presets_df = presets_df.drop(columns=['other_names'])
+        presets_df = presets_df.rename(columns={"labels": "hpss_labels"})  # DAFx21 paper: Harmonic-Percussive labels
+        cartridge_names = list()
+        for cart_idx in presets_df['index_cart'].values:  # Very slow search... but done only once
+            name = cartridges_df[cartridges_df['index_cart'] == cart_idx]['name'].values  # array
+            if len(name) != 1:
+                raise ValueError('index_cart should be unique in the database')
+            cartridge_names.append(name[0])
+        presets_df['cartridge_name'] = cartridge_names
+        # Save the full df
+        with open(PresetDfDatabase._get_dataframe_db_path(), 'wb') as f:
+            pickle.dump(presets_df, f)  # Pickle Reloading takes < 0.0 ms from the SSD
+
 
 
 class Dexed:
@@ -514,50 +616,63 @@ class Dexed:
 
 if __name__ == "__main__":
 
-    print("Machine: '{}' ({} CPUs)".format(socket.gethostname(), os.cpu_count()))
+    test_SQLite_database = False
+    test_df_database = True
 
-    t0 = time.time()
-    dexed_db = PresetDatabase()
-    print("{} (loaded in {:.1f}s)".format(dexed_db, time.time() - t0))
-    names = dexed_db.get_param_names()
-    #print("Labels example: {}".format(dexed_db.get_preset_labels_from_file(3)))
 
-    print("numerical VSTi params: {}".format(Dexed.get_numerical_params_indexes()))
-    print("categorical VSTi params: {}".format(Dexed.get_categorical_params_indexes()))
+    if test_df_database:
+        if False:  # Convert SQLite to Dataframe
+            PresetDfDatabase.save_sqlite_to_df(verbose=True)
 
-    # Compute the total number of logits, if all param are learned as categorical (full-resolution)
-    logits_count = 0
-    for _ in Dexed.get_numerical_params_indexes():
-        logits_count += 100
-    for i in Dexed.get_categorical_params_indexes():
-        logits_count += Dexed.get_param_cardinality(i)
-    print("{} logits, if all param are learned as categorical (full-resolution)".format(logits_count))
+        df_db = PresetDfDatabase()
+        print(df_db)
 
-    # ***** RE-WRITE ALL PRESETS TO SEPARATE PICKLE/TXT FILES *****
-    if False:
-        # Approx. 360Mo (yep, the SQLite DB is much lighter...) for all params values + names + labels
-        dexed_db.write_all_presets_to_files()
 
-    if False:
-        # Test de lecture des fichiers pickled - pas besoin de la DB lue en entier
-        preset_values = PresetDatabase.get_preset_params_values_from_file(0)
-        preset_name = PresetDatabase.get_preset_name_from_file(0)
-        print(preset_name)
+    if test_SQLite_database:
+        print("Machine: '{}' ({} CPUs)".format(socket.gethostname(), os.cpu_count()))
 
-    if False:
-        # Test du synth lui-même
-        dexed = Dexed()
-        print(dexed)
-        print("Plugin params: ")
-        print(dexed.engine.get_plugin_parameters_description())
+        t0 = time.time()
+        dexed_db = PresetDatabase()
+        print("{} (loaded in {:.1f}s)".format(dexed_db, time.time() - t0))
+        names = dexed_db.get_param_names()
+        #print("Labels example: {}".format(dexed_db.get_preset_labels_from_file(3)))
 
-        #dexed.assign_random_preset_short_release()
-        #pres = dexed.preset_db.get_preset_values(0, plugin_format=True)
-        #dexed.assign_preset_from_db(100)
-        #print(dexed.current_preset)
+        print("numerical VSTi params: {}".format(Dexed.get_numerical_params_indexes()))
+        print("categorical VSTi params: {}".format(Dexed.get_categorical_params_indexes()))
 
-        #dexed.render_note(57, 100, filename="Test.wav")
+        # Compute the total number of logits, if all param are learned as categorical (full-resolution)
+        logits_count = 0
+        for _ in Dexed.get_numerical_params_indexes():
+            logits_count += 100
+        for i in Dexed.get_categorical_params_indexes():
+            logits_count += Dexed.get_param_cardinality(i)
+        print("{} logits, if all param are learned as categorical (full-resolution)".format(logits_count))
 
-        print("{} presets use algo 5".format(len(dexed_db.get_preset_indexes_for_algorithm(5))))
+        # ***** RE-WRITE ALL PRESETS TO SEPARATE PICKLE/TXT FILES *****
+        if False:
+            # Approx. 360Mo (yep, the SQLite DB is much lighter...) for all params values + names + labels
+            dexed_db.write_all_presets_to_files()
+
+        if False:
+            # Test de lecture des fichiers pickled - pas besoin de la DB lue en entier
+            preset_values = PresetDatabase.get_preset_params_values_from_file(0)
+            preset_name = PresetDatabase.get_preset_name_from_file(0)
+            print(preset_name)
+
+        if False:
+            # Test du synth lui-même
+            dexed = Dexed()
+            print(dexed)
+            print("Plugin params: ")
+            print(dexed.engine.get_plugin_parameters_description())
+
+            #dexed.assign_random_preset_short_release()
+            #pres = dexed.preset_db.get_preset_values(0, plugin_format=True)
+            #dexed.assign_preset_from_db(100)
+            #print(dexed.current_preset)
+
+            #dexed.render_note(57, 100, filename="Test.wav")
+
+            print("{} presets use algo 5".format(len(dexed_db.get_preset_indexes_for_algorithm(5))))
 
 

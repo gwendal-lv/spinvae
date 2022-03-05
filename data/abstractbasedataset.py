@@ -89,7 +89,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         self.normalize_audio = normalize_audio
         self._data_storage_root_path = None if data_storage_root_path is None else pathlib.Path(data_storage_root_path)
         if self._data_storage_root_path is None:
-            warnings.warn("Data will generated and loaded from this script's folder")
+            warnings.warn("Data will be generated and loaded from this script's folder")
         self._data_augmentation = data_augmentation
         self._random_seed = random_seed
         self._rng = np.random.default_rng(seed=self._random_seed)
@@ -222,7 +222,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
             return index_in_valid_list
 
     @abstractmethod
-    def get_name_from_preset_UID(self, preset_UID: int) -> str:
+    def get_name_from_preset_UID(self, preset_UID: int, long_name=False) -> str:
         """ Returns the name of a preset. """
         pass
 

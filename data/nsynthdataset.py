@@ -129,7 +129,7 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
     def total_nb_presets(self):
         return self._total_nb_presets
 
-    def get_name_from_preset_UID(self, preset_UID: int) -> str:
+    def get_name_from_preset_UID(self, preset_UID: int, long_name=False) -> str:
         return self._instru_info_df['instrument_str'][preset_UID]  # original dataframe indexes always remain usable
 
     def get_nb_variations_per_note(self, preset_UID=-1):

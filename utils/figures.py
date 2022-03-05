@@ -1,6 +1,7 @@
 """
 Utilities for plotting various figures (spectrograms, ...)
 """
+import pickle
 import warnings
 from typing import Optional, Sequence, Iterable, List, Dict
 
@@ -57,6 +58,25 @@ def plot_audio(audio: np.ndarray, dataset: Optional[AudioDataset] = None, preset
         plt.legend([legend_str])
     fig.tight_layout()
     return fig, ax
+
+
+def plot_dataset_item(dataset: Optional[AudioDataset], item_index: int,
+                      figsize=(5, 4), add_colorbar=True):
+    """
+    Plots the spectrogram of an item from the given dataset, and loads the corresponding audio.
+    :returns: fig, axes, audio, Fs
+    """
+    item_UID = dataset.valid_preset_UIDs[item_index]
+    name = dataset.get_name_from_preset_UID(item_UID, long_name=True)
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    midi_pitch, midi_vel = dataset.default_midi_note
+    spectrogram = torch.load(dataset.get_spec_file_path(item_UID, midi_pitch, midi_vel)).numpy()
+    im = librosa.display.specshow(spectrogram, shading='flat', ax=ax, cmap='magma')
+    if add_colorbar:
+        clb = fig.colorbar(im, ax=ax, orientation='vertical')
+    ax.set(title="[{}] '{}'".format(item_UID, name))
+    audio, Fs = dataset.get_wav_file(item_UID, midi_pitch, midi_vel)
+    return fig, ax, audio, Fs
 
 
 def plot_train_spectrograms(x_in, x_out, sample_info, dataset: AudioDataset,
