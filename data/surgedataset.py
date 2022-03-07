@@ -71,7 +71,11 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
         return self._synth.get_patch_info(patch_index)
 
     def get_name_from_preset_UID(self, preset_UID: int, long_name=False) -> str:
-        return self.get_patch_info(preset_UID)['patch_name']
+        patch_info = self.get_patch_info(preset_UID)
+        name = patch_info['patch_name']
+        if long_name:
+            name += ' ({})'.format(patch_info['instrument_category'])
+        return name
 
     def get_nb_variations_per_note(self, preset_UID=-1):
         return self._synth.nb_variations_per_note
@@ -83,6 +87,16 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
                 raise ValueError("Incoherent Surge arguments in {} (current: {}, found: {})"
                                  .format(self._get_patches_info_path(), self._synth.dict_description, d_info['surge']))
 
+    def _get_patches_info_path(self):
+        return self.data_storage_path.joinpath("dataset_info.json")
+
+    # =================================== Labels =======================================
+
+    def get_original_instrument_family(self, preset_UID: int) -> str:
+        return self.get_patch_info(preset_UID)['instrument_category']
+
+    # =================================== Audio =======================================
+
     def get_wav_file(self, preset_UID, midi_note, midi_velocity, variation=0):
         file_path = self._get_wav_file_path(preset_UID, midi_note, midi_velocity, variation)
         try:
@@ -90,9 +104,6 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
         except RuntimeError:
             raise RuntimeError("Can't open file {}. Please pre-render audio files for this "
                                "dataset configuration.".format(file_path))
-
-    def _get_patches_info_path(self):
-        return self.data_storage_path.joinpath("dataset_info.json")
 
     def get_audio_file_stem(self, preset_UID, midi_note, midi_velocity, variation=0):
         return "{:04d}_pitch{:03d}vel{:03d}_var{:03d}".format(preset_UID, midi_note, midi_velocity, variation)

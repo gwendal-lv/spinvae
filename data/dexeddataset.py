@@ -205,6 +205,13 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         If long_name is True, the original DX7 cartridge name is appended at the end. """
         return self._dexed_db.get_preset_name(preset_UID, long_name)
 
+    def get_cartridge_name_from_preset_UID(self, preset_UID: int) -> str:
+        return self._dexed_db.get_cartridge_name_from_preset_UID(preset_UID)
+
+    def get_original_instrument_family(self, preset_UID: int) -> str:
+        raise ValueError("Dexed dataset does not contain instrument family data. Please use presets and "
+                         "cartridges' names instead.")
+
     # ============================== Presets and parameters (PresetDataset only) =============================
 
     @property

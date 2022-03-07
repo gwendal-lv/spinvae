@@ -14,9 +14,12 @@ from data import dataset
 from data.dataset import SurgeDataset, NsynthDataset, DexedDataset
 from data.abstractbasedataset import AudioDataset
 
+import utils.label
 
 
-def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool, regenerate_learnable_presets: bool):
+
+def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool,
+                      regenerate_learnable_presets: bool, regenerate_labels: bool):
     """
     Approx audio rendering time:
         10.8 minutes (3.6ms/file) for 30293 patches, 6 notes and 1 variations / patch (48-core CPU),
@@ -57,6 +60,8 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool, regen
     if regenerate_learnable_presets:
         print(dexed_dataset.preset_indexes_helper)
         dexed_dataset.compute_and_store_learnable_presets()
+    if regenerate_labels:
+        labeler = 0  # FIXME TODO
     _gen_dataset(dexed_dataset, regenerate_wav, regenerate_spectrograms)
 
 
@@ -79,7 +84,7 @@ def gen_surge_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
     import config  # Dirty path trick to import config.py from project root dir
     importlib.reload(config)
 
-    # No label restriction, etc...
+    # No label restriction, etc... FIXME also regenerate labels
     surge_dataset = SurgeDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                  data_augmentation=True,
                                  check_consistency=(not regenerate_wav) and (not regenerate_spectrograms))
@@ -105,7 +110,7 @@ def gen_nsynth_dataset(regenerate_json: bool, regenerate_spectrograms: bool):
     import config  # Dirty path trick to import config.py from project root dir
     importlib.reload(config)
 
-    # No label restriction, etc...
+    # No label restriction, etc... FIXME also regenerate labels
     nsynth_dataset = NsynthDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                    data_augmentation=True,
                                    dataset_type='full',

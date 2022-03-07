@@ -179,6 +179,9 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
         """ The list of string representation of all 'instrument families' (e.g. bass, organ, ...) """
         return ['bass', 'brass', 'flute', 'guitar', 'keyboard', 'mallet', 'organ', 'reed', 'string', 'synth_lead', 'vocal']
 
+    def get_original_instrument_family(self, preset_UID: int) -> str:
+        return self._instru_info_df['instrument_family_str'][preset_UID]  # original df indexes always remain usable
+
     @property
     def instrument_sources_str(self):
         """ The list of string representation of all 'instrument sources' (e.g. acoustic, electronic, ...)
@@ -262,6 +265,7 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
         # convert to pandas df, save as pickle to ease future data visualizations
         instru_info_df = pd.DataFrame([v for k, v in instru_info.items()])
         instru_info_df.sort_values(by=['instrument'], inplace=True, ignore_index=True)  # this is the UID
+        # FIXME use labels
         instru_info_df.to_pickle(self._instruments_info_pickle_path)
         # display time
         delta_t = (datetime.now() - t_start).total_seconds()

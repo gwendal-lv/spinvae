@@ -13,7 +13,7 @@ import pickle
 import multiprocessing
 from multiprocessing.pool import ThreadPool
 import time
-from typing import Iterable, List
+from typing import Iterable, List, Dict
 import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -276,6 +276,9 @@ class PresetDfDatabase(PresetDatabaseABC):
             name += ' ({})'.format(self._presets_df.iloc[df_idx]['cartridge_name'])
         return name
 
+    def get_cartridge_name_from_preset_UID(self, preset_UID: int) -> str:
+        return self._presets_df.iloc[self._UID_to_local_idx[preset_UID]]['cartridge_name']
+
     def get_preset_params_values(self, preset_UID: int):
         return self._presets_df.iloc[self._UID_to_local_idx[preset_UID]]['params_values']
 
@@ -318,6 +321,13 @@ class PresetDfDatabase(PresetDatabaseABC):
         # Save the full df
         with open(PresetDfDatabase._get_dataframe_db_path(), 'wb') as f:
             pickle.dump(presets_df, f)  # Pickle Reloading takes < 0.0 ms from the SSD
+
+    @staticmethod
+    def update_labels_in_pickled_df(labels_per_UID: Dict[str, List[str]]):
+        with open(PresetDfDatabase._get_dataframe_db_path(), 'rb') as f:
+            presets_df = pickle.load(f)  # Pickle Reloading takes < 0.0 ms from the SSD
+        # TODO check if labels column already exists (discard if yes)
+        raise NotImplementedError()
 
 
 

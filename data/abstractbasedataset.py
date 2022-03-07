@@ -269,6 +269,13 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     def labels_count(self):
         return len(self.available_labels_name)
 
+    @abstractmethod
+    def get_original_instrument_family(self, preset_UID: int) -> str:
+        """ If available, returns the original instrument family (from the original data source, e.g. nsynth dataset
+         or surge built-in presets) of a given preset. Instrument families are different from final labels used for
+         training. """
+        pass
+
     # ================================== WAV files =================================
 
     @property
