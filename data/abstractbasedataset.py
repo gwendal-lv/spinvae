@@ -256,19 +256,24 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         corresponding label. """
         return torch.tensor([1], dtype=torch.int8)  # 'NoLabel' is the only default label
 
-    def get_labels_name(self, preset_UID):  # FIXME str instead of "name"
+    def get_labels_name(self, preset_UID: int) -> List[str]:
         """ Returns the list of string labels assigned to a preset """
         return ['NoLabel']  # Default: all presets are tagged with this dummy label. Implement in concrete class
 
+    @property
     def _available_labels_path(self):
         return self.data_storage_path.joinpath("labels.list.pickle")
+
+    def get_full_name_with_labels(self, preset_UID: int) -> str:
+        return "'{}'. {}".format(self.get_name_from_preset_UID(preset_UID, long_name=True),
+                                 ', '.join(self.get_labels_name(preset_UID)))
 
     @property
     def available_labels_names(self):
         """ Returns a list of string description of labels. """
         # TODO try load the file, otherwise return a default 'no label'
         try:
-            with open(self._available_labels_path(), 'rb') as f:
+            with open(self._available_labels_path, 'rb') as f:
                 return pickle.load(f)
         except FileNotFoundError:
             return ['NoLabel']  # this dataset does not contain labels
@@ -292,7 +297,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         # Labels must be sorted (to prevent any mis-ordering later)
         if labels_names != sorted(labels_names):
             raise ValueError("labels_names must be sorted")
-        with open(self._available_labels_path(), 'wb') as f:
+        with open(self._available_labels_path, 'wb') as f:
             pickle.dump(labels_names, f)
         # Per-UID labels are to be saved by the calling child class
 

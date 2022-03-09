@@ -13,6 +13,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import soundfile
+import torch
 from natsort import natsorted
 from collections import OrderedDict
 from typing import Optional, List, Dict
@@ -187,6 +188,12 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
 
     def get_original_instrument_family(self, preset_UID: int) -> str:
         return self._instru_info_df['instrument_family_str'][preset_UID]  # original df indexes always remain usable
+
+    def get_labels_tensor(self, preset_UID):
+        return torch.tensor(self._instru_info_df['instrument_labels_array'][preset_UID], dtype=torch.int8)
+
+    def get_labels_name(self, preset_UID):
+        return self._instru_info_df['instrument_labels_str'][preset_UID]
 
     def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
         super().save_labels(labels_names, labels_per_UID)

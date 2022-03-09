@@ -5,7 +5,7 @@ More information about the original DX7 paramaters:
 https://www.chipple.net/dx7/english/edit.mode.html
 https://djjondent.blogspot.com/2019/10/yamaha-dx7-algorithms.html
 """
-
+import json
 import socket
 import sys
 import os
@@ -271,24 +271,35 @@ class PresetDfDatabase(PresetDatabaseABC):
 
     def get_preset_name(self, preset_UID: int, long_name=False) -> str:
         df_idx = self._UID_to_local_idx[preset_UID]
-        name = self._presets_df.iloc[df_idx]['name']
+        name = self._presets_df.at[df_idx, 'name']
         if long_name:
-            name += ' ({})'.format(self._presets_df.iloc[df_idx]['cartridge_name'])
+            name += ' ({})'.format(self._presets_df.at[df_idx, 'cartridge_name'])
         return name
 
     def get_cartridge_name_from_preset_UID(self, preset_UID: int) -> str:
-        return self._presets_df.iloc[self._UID_to_local_idx[preset_UID]]['cartridge_name']
+        return self._presets_df.at[self._UID_to_local_idx[preset_UID], 'cartridge_name']
 
     def get_preset_params_values(self, preset_UID: int):
-        return self._presets_df.iloc[self._UID_to_local_idx[preset_UID]]['params_values']
+        return self._presets_df.at[self._UID_to_local_idx[preset_UID], 'params_values']
+
+    def get_labels_str_from_UID(self, preset_UID: int) -> str:
+        return self._presets_df.at[self._UID_to_local_idx[preset_UID], 'instrument_labels_str']
+
+    def get_labels_array_from_UID(self, preset_UID: int):
+        # at is approx. 30x faster than .iloc then select col
+        return self._presets_df.at[self._UID_to_local_idx[preset_UID], 'instrument_labels_array']
 
     @property
     def nb_params_per_preset(self) -> int:
-        return self._presets_df.iloc[0]['params_values'].shape[0]
+        return self._presets_df.at[0, 'params_values'].shape[0]
 
     @property
     def all_preset_UIDs(self):
         return self._presets_df['preset_UID'].values
+
+    @staticmethod
+    def _get_manual_instr_labels_path():
+        return pathlib.Path(__file__).parent.joinpath('dexed_manual_instr_labels.json')
 
     @staticmethod
     def _get_dataframe_db_path():
@@ -326,6 +337,11 @@ class PresetDfDatabase(PresetDatabaseABC):
     def update_labels_in_pickled_df(available_labels: List[str], labels_per_UID: Dict[int, List[str]]):
         with open(PresetDfDatabase._get_dataframe_db_path(), 'rb') as f:
             presets_df = pickle.load(f)
+        # Also load the manually-encoded labels - they will override any provided input arg
+        with open(PresetDfDatabase._get_manual_instr_labels_path(), 'r') as f:
+            manual_instr_labels = json.load(f)  # JSON keys must be string, to be parsed as int
+        manual_instr_labels = {int(k): v for k, v in manual_instr_labels.items()}
+
         # check if labels column already exists (discard if yes)
         if 'instrument_labels_str' in presets_df.columns:
             presets_df.drop(columns=['instrument_labels_str', 'instrument_labels_array'], inplace=True)
@@ -336,10 +352,14 @@ class PresetDfDatabase(PresetDatabaseABC):
             # handle exception? All labels should be available at this point... (even for rejected presets)
             # Add SFX here
             row = row[1]  # Row is a Tuple(int, Series)
-            current_labels = labels_per_UID[row['preset_UID']]
-            if 'sfx' in row['hpss_labels']:
-                if 'sfx' not in current_labels:
-                    current_labels.append('sfx')
+            current_UID = row['preset_UID']
+            if current_UID in manual_instr_labels.keys():  # Manual high-confidence labels
+                current_labels = manual_instr_labels[current_UID]
+            else:  # Labels automatically extracted from name and HPSS
+                current_labels = labels_per_UID[current_UID]
+                if 'sfx' in row['hpss_labels']:
+                    if 'sfx' not in current_labels:
+                        current_labels.append('sfx')
             labels_str.append(current_labels)
             labels_arrays.append(
                 np.asarray([(ref_label in current_labels) for ref_label in available_labels], dtype=np.uint8)

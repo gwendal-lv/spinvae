@@ -95,12 +95,13 @@ def gen_surge_dataset(regen_patches_list: bool, regen_wav: bool, regen_spectrogr
     surge_dataset = SurgeDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                  data_augmentation=True,
                                  check_consistency=(not regen_wav) and (not regen_spectrograms))
-    _gen_dataset(surge_dataset, regen_wav, regen_spectrograms)
     if regen_labels:  # Instruments labels only
         labeler = utils.label.SurgeReLabeler(surge_dataset)
         labeler.extract_labels(verbose=True)
         print(labeler)
         surge_dataset.save_labels(labeler.instrument_labels, labeler.labels_per_UID)
+
+    _gen_dataset(surge_dataset, regen_wav, regen_spectrograms)
 
 
 def gen_nsynth_dataset(regen_json: bool, regen_spectrograms: bool, regen_labels: bool):
@@ -167,7 +168,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    # gen_dexed_dataset(regen_wav=False, regen_spectrograms=False, regen_learnable_presets=False, regen_labels=True)
-    # gen_surge_dataset(regen_patches_list=True, regen_wav=False, regen_spectrograms=False, regen_labels=True)
+    gen_dexed_dataset(regen_wav=False, regen_spectrograms=False, regen_learnable_presets=False, regen_labels=True)
+    gen_surge_dataset(regen_patches_list=True, regen_wav=False, regen_spectrograms=False, regen_labels=True)
     gen_nsynth_dataset(regen_json=False, regen_spectrograms=False, regen_labels=True)
 

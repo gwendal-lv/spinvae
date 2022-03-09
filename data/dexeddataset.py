@@ -210,8 +210,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         return self._dexed_db.get_cartridge_name_from_preset_UID(preset_UID)
 
     def get_original_instrument_family(self, preset_UID: int) -> str:
-        raise ValueError("Dexed dataset does not contain instrument family data. Please use presets and "
-                         "cartridges' names instead.")
+        return "Cartridge: '{}'".format(self.get_cartridge_name_from_preset_UID(preset_UID))
 
     # ============================== Presets and parameters (PresetDataset only) =============================
 
@@ -307,13 +306,11 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         else:
             return any([label == l_ for l_ in self.restrict_to_labels])
 
-    def get_labels_tensor(self, preset_UID):  # TODO
-        """ Returns a tensor of torch.int8 zeros and ones - each value is 1 if the preset is tagged with the
-        corresponding label """
-        return torch.tensor([1], dtype=torch.int8)  # 'NoLabel' is the only default label
+    def get_labels_tensor(self, preset_UID):
+        return torch.tensor(self._dexed_db.get_labels_array_from_UID(preset_UID), dtype=torch.int8)
 
     def get_labels_name(self, preset_UID):
-        raise NotImplementedError()
+        return self._dexed_db.get_labels_str_from_UID(preset_UID)
 
     def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
         super().save_labels(labels_names, labels_per_UID)

@@ -5,7 +5,7 @@ Can be used for pre-training a part of a neural network (e.g. the audio VAE only
 import warnings
 
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from collections import OrderedDict
 
 import torch
@@ -154,6 +154,25 @@ class MergedDataset(AudioDataset):
     @property
     def excluded_patches_UIDs(self):
         raise NotImplementedError()  # TODO read excluded patches from all child classes, convert UIDs and return
+
+    @property
+    def _available_labels_path(self):
+        return self._datasets[0]._available_labels_path
+
+    def get_labels_tensor(self, preset_UID):
+        local_UID, ds = self._global_to_local_UID_and_ds(preset_UID)
+        return ds.get_labels_tensor(local_UID)
+
+    def get_labels_name(self, preset_UID: int) -> List[str]:
+        local_UID, ds = self._global_to_local_UID_and_ds(preset_UID)
+        return ds.get_labels_name(local_UID)
+
+    def get_original_instrument_family(self, preset_UID: int) -> str:
+        local_UID, ds = self._global_to_local_UID_and_ds(preset_UID)
+        return ds.get_original_instrument_family(local_UID)
+
+    def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
+        raise NotImplementedError("Labels must be extract for each sub-dataset separately.")
 
     # =============== Disabled Audio Dataset methods (we don't write any audio files from this class) =============
 

@@ -56,7 +56,8 @@ class Surge:
         self.render_Fs = render_Fs
         self.fx_bypass_level = fx_bypass_level
         # JSON list of patches (with UID, author, instrument category, patch name)
-        self._patches_list = self.load_patches_list()
+        self._patches_list = list()
+        self.reload_patches()
         # Check UIDs ordering (if JSON loading changes the ordering of list's elements...?)
         last_UID = -1
         for _, patch in enumerate(self._patches_list):
@@ -102,11 +103,11 @@ class Surge:
                                     " (run this file as main script)")
 
     def get_patch_info(self, patch_index: int) -> dict:
-        """ Returns a copy of the dict containing information about a patch.
+        """ Returns the dict containing information about a patch.
 
         :param patch_index: in [0, self.n_patches[
         """
-        return copy.deepcopy(self._patches_list[patch_index])
+        return self._patches_list[patch_index]  # No copy - too slow when data is required during training
 
     def get_UID_from_index(self, patch_index: int):
         """ Returns the UID corresponding to a local patch index.
@@ -173,6 +174,11 @@ class Surge:
         with open(Surge.get_patches_json_path(), 'w') as f:
             json.dump(patches_list, f)
             print("Updated written to {}".format(Surge.get_patches_json_path()))
+
+    def reload_patches(self):
+        """ This method must be called to reload the patches (including labels) for this Surge instance
+            (e.g. after the labels have been updated on disk). """
+        self._patches_list = self.load_patches_list()
 
     @property
     def n_patches(self):
