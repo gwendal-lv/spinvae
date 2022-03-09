@@ -11,7 +11,7 @@ import pickle
 import shutil
 import warnings
 from abc import ABC, abstractmethod  # Abstract Base Class
-from typing import Sequence, Optional, List
+from typing import Sequence, Optional, List, Dict
 
 import pandas as pd
 import json
@@ -256,14 +256,22 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         corresponding label. """
         return torch.tensor([1], dtype=torch.int8)  # 'NoLabel' is the only default label
 
-    def get_labels_name(self, preset_UID):
+    def get_labels_name(self, preset_UID):  # FIXME str instead of "name"
         """ Returns the list of string labels assigned to a preset """
         return ['NoLabel']  # Default: all presets are tagged with this dummy label. Implement in concrete class
+
+    def _available_labels_path(self):
+        return self.data_storage_path.joinpath("labels.list.pickle")
 
     @property
     def available_labels_names(self):
         """ Returns a list of string description of labels. """
-        return ['NoLabel']  # this dataset allows no label
+        # TODO try load the file, otherwise return a default 'no label'
+        try:
+            with open(self._available_labels_path(), 'rb') as f:
+                return pickle.load(f)
+        except FileNotFoundError:
+            return ['NoLabel']  # this dataset does not contain labels
 
     @property
     def labels_count(self):
@@ -275,6 +283,14 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
          or surge built-in presets) of a given preset. Instrument families are different from final labels used for
          training. """
         pass
+
+    def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
+        """ This method should be called by the child class to save the list of labels available to this instance.
+         However, the children must save the labels themselves (it depends on the synth, on how the dataset is
+         stored, ... """
+        with open(self._available_labels_path(), 'wb') as f:
+            pickle.dump(labels_names, f)
+        # Per-UID labels are to be saved by the calling child class
 
     # ================================== WAV files =================================
 

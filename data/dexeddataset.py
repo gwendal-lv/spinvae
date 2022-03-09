@@ -7,7 +7,8 @@ See end of file.
 import os
 import shutil
 import sys
-from typing import Optional, Iterable, List
+import warnings
+from typing import Optional, Iterable, List, Dict
 import multiprocessing
 from datetime import datetime
 
@@ -300,6 +301,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
 
     def is_label_included(self, label):
         """ Returns True if the label belongs to the restricted labels list. """
+        warnings.warn("Deprecated", DeprecationWarning)
         if self.restrict_to_labels is None:
             return True
         else:
@@ -313,9 +315,10 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def get_labels_name(self, preset_UID):
         raise NotImplementedError()
 
-    @property
-    def available_labels_names(self):
-        raise NotImplementedError()
+    def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
+        super().save_labels(labels_names, labels_per_UID)
+        dexed.PresetDfDatabase.update_labels_in_pickled_df(labels_names, labels_per_UID)
+
 
     # ================================== Audio files =================================
 

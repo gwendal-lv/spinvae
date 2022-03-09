@@ -18,65 +18,66 @@ _label_reference_strings = {
     # Pluck is another label
     # On a aussi les sons genre 'sitar' mais qui ne sont pas toujours pluck
     #
-    'vocal': ['male', 'female', 'choir'],  # Human-like voices
+    'vocal': ['male', 'female', 'human', 'choir'],  # Human-like voices
 
     # Wind et brass sont a priori plutôt proches... ou pas ?
     'wind': ['wind', 'woodwind', 'clarinet', 'bassoon', 'oboe', 'flute'],
 
-    'brass': ['brass', 'horn', 'trumpet', 'tuba', 'trombone', 'flugel', 'frenchhrn'],
+    'brass': ['brass', 'horn', 'trumpet', 'tuba', 'trombone', 'flugel', 'frenchhrn', 'saxophone'],
 
-    'guitar': ['guitar', 'guit', 'banjo', 'clavinet', 'fretless', 'nylon', 'strat'],  # gtr ???
+    'guitar': ['guitar', 'guit', 'banjo', 'clavinet', 'nylon', 'strat',  # gtr? (false positive risk)
+               'clavichord', 'harpsichord'],  # clavichord is debatable; harpsichord actually uses guitar-like plectra
 
-    'string': ['string', 'strng', 'violin', 'cello', 'viola'],  # Bowed or plucked strings (not guitar)
+    'string': ['string', 'strng', 'violin', 'cello', 'viola', 'bowed'],  # Bowed or plucked strings (not guitar)
 
-    'organ': ['organ', 'hammond', 'hmnd'],
+    'organ': ['organ', 'hammond', 'hmnd', 'leslie'],
 
     # Could be named "keys" or "e-piano". Add 'grand' ???
-    'piano': ['piano', 'grandpno', 'gndpno', 'steinway',  # 'pno' found very often... (false positive risk)
-              'rhodes', 'rhds', 'wurlitzer'],  # will include 'epiano', ... 'pno' vu assez souvent aussi
-    # Faux positifs: 'lunarTides'
+    'piano': ['piano', 'grandpno', 'gndpno', 'elecgrand', ' pno ', # 'pno' found very often... (false positive risk)
+              'steinway',  'rhodes', 'rhds', 'wurlitzer'],     # will include 'epiano', ...
 
-    # TODO chimes?
-    'harmonic_perc': ['celesta', 'marimba', 'xylo', 'glock', 'spiel', 'bell', 'tabla', 'vibraphone',
-                      'mallet', ],
+    'harmonic_perc': ['celesta', 'marimba', 'mrmba', 'xylo', 'glock', 'spiel', 'bell', 'tabla', 'vibraphone',
+                      'mallet', 'kalimba', 'klmba', 'chimes', 'metallophone', 'timbales'],
 
     # Warning: clav peut être une percu ou un clavier.... ou clavecin/harpsichord
     # mallet? timbale?    tom? (false positive risk)  FIXME move some to harmonic_perc
-    'percussive': ['perc', 'drum', 'snare', 'claves', 'clap', 'conga', 'bongo', 'gong',
-                   'tamborine', 'tambourine'],
+    'percussive': ['perc', 'drum', 'snare', 'cymbal', 'claves', 'clap', 'conga', 'bongo', 'gong',
+                   'tamborine', 'tambourine', 'cow bell', 'dingle', 'hi hat'],
 
-    'sfx': ['effect', 'laser', 'drone', 'snd efx'],
+    'sfx': ['effect', 'drone', 'snd efx', 'chopper'],  # Laser is excluded, too many false positives
 
-    # Descripteurs de timbre, pas liés à un instrument: warm, bright, dark(/growl), (FX?)....
+    # Timbre descriptors, not related to an instrument: warm, bright, dark(/growl), (FX?)....
     # warm/dark/bright are assigned to very few UIDs (120/60/40), most of them being false positive
     # 'warm': ['warm'],  # hollow?
     # 'dark': ['dark', 'night', 'devil', 'massacre'],  # ....  TODO use language model to get the closest words?
     # 'bright': ['bright'],  # metal? glass?
 
-    # Typical digital 'instrument types' -> might be included, or not....
-    'bass': ['bass'],
+    # Typical digital 'instrument types' -> also found in nsynth and/or surge datasets
+    'bass': ['bass', 'fretless'],  # means a bass guitar or a bass synth... fretless?? also included in guitar
     'pad': ['pad'],
     'lead': ['lead'],
     'pluck': ['pluck', 'pizz'],  # pizz?
 }
 
-# If the name exactly contains one of those strings, the associated label won't be assigned to the label
+# If a preset's name exactly contains one of those strings, the associated label won't be assigned to the preset
 _label_rejection_strings = {
-    'vocal': ['chorus', 'chord', 'chirp', 'organ', 'org', 'echo', 'stg choir',
-              'horn', 'perc', 'clav', 'piano', 'malet', 'mallet', 'keys'],
-    'guitar': ['clarinet', 'state'],
+    'vocal': ['chorus', 'chord', 'chirp', 'organ', 'org', 'echo', 'stg choir', 'chor',
+              'huang', 'horn', 'perc', 'clav', 'piano', 'malet', 'mallet', 'keys'],
+    'guitar': ['clarinet', 'state', 'stretch', 'abstract', 'static',
+               'strange', 'station', 'orchestra'],  # 'strat' leads to many false positives
     'piano': [],
     'harmonic_perc': ['table'],
     'percussive': ['super', 'hyper', 'clavi', 'octave', 'bingo', 'claver', 'pad', 'table'],
-    'sfx': ['perfect', 'layer', 'claver', 'effectsz'],
-    'wind': ['clavinet', 'wild', 'flugel', 'rewind'],
+    'sfx': ['perfect', 'layer', 'laer', 'claver', 'effectsz'],
+    'wind': ['clavinet', 'wild', 'flugel', 'rewind', 'windows', 'flutter'],
     'brass': ['bass', 'chorus', 'chor', 'flute'],
-    'string': ['steinway', 'strange'],  # 'string' close to steinw(ay)
-    'organ': ['harmonica', 'formant'],  # 'hammond' close to harmoni(ca)
+    'string': ['steinway', 'strange', 'loop',    # 'string' close to steinw(ay)
+               'miscella', 'spring'],
+    'organ': ['harmonica', 'formant', 'gregorian'],  # 'hammond' close to harmoni(ca)
     'warm': ['warp', 'ward', 'ware', 'wars'],
     'dark': ['trk', 'standard'],  # 'sndtrk' comes close to 'dark'
     'bright': [],
-    'bass': ['brass'],
+    'bass': ['brass', 'drum'],
     'pad': [],
     'lead': ['lady'],
     'pluck': [],
@@ -124,6 +125,7 @@ _surge_category_to_instrument_labels = {  # Ordered by number of patch per categ
 }
 
 
+
 class LabelerABC(abc.ABC):
     def __init__(self, ds: AudioDataset):
         """ Abstract Base Class for any Labeling class. Does not contain the methods that actually assign labels. """
@@ -144,12 +146,12 @@ class LabelerABC(abc.ABC):
     @property
     def all_available_labels(self):
         """ Returns the list of all available labels. """
-        return list(_label_reference_strings.keys())
+        return sorted(list(_label_reference_strings.keys()))
 
     @property
     def instrument_labels(self):
         """ Returns the list of labels related to musical instrument (e.g. 'voice', 'piano', 'guitar', 'perc', ...) """
-        return _instrument_label_keys
+        return sorted(_instrument_label_keys)
 
     def extract_labels(self, verbose=False):
         """ Extracts labels from the whole dataset. """
@@ -301,7 +303,7 @@ if __name__ == "__main__":
     # Run as main: for DEBUG purposes only
 
     import data.dataset
-    ds_type = 'surge'
+    ds_type = 'dexed'
 
     dataset_kwargs = {
         'note_duration': (3.0, 1.0), 'n_fft': 512, 'fft_hop': 256, 'Fs': 16000,

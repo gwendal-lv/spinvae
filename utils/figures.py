@@ -61,7 +61,7 @@ def plot_audio(audio: np.ndarray, dataset: Optional[AudioDataset] = None, preset
 
 
 def plot_dataset_item(dataset: Optional[AudioDataset], item_index: int,
-                      figsize=(5, 4), add_colorbar=True):
+                      figsize=(5, 4), add_colorbar=True, midi_note_index=-1):
     """
     Plots the spectrogram of an item from the given dataset, and loads the corresponding audio.
     :returns: fig, axes, audio, Fs
@@ -69,7 +69,10 @@ def plot_dataset_item(dataset: Optional[AudioDataset], item_index: int,
     item_UID = dataset.valid_preset_UIDs[item_index]
     name = dataset.get_name_from_preset_UID(item_UID, long_name=True)
     fig, ax = plt.subplots(1, 1, figsize=figsize)
-    midi_pitch, midi_vel = dataset.default_midi_note
+    if midi_note_index < 0:
+        midi_pitch, midi_vel = dataset.default_midi_note
+    else:
+        midi_pitch, midi_vel = dataset.midi_notes[midi_note_index]
     spectrogram = torch.load(dataset.get_spec_file_path(item_UID, midi_pitch, midi_vel)).numpy()
     im = librosa.display.specshow(spectrogram, shading='flat', ax=ax, cmap='magma')
     if add_colorbar:

@@ -60,8 +60,11 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool,
     if regenerate_learnable_presets:
         print(dexed_dataset.preset_indexes_helper)
         dexed_dataset.compute_and_store_learnable_presets()
-    if regenerate_labels:
-        labeler = 0  # FIXME TODO
+    if regenerate_labels:  # Instruments labels only
+        labeler = utils.label.NameBasedLabeler(dexed_dataset)
+        labeler.extract_labels(verbose=True)
+        print(labeler)
+        dexed_dataset.save_labels(labeler.instrument_labels, labeler.labels_per_UID)
     _gen_dataset(dexed_dataset, regenerate_wav, regenerate_spectrograms)
 
 
@@ -150,7 +153,8 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regenerate_wav=True, regenerate_spectrograms=True, regenerate_learnable_presets=True)
+    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=False,
+                      regenerate_learnable_presets=False, regenerate_labels=True)
     # gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
     # gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
 

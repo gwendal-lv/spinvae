@@ -323,11 +323,31 @@ class PresetDfDatabase(PresetDatabaseABC):
             pickle.dump(presets_df, f)  # Pickle Reloading takes < 0.0 ms from the SSD
 
     @staticmethod
-    def update_labels_in_pickled_df(labels_per_UID: Dict[str, List[str]]):
+    def update_labels_in_pickled_df(available_labels: List[str], labels_per_UID: Dict[int, List[str]]):
         with open(PresetDfDatabase._get_dataframe_db_path(), 'rb') as f:
-            presets_df = pickle.load(f)  # Pickle Reloading takes < 0.0 ms from the SSD
-        # TODO check if labels column already exists (discard if yes)
-        raise NotImplementedError()
+            presets_df = pickle.load(f)
+        # check if labels column already exists (discard if yes)
+        if 'instrument_labels_str' in presets_df.columns:
+            presets_df.drop(columns=['instrument_labels_str', 'instrument_labels_array'], inplace=True)
+
+        # add labels to the existing dataframe - also convert labels to numpy arrays
+        labels_str, labels_arrays = list(), list()
+        for row in presets_df.iterrows():  # 1-by-1 processing, in case a reordering had happened
+            # handle exception? All labels should be available at this point... (even for rejected presets)
+            # Add SFX here
+            row = row[1]  # Row is a Tuple(int, Series)
+            current_labels = labels_per_UID[row['preset_UID']]
+            if 'sfx' in row['hpss_labels']:
+                if 'sfx' not in current_labels:
+                    current_labels.append('sfx')
+            labels_str.append(current_labels)
+            labels_arrays.append(
+                np.asarray([(ref_label in current_labels) for ref_label in available_labels], dtype=np.uint8)
+            )
+        presets_df['instrument_labels_str'] = labels_str
+        presets_df['instrument_labels_array'] = labels_arrays
+        with open(PresetDfDatabase._get_dataframe_db_path(), 'wb') as f:  # Write the update DataFrame
+            pickle.dump(presets_df, f)
 
 
 
