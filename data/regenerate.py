@@ -14,12 +14,13 @@ from data import dataset
 from data.dataset import SurgeDataset, NsynthDataset, DexedDataset
 from data.abstractbasedataset import AudioDataset
 
+import synth.surge  # To re-generate the list of patches (included in the synth itself)
+
 import utils.label
 
 
 
-def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool,
-                      regenerate_learnable_presets: bool, regenerate_labels: bool):
+def gen_dexed_dataset(regen_wav: bool, regen_spectrograms: bool, regen_learnable_presets: bool, regen_labels: bool):
     """
     Approx audio rendering time:
         10.8 minutes (3.6ms/file) for 30293 patches, 6 notes and 1 variations / patch (48-core CPU),
@@ -55,21 +56,21 @@ def gen_dexed_dataset(regenerate_wav: bool, regenerate_spectrograms: bool,
                                  vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
                                  continuous_params_max_resolution=continuous_params_max_resolution,
                                  restrict_to_labels=None,
-                                 check_constrains_consistency=(not regenerate_wav) and (not regenerate_spectrograms)
+                                 check_constrains_consistency=(not regen_wav) and (not regen_spectrograms)
                                  )
-    if regenerate_learnable_presets:
+    if regen_learnable_presets:
         print(dexed_dataset.preset_indexes_helper)
         dexed_dataset.compute_and_store_learnable_presets()
-    if regenerate_labels:  # Instruments labels only
+    _gen_dataset(dexed_dataset, regen_wav, regen_spectrograms)
+    if regen_labels:  # Instruments labels only
         labeler = utils.label.NameBasedLabeler(dexed_dataset)
         labeler.extract_labels(verbose=True)
         print(labeler)
         dexed_dataset.save_labels(labeler.instrument_labels, labeler.labels_per_UID)
-    _gen_dataset(dexed_dataset, regenerate_wav, regenerate_spectrograms)
 
 
 
-def gen_surge_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
+def gen_surge_dataset(regen_patches_list: bool, regen_wav: bool, regen_spectrograms: bool, regen_labels: bool):
     """
     Approx audio rendering time:
         35 minutes (7ms/patch) for 2300 patches, 6 notes and 18 variations / patch (48-core CPU),
@@ -87,14 +88,22 @@ def gen_surge_dataset(regenerate_wav: bool, regenerate_spectrograms: bool):
     import config  # Dirty path trick to import config.py from project root dir
     importlib.reload(config)
 
-    # No label restriction, etc... FIXME also regenerate labels
+    if regen_patches_list:
+        synth.surge.Surge.update_patches_list()
+
+    # No label restriction, etc... FIXME also regenerate JSON patches list
     surge_dataset = SurgeDataset(** dataset.model_config_to_dataset_kwargs(config.model),
                                  data_augmentation=True,
-                                 check_consistency=(not regenerate_wav) and (not regenerate_spectrograms))
-    _gen_dataset(surge_dataset, regenerate_wav, regenerate_spectrograms)
+                                 check_consistency=(not regen_wav) and (not regen_spectrograms))
+    _gen_dataset(surge_dataset, regen_wav, regen_spectrograms)
+    if regen_labels:  # Instruments labels only
+        labeler = utils.label.SurgeReLabeler(surge_dataset)
+        labeler.extract_labels(verbose=True)
+        print(labeler)
+        surge_dataset.save_labels(labeler.instrument_labels, labeler.labels_per_UID)
 
 
-def gen_nsynth_dataset(regenerate_json: bool, regenerate_spectrograms: bool):
+def gen_nsynth_dataset(regen_json: bool, regen_spectrograms: bool, regen_labels: bool):
     """
     Approx downloaded audio size: 30 GB?
         --> 39 GB with re-sorted JSON files and added symlinks (< 30s to compute and write all of them)
@@ -122,9 +131,14 @@ def gen_nsynth_dataset(regenerate_json: bool, regenerate_spectrograms: bool):
                                    force_include_all_acoustic=True,
                                    required_midi_notes=config.model.required_dataset_midi_notes
                                    )
-    if regenerate_json:
+    if regen_json:
         nsynth_dataset.regenerate_json_and_symlinks()
-    _gen_dataset(nsynth_dataset, False, regenerate_spectrograms)
+    _gen_dataset(nsynth_dataset, False, regen_spectrograms)
+    if regen_labels:  # Instruments labels only
+        labeler = utils.label.NSynthReLabeler(nsynth_dataset)
+        labeler.extract_labels(verbose=True)
+        print(labeler)
+        nsynth_dataset.save_labels(labeler.instrument_labels, labeler.labels_per_UID)
 
 
 def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectrograms: bool):
@@ -153,8 +167,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regenerate_wav=False, regenerate_spectrograms=False,
-                      regenerate_learnable_presets=False, regenerate_labels=True)
-    # gen_surge_dataset(regenerate_wav=False, regenerate_spectrograms=False)
-    # gen_nsynth_dataset(regenerate_json=False, regenerate_spectrograms=False)
+    # gen_dexed_dataset(regen_wav=False, regen_spectrograms=False, regen_learnable_presets=False, regen_labels=True)
+    # gen_surge_dataset(regen_patches_list=True, regen_wav=False, regen_spectrograms=False, regen_labels=True)
+    gen_nsynth_dataset(regen_json=False, regen_spectrograms=False, regen_labels=True)
 

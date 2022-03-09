@@ -11,7 +11,7 @@ import shutil
 import warnings
 from datetime import datetime
 import os
-from typing import Optional
+from typing import Optional, List, Dict
 
 import numpy as np
 import torchaudio
@@ -94,6 +94,10 @@ class SurgeDataset(abstractbasedataset.AudioDataset):
 
     def get_original_instrument_family(self, preset_UID: int) -> str:
         return self.get_patch_info(preset_UID)['instrument_category']
+
+    def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
+        super().save_labels(labels_names, labels_per_UID)
+        self._synth.update_labels_in_patches_list(labels_names, labels_per_UID)
 
     # =================================== Audio =======================================
 

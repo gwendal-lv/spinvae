@@ -284,10 +284,14 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
          training. """
         pass
 
+    @abstractmethod
     def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
         """ This method should be called by the child class to save the list of labels available to this instance.
-         However, the children must save the labels themselves (it depends on the synth, on how the dataset is
-         stored, ... """
+         However, the child must save the labels itself (because it depends on the synth, on how the
+         dataset is stored, ...) """
+        # Labels must be sorted (to prevent any mis-ordering later)
+        if labels_names != sorted(labels_names):
+            raise ValueError("labels_names must be sorted")
         with open(self._available_labels_path(), 'wb') as f:
             pickle.dump(labels_names, f)
         # Per-UID labels are to be saved by the calling child class

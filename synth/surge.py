@@ -8,6 +8,8 @@ This file can be run as main script to update the JSON list of Surge patches ava
 
 # Quite dirty.... from https://github.com/surge-synthesizer/surge-python/blob/main/api-tutorial
 import sys
+from typing import List, Dict
+
 sys.path.append( "/home/gwendal/Jupyter/AudioPlugins/surge_build" )
 import surgepy  # Must be properly built and available from the folder above
 
@@ -54,12 +56,7 @@ class Surge:
         self.render_Fs = render_Fs
         self.fx_bypass_level = fx_bypass_level
         # JSON list of patches (with UID, author, instrument category, patch name)
-        if pathlib.Path.exists(self.get_patches_json_path()):
-            with open(self.get_patches_json_path(), 'r') as f:
-                self._patches_list = json.load(f)
-        else:
-            raise FileNotFoundError("The JSON list of patches must be created before creating a Surge instance"
-                                    " (run this file as main script)")
+        self._patches_list = self.load_patches_list()
         # Check UIDs ordering (if JSON loading changes the ordering of list's elements...?)
         last_UID = -1
         for _, patch in enumerate(self._patches_list):
@@ -94,6 +91,15 @@ class Surge:
     @staticmethod
     def get_patches_json_path():
         return pathlib.Path(__file__).parent.joinpath('surge_patches_list.json')
+
+    @staticmethod
+    def load_patches_list():
+        if pathlib.Path.exists(Surge.get_patches_json_path()):
+            with open(Surge.get_patches_json_path(), 'r') as f:
+                return json.load(f)
+        else:
+            raise FileNotFoundError("The JSON list of patches must be created before using Surge"
+                                    " (run this file as main script)")
 
     def get_patch_info(self, patch_index: int) -> dict:
         """ Returns a copy of the dict containing information about a patch.
@@ -156,6 +162,17 @@ class Surge:
         with open(Surge.get_patches_json_path(), 'w') as f:
             json.dump(patches_list, f)
             print("Patches written to {}".format(Surge.get_patches_json_path()))
+
+    @staticmethod
+    def update_labels_in_patches_list(available_labels: List[str], labels_per_UID: Dict[int, List[str]]):
+        patches_list = Surge.load_patches_list()
+        for UID, current_labels in labels_per_UID.items():
+            patches_list[UID]['instrument_labels_str'] = current_labels
+            patches_list[UID]['instrument_labels_array'] = \
+                [int(ref_label in current_labels) for ref_label in available_labels]
+        with open(Surge.get_patches_json_path(), 'w') as f:
+            json.dump(patches_list, f)
+            print("Updated written to {}".format(Surge.get_patches_json_path()))
 
     @property
     def n_patches(self):

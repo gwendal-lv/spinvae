@@ -15,7 +15,7 @@ import pandas as pd
 import soundfile
 from natsort import natsorted
 from collections import OrderedDict
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from data import abstractbasedataset
 
@@ -175,18 +175,37 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
                 'nonlinear_env', 'percussive', 'reverb', 'tempo-synced']
 
     @property
+    def instrument_sources_str(self):
+        """ The list of string representation of all 'instrument sources' (e.g. acoustic, electronic, ...)
+        https://magenta.tensorflow.org/datasets/nsynth#note-qualities """
+        return ['acoustic', 'electronic', 'synthetic']
+
+    @property
     def instrument_families_str(self):
-        """ The list of string representation of all 'instrument families' (e.g. bass, organ, ...) """
+        """ The list of string representation of all NSynth 'instrument families' (e.g. bass, organ, ...) """
         return ['bass', 'brass', 'flute', 'guitar', 'keyboard', 'mallet', 'organ', 'reed', 'string', 'synth_lead', 'vocal']
 
     def get_original_instrument_family(self, preset_UID: int) -> str:
         return self._instru_info_df['instrument_family_str'][preset_UID]  # original df indexes always remain usable
 
-    @property
-    def instrument_sources_str(self):
-        """ The list of string representation of all 'instrument sources' (e.g. acoustic, electronic, ...)
-        https://magenta.tensorflow.org/datasets/nsynth#note-qualities """
-        return ['acoustic', 'electronic', 'synthetic']
+    def save_labels(self, labels_names: List[str], labels_per_UID: Dict[int, List[str]]):
+        super().save_labels(labels_names, labels_per_UID)
+        # TODO save labels into instru_info_df
+        # check if labels column already exists (discard if yes)
+        if 'instrument_labels_str' in self._instru_info_df.columns:
+            self._instru_info_df.drop(columns=['instrument_labels_str', 'instrument_labels_array'], inplace=True)
+        # add labels to the existing dataframe - also convert labels to numpy arrays
+        labels_str, labels_arrays = list(), list()
+        for row in self._instru_info_df.iterrows():  # 1-by-1 processing, in case a reordering had happened
+            row = row[1]  # Row is a Tuple(int, Series)
+            current_labels = labels_per_UID[row['instrument']]  # 'instrument' is the UID
+            labels_str.append(current_labels)
+            labels_arrays.append(
+                np.asarray([(ref_label in current_labels) for ref_label in labels_names], dtype=np.uint8)
+            )
+        self._instru_info_df['instrument_labels_str'] = labels_str
+        self._instru_info_df['instrument_labels_array'] = labels_arrays
+        self._instru_info_df.to_pickle(self._instruments_info_pickle_path)  # Save the new DF
 
     # ==================== Generate new JSON files (sort all items by instrument) =================
 
@@ -262,10 +281,9 @@ class NsynthDataset(abstractbasedataset.AudioDataset):
         instru_info = copy.deepcopy(instru_info)  # deepcopy to prevent serialization issues
         with open(self.data_storage_path.joinpath("instruments_info.json"), 'w') as f:
             json.dump(instru_info, f)
-        # convert to pandas df, save as pickle to ease future data visualizations
+        # convert to pandas df, save as pickle to ease future usage
         instru_info_df = pd.DataFrame([v for k, v in instru_info.items()])
         instru_info_df.sort_values(by=['instrument'], inplace=True, ignore_index=True)  # this is the UID
-        # FIXME use labels
         instru_info_df.to_pickle(self._instruments_info_pickle_path)
         # display time
         delta_t = (datetime.now() - t_start).total_seconds()
