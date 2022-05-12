@@ -155,9 +155,12 @@ def train_config():
                # 'LatCorr/zK/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'zK'),  # very expensive)
                # 'LatCorr/zK/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'zK'),
                # Other misc. metrics
-               'Sched/LRwarmup': LinearDynamicParam(config.train.lr_warmup_start_factor, 1.0,
-                                                    end_epoch=config.train.lr_warmup_epochs,
-                                                    current_epoch=config.train.start_epoch),
+               'Sched/LRwarmup': LinearDynamicParam(
+                   config.train.lr_warmup_start_factor, 1.0,
+                   end_epoch=config.train.lr_warmup_epochs, current_epoch=config.train.start_epoch),
+               'Sched/AttGamma': LinearDynamicParam(
+                   0.0, config.model.attention_gamma,
+                   end_epoch=(config.train.attention_gamma_warmup_period if pretrain_vae else 0)),
                'Sched/Controls/LR': SimpleMetric(config.train.initial_learning_rate['reg']),
                'Sched/VAE/LR': SimpleMetric(config.train.initial_learning_rate['ae']),
                'Sched/VAE/beta': LinearDynamicParam(config.train.beta_start_value, config.train.beta,
@@ -167,8 +170,8 @@ def train_config():
     metrics = {'ReconsLoss/MSE/Valid_': logs.metrics.BufferedMetric(),
                'Latent/MMD/Valid_': logs.metrics.BufferedMetric(),
                'Latent/MaxAbsVal/Valid_': logs.metrics.BufferedMetric(),
-               'LatCorr/z0/Valid_': logs.metrics.BufferedMetric(),
-               'LatCorr/zK/Valid_': logs.metrics.BufferedMetric(),
+               # 'LatCorr/z0/Valid_': logs.metrics.BufferedMetric(),
+               # 'LatCorr/zK/Valid_': logs.metrics.BufferedMetric(),
                'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
                'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
                'epochs': config.train.start_epoch}
@@ -192,6 +195,8 @@ def train_config():
         if epoch <= config.train.lr_warmup_epochs:
             ae_model.learning_rate = scalars['Sched/LRwarmup'].get(epoch) * config.train.initial_learning_rate['ae']
             reg_model.learning_rate = scalars['Sched/LRwarmup'].get(epoch) * config.train.initial_learning_rate['reg']
+        ae_model.encoder.set_attention_gamma(scalars['Sched/AttGamma'].get(epoch))
+        ae_model.decoder.set_attention_gamma(scalars['Sched/AttGamma'].get(epoch))
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =
         # when profiling is disabled: true no-op context manager, and prof is None
@@ -219,7 +224,7 @@ def train_config():
                 lat_loss *= scalars['Sched/VAE/beta'].get(epoch)
                 with torch.no_grad():  # Monitoring-only losses
                     scalars['ReconsLoss/MSE/Train'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
-                    scalars['Latent/MMD/Train'].append(ae_model.mmd(z_K_sampled))
+                    scalars['Latent/MMD/Train'].append(ae_model.mmd(z_K_sampled))  # TODO don't compute twice
                     if not pretrain_vae:
                         accuracy, numerical_error = reg_model.eval_criterion_values
                         scalars['Controls/QLoss/Train'].append(numerical_error)

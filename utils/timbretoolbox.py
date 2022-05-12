@@ -311,6 +311,10 @@ class InterpolationTimbreToolbox(ToolboxLogger):
                     current_descr = None
         return descr_data
 
+    @staticmethod
+    def get_stored_sequences_descriptors(data_root_path: str):
+        with open(pathlib.Path(data_root_path).joinpath('all_sequence_features.pkl'), 'rb') as f:
+            return pickle.load(f)
 
 
 
