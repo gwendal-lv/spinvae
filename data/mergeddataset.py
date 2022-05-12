@@ -157,7 +157,20 @@ class MergedDataset(AudioDataset):
 
     @property
     def _available_labels_path(self):
-        return self._datasets[0]._available_labels_path
+        raise AssertionError("A mergeddataset does not have a single _available_labels_path. Please get this property "
+                             "from the sub-datasets.")
+
+    @property
+    def available_labels_names(self):
+        # TODO get labels names from all sub-datasets, check that they are identical
+        prev_labels_names = None
+        for ds_name, ds in self._datasets.items():
+            labels_names = ds.available_labels_names
+            if prev_labels_names is not None and prev_labels_names != labels_names:
+                raise ValueError("Some sub-datasets have different labels. Current dataset: {}, labels={}. "
+                                 "Previously found labels: {}".format(ds_name, labels_names, prev_labels_names))
+            prev_labels_names = labels_names
+        return labels_names
 
     def get_labels_tensor(self, preset_UID):
         local_UID, ds = self._global_to_local_UID_and_ds(preset_UID)

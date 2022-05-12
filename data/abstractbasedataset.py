@@ -115,12 +115,15 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
 
     def __str__(self):
         return "Dataset of {}/{} {} presets. Total items count {}: {} MIDI notes / preset, {} spectrograms.\n" \
-               "{} Spectrogram items, size={}, min={:.1f}dB, normalization:{}." \
+               "{} Spectrogram items, size={}, min={:.1f}dB, normalization:{}.\n" \
+               "Labeled samples: {}/{} ({:.1f}%)" \
             .format(self.valid_presets_count, self.total_nb_presets, self.synth_name,
                     len(self), self.midi_notes_per_preset,
                     ('stacked' if self.midi_notes_per_preset > 1 and self._multichannel_stacked_spectrograms else 'independent'),
                     ("Linear" if self.n_mel_bins <= 0 else "Mel"), self.get_spectrogram_tensor_size(),
-                    self.compute_spectrogram.min_dB, self.spectrogram_normalization)
+                    self.compute_spectrogram.min_dB, self.spectrogram_normalization,
+                    self.labeled_samples_count, len(self.valid_preset_UIDs),
+                    100.0 * self.labeled_samples_count / (len(self.valid_preset_UIDs) + 1e-6))
 
     def __len__(self):  # Required for any torch.utils.data.Dataset
         if self._multichannel_stacked_spectrograms:
@@ -270,8 +273,9 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
 
     @property
     def available_labels_names(self):
-        """ Returns a list of string description of labels. """
-        # TODO try load the file, otherwise return a default 'no label'
+        """ Returns a list of string description of labels if self._available_labels_path file exists,
+            otherwise returns a default 'NoLabel' string.
+        """
         try:
             with open(self._available_labels_path, 'rb') as f:
                 return pickle.load(f)
@@ -281,6 +285,15 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     @property
     def labels_count(self):
         return len(self.available_labels_name)
+
+    @property
+    def labeled_samples_count(self):
+        """ Returns the number of labelled samples (default 'NoLabel' excluded). """
+        if self.available_labels_names == ['NoLabel']:
+            return 0
+        # build numpy matrix from list of 1D tensors, then count non-zero for each row (columns axis)
+        labels_mat = [self.get_labels_tensor(preset_UID).cpu().numpy() for preset_UID in self.valid_preset_UIDs]
+        return (np.count_nonzero(np.asarray(labels_mat), axis=1) > 0).sum()
 
     @abstractmethod
     def get_original_instrument_family(self, preset_UID: int) -> str:
