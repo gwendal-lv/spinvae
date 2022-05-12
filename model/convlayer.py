@@ -105,18 +105,23 @@ class SelfAttentionConv2D(nn.Module):
         self._gamma = v
 
     def forward(self, x):
+        # TODO fixed or learned 2D positional embeddings
+
         # SAGAN paper: Feature maps are represented as 2D (with C input channels) in Fig.2,
         # but input features are described as flattened to CxN (1D, not CxWxH 2D data) in the paper itself
         N = x.shape[2] * x.shape[3]
         x_flat = x.view(x.shape[0], x.shape[1], N)  # compatible strides, shared memory
-        # Query, key and value shape: Cint x N     where N = W*H
+        # If we consider batch item 0 only:
+        # Query, key and value are matrices with shape Cint x N     where N = W*H
         query, key, value = self.Wq(x_flat), self.Wk(x_flat), self.Wv(x_flat)
-        # Attention output size: N x N
-        # Different from the transformer:
-        #     - QT.K to compute similarity between pixels (instead of Q.KT)
+        # Attention matrix output size: N x N
+        # Scaling is based on the be number of Channels (d_k in the Transformer paper)
+        # Differences compared to the transformer:
+        #     - QT.K to compute similarity between pixels (instead of Q.KT) because channels/pixel pos axes instead
+        #        of word position / embedding coordinates
         #     - Compute a softmax on each column (such that sum of row (dim=1) values is 1.0), not on each row
-        #     - no scaling before softmax.  TODO TRY SCALING (/ sqrt(N))
-        att = F.softmax(torch.bmm(query.transpose(1, 2), key) / np.sqrt(N), dim=1)
+        # FIXME triple-check dimension over which softmax is computed (1 softmax per query vector)
+        att = F.softmax(torch.bmm(query.transpose(1, 2), key) / np.sqrt(self.Cint), dim=1)  # FIXME is dim OK ?
         att_output = torch.bmm(value, att)
         # Increase number of channels before adding to the input
         return x + self.W_out_v(att_output).view(x.shape) * self.gamma  # TODO use contiguous after final reshape ?
