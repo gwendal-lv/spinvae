@@ -283,8 +283,8 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
             return ['NoLabel']  # this dataset does not contain labels
 
     @property
-    def labels_count(self):
-        return len(self.available_labels_name)
+    def available_labels_count(self):
+        return len(self.available_labels_names)
 
     @property
     def labeled_samples_count(self):

@@ -325,8 +325,12 @@ class RunLogger:
                     self.tensorboard.add_vector_histograms(super_metrics[metric_name], metric_name, epoch)
             except AssertionError:
                 pass  # RegOut metric are not filled during pretrain, and will raise errors
+        # Latent metrics: TB histograms + TB embeddings (for t-SNE and UMAP visualisations)
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
         self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+        # Validation embeddings only (Train embeddings tensor is very large, slow download and analysis)
+        self.tensorboard.add_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+        # Network weights histograms
         for network_name, network_layers in networks_layers_params.items():  # key: e.g. 'Decoder'
             for layer_name, layer_params in network_layers.items():  # key: e.g. 'FC0'
                 for param_name, param_values in layer_params.items():  # key: e.g. 'weight_abs'

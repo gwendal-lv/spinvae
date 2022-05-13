@@ -51,16 +51,18 @@ def train_config():
     if pretrain_vae:
         train_audio_dataset, validation_audio_dataset = data.build.get_pretrain_datasets(config.model, config.train)
         dataset = None
+        main_dataset = train_audio_dataset
+        labels_count = train_audio_dataset.available_labels_count
         # dataloader is a dict of 2 dataloaders ('train' and 'validation')
-        dataloader, dataloaders_nb_items = data.build.get_pretrain_dataloaders(config.model, config.train,
-                                                                               train_audio_dataset,
-                                                                               validation_audio_dataset)
+        dataloader, dataloaders_nb_items = data.build.get_pretrain_dataloaders(
+            config.model, config.train, train_audio_dataset, validation_audio_dataset)
         preset_indexes_helper = None
     else:
         # Must be constructed first because dataset output sizes will be required to automatically
         # infer models output sizes.
         dataset = data.build.get_dataset(config.model, config.train)
         train_audio_dataset, validation_audio_dataset = None, None
+        labels_count = dataset.available_labels_count
         preset_indexes_helper = dataset.preset_indexes_helper
         # dataloader is a dict of 3 subsets dataloaders ('train', 'validation' and 'test')
         # This function will make copies of the original dataset (some with, some without data augmentation)
@@ -132,8 +134,10 @@ def train_config():
     # ========== Scalars, metrics, images and audio to be tracked in Tensorboard ==========
     # Some of these metrics might be unused during pre-training
     # Special 'super-metrics', used by 1D scalars or metrics to retrieve stored data. Not directly logged
-    super_metrics = {'LatentMetric/Train': LatentMetric(config.model.dim_z, dataloaders_nb_items['train']),
-                     'LatentMetric/Valid': LatentMetric(config.model.dim_z, dataloaders_nb_items['validation']),
+    super_metrics = {'LatentMetric/Train': LatentMetric(config.model.dim_z, dataloaders_nb_items['train'],
+                                                        dim_label=labels_count),
+                     'LatentMetric/Valid': LatentMetric(config.model.dim_z, dataloaders_nb_items['validation'],
+                                                        dim_label=labels_count),
                      'RegOutValues/Train': VectorMetric(dataloaders_nb_items['train']),
                      'RegOutValues/Valid': VectorMetric(dataloaders_nb_items['validation'])}
     # 1D scalars with a .get() method. All of these will be automatically added to Tensorboard
@@ -206,7 +210,8 @@ def train_config():
             dataloader_iter = iter(dataloader['train'])
             for i in range(len(dataloader['train'])):
                 sample = next(dataloader_iter)
-                x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+                x_in, v_in, sample_info, label \
+                    = sample[0].to(device), sample[1].to(device), sample[2].to(device), sample[3].to(device)
                 reg_model.precompute_u_in_permutations(v_in)
                 ae_model.optimizer.zero_grad()
                 reg_model.optimizer.zero_grad()
@@ -214,7 +219,7 @@ def train_config():
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)  # returns a dummy zero during pre-train
                 reg_model.precompute_u_out_with_symmetries(v_out)
-                super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
+                super_metrics['LatentMetric/Train'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled, label)
                 # Losses
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
@@ -263,13 +268,14 @@ def train_config():
             v_in_backup = torch.Tensor().to(device=recons_loss.device)
             i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
             for i, sample in enumerate(dataloader['validation']):
-                x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+                x_in, v_in, sample_info, label \
+                    = sample[0].to(device), sample[1].to(device), sample[2].to(device), sample[3].to(device)
                 reg_model.precompute_u_in_permutations(v_in)
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                 v_out = reg_model_parallel(z_K_sampled)
                 reg_model.precompute_u_out_with_symmetries(v_out)
-                super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled)
+                super_metrics['LatentMetric/Valid'].append(z_0_mu_logvar, z_0_sampled, z_K_sampled, label)
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
@@ -296,12 +302,10 @@ def train_config():
                     v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
                     v_in_backup = torch.cat([v_in_backup, v_in])
                     if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
-                        logger.plot_train_spectrograms(epoch, x_in, x_out, sample_info,
-                                                       dataset if dataset is not None else validation_audio_dataset,
+                        logger.plot_train_spectrograms(epoch, x_in, x_out, sample_info, main_dataset,
                                                        config.model, config.train)
                         # "CUDA illegal memory access (stacktrace might be incorrect)" - fixed by torch 1.10, CUDA 11.3
-                        logger.plot_decoder_interpolation(epoch, ae_model, z_K_sampled, sample_info,
-                                                          dataset if dataset is not None else validation_audio_dataset)
+                        logger.plot_decoder_interpolation(epoch, ae_model, z_K_sampled, sample_info, main_dataset)
         metrics['Latent/MaxAbsVal/Valid_'].append(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
         scalars['VAELoss/Valid'].set(scalars['ReconsLoss/Backprop/Valid'].get()
                                      + scalars['Latent/BackpropLoss/Valid'].get())
@@ -339,7 +343,7 @@ def train_config():
             logger.plot_stats_tensorboard__threaded(config.train, epoch, super_metrics, ae_model)  # non-blocking
             if v_in_backup.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_vst_error(
-                    v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), dataset.preset_indexes_helper)
+                    v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_indexes_helper)
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())

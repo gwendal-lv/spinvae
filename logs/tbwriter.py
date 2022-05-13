@@ -11,6 +11,7 @@ from .metrics import BufferedMetric, LatentMetric, VectorMetric
 import utils.stat
 
 
+# TODO check if this mod remains necessary with PyTorch 1.10
 class CorrectedSummaryWriter(SummaryWriter):
     """ SummaryWriter corrected to prevent extra runs to be created
     in Tensorboard when adding hparams.
@@ -153,3 +154,21 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.add_histogram("zK/{}_no_outlier".format(dataset_type), utils.stat.remove_outliers(zK),
                            global_step=global_step, bins=bins)
 
+    def add_latent_embedding(self, latent_metric: LatentMetric, dataset_type: str, global_step: int):
+        """ TODO doc """
+        rng = np.random.default_rng(seed=global_step)
+        labels_uint8 = latent_metric.get_z('label')  # One sample can have 0, 1 or multiple labels
+        # labels converted to strings
+        metadata = list()
+        for i in range(labels_uint8.shape[0]):  # np.nonzero does not have a proper row-by-row option
+            label_indices = np.nonzero(labels_uint8[i, :])
+            if len(label_indices) == 0:
+                metadata.append("No label")
+            else:  # Only 1 label will be displayed (randomly chosen if multiple labels)
+                rng.shuffle(label_indices)  # in-place
+                metadata.append(str(label_indices[0]))  # FIXME use string label instead of int index
+        # TODO add z0 and zK embeddings
+        # tensorboard issue: https://github.com/pytorch/pytorch/issues/30966
+        # => need to remove tensorflow from the conda venv => runs, but metadata still doesn't show
+        self.add_embedding(latent_metric.get_z('z0'), metadata=metadata,   # TODO use metadata_header?
+                           tag="z0/{}".format(dataset_type), global_step=global_step)

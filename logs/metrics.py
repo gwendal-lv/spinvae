@@ -121,59 +121,59 @@ class VectorMetric:
 class LatentMetric:
     """ Can be used to accumulate latent values during evaluation or training.
     dim_z and dataset_len should be provided to improve performance (reduce memory allocations) """
-    def __init__(self, dim_z=-1, dataset_len=-1):
+    def __init__(self, dim_z, dataset_len, dim_label=-1):
         self.dim_z = dim_z
         self.dataset_len = dataset_len
-        if self.dim_z < 0 or self.dataset_len < 0:
-            raise AssertionError("[LatentMetric] Warning: not initialized with dim_z and dataset_len"
-                                 "- no memory pre-allocation (slow)")
+        self.valid_keys = ['mu', 'sigma', 'z0', 'zK']
+        self.dim_label = dim_label
+        if self.dim_label > 0:
+            self.valid_keys.append('label')
         self.on_new_epoch()
 
     def on_new_epoch(self):
         self.next_dataset_index = 0  # Current row index to append data
-        self.valid_keys = ['mu', 'sigma', 'z0', 'zK']
         self._z, self._z_buf = dict(), dict()
         for k in self.valid_keys:
-            if self.dim_z < 0 or self.dataset_len < 0:
-                # Dicts of empty numpy arrays, that will be built once on the first plot method call
-                self._z_buf[k] = np.zeros(0)
-                self._z[k] = np.zeros(0)
-            else:
+            if k != 'label':
                 self._z_buf[k] = np.zeros((self.dataset_len, self.dim_z))
                 self._z[k] = np.zeros((self.dataset_len, self.dim_z))
+            else:  # 'label'
+                self._z_buf[k] = np.zeros((self.dataset_len, self.dim_label), dtype=np.uint8)
+                self._z[k] = np.zeros((self.dataset_len, self.dim_label), dtype=np.uint8)
+        # Correlation matrices will be computed on-demand - reinit here to empty arrays
         self._spearman_corr_matrix = {'z0': np.zeros(0), 'zK': np.zeros(0)}
         self._spearman_corr_matrix_zerodiag = {'z0': np.zeros(0), 'zK': np.zeros(0)}
         self._avg_abs_corr_spearman_zerodiag = {'z0': -1.0, 'zK': -1.0}
 
-    def append(self, z_mu_logvar, z0_samples, zK_samples=None):
-        """
-        Internally duplicates the latent values of a minibatch
-        """
+    def append(self, z_mu_logvar, z0_samples, zK_samples=None, labels=None):
+        """ Internally duplicates the latent values (and labels) of a minibatch """
+        batch_len = z0_samples.shape[0]
         if zK_samples is None:
             zK_samples = z0_samples
-        # Tensor must be cloned before detach!  TODO tester copie sauvage?
-        self._z_buf['mu'] = z_mu_logvar[:, 0, :].clone().detach().cpu().numpy()
-        self._z_buf['sigma'] = np.exp(z_mu_logvar[:, 1, :].clone().detach().cpu().numpy() * 0.5)
-        self._z_buf['z0'] = z0_samples.clone().detach().cpu().numpy()
-        self._z_buf['zK'] = zK_samples.clone().detach().cpu().numpy()
-        batch_len = self._z_buf['mu'].shape[0]
-        if self.dim_z < 0 or self.dataset_len < 0:  # Dynamic memory allocation - slow
-            if self._z['mu'].shape[0] == 0:  # Init?
-                for k in self._z:  # k is 'mu', 'sigma', ...
-                    self._z[k] = self._z_buf[k]
+        # Use pre-allocated storage matrices
+        storage_rows = range(self.next_dataset_index, self.next_dataset_index+batch_len)
+        self._z['mu'][storage_rows, :] = z_mu_logvar[:, 0, :].clone().detach().cpu().numpy()
+        self._z['sigma'][storage_rows, :] = np.exp(z_mu_logvar[:, 1, :].clone().detach().cpu().numpy() * 0.5)
+        self._z['z0'][storage_rows, :] = z0_samples.clone().detach().cpu().numpy()
+        self._z['zK'][storage_rows, :] = zK_samples.clone().detach().cpu().numpy()
+        if 'label' in self.valid_keys:
+            if labels is None:
+                raise ValueError("labels argument must be provided (dim_label was provided to class ctor)")
             else:
-                for k in self._z:
-                    self._z[k] = np.vstack((self._z[k], self._z_buf[k]))
-        else:  # Pre-allocated storage matrices
-            for k in self._z:
-                self._z[k][self.next_dataset_index:self.next_dataset_index+batch_len, :] = self._z_buf[k]
-            self.next_dataset_index += batch_len
+                self._z_buf['label'][storage_rows, :] = labels.clone().detach().cpu().numpy()
+        else:
+            if labels is not None:
+                raise ValueError("labels argument cannot be provided because dim_label was not provided to class ctor")
+        self.next_dataset_index += batch_len
 
     def get_z(self, z_type):
         """ Returns the requested latent values.
 
-        :param z_type: 'mu', 'sigma', 'z0' or 'zK'
+        :param z_type: 'mu', 'sigma', 'z0', 'zK' or 'latent'
         """
+        if self.next_dataset_index != self.dataset_len:
+            raise AssertionError("Internal storage matrices are not entirely set: {} items expected, {} items appended"
+                                 .format(self.dataset_len, self.next_dataset_index))
         return self._z[z_type]
 
     def get_avg_abs_spearman_corr_zerodiag(self, z_type):  # TODO corr for z0 or zK ?
@@ -193,8 +193,9 @@ class LatentMetric:
         """
         :param z_type: 'z0' or 'zK'
         """
-        assert(z_type == 'z0' or z_type == 'zK')
-        self._spearman_corr_matrix[z_type], _ = scipy.stats.spearmanr(self._z[z_type])  # We don't use p-values
+        if not (z_type == 'z0' or z_type == 'zK'):
+            raise AssertionError("Cannot compute correlation for latent data '{}'".format(z_type))
+        self._spearman_corr_matrix[z_type], _ = scipy.stats.spearmanr(self.get_z(z_type))  # We don't use p-values
         self._spearman_corr_matrix_zerodiag[z_type] = copy.deepcopy(self._spearman_corr_matrix[z_type])
         for i in range(self._spearman_corr_matrix_zerodiag[z_type].shape[0]):
             self._spearman_corr_matrix_zerodiag[z_type][i, i] = 0.0
