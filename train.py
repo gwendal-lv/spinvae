@@ -50,7 +50,6 @@ def train_config():
     pretrain_vae = config.train.pretrain_ae_only  # type: bool
     if pretrain_vae:
         train_audio_dataset, validation_audio_dataset = data.build.get_pretrain_datasets(config.model, config.train)
-        main_dataset = train_audio_dataset
         # dataloader is a dict of 2 dataloaders ('train' and 'validation')
         dataloader, dataloaders_nb_items = data.build.get_pretrain_dataloaders(
             config.model, config.train, train_audio_dataset, validation_audio_dataset)
@@ -59,6 +58,8 @@ def train_config():
         # Must be constructed first because dataset output sizes will be required to automatically
         # infer models output sizes.
         dataset = data.build.get_dataset(config.model, config.train)
+        # We use a single dataset (for train, valid, test) but different dataloaders
+        train_audio_dataset, validation_audio_dataset = dataset, dataset
         preset_indexes_helper = dataset.preset_indexes_helper
         # dataloader is a dict of 3 subsets dataloaders ('train', 'validation' and 'test')
         # This function will make copies of the original dataset (some with, some without data augmentation)
@@ -131,9 +132,9 @@ def train_config():
     # Some of these metrics might be unused during pre-training
     # Special 'super-metrics', used by 1D scalars or metrics to retrieve stored data. Not directly logged
     super_metrics = {'LatentMetric/Train': LatentMetric(config.model.dim_z, dataloaders_nb_items['train'],
-                                                        dim_label=main_dataset.available_labels_count),
+                                                        dim_label=train_audio_dataset.available_labels_count),
                      'LatentMetric/Valid': LatentMetric(config.model.dim_z, dataloaders_nb_items['validation'],
-                                                        dim_label=main_dataset.available_labels_count),
+                                                        dim_label=validation_audio_dataset.available_labels_count),
                      'RegOutValues/Train': VectorMetric(dataloaders_nb_items['train']),
                      'RegOutValues/Valid': VectorMetric(dataloaders_nb_items['validation'])}
     # 1D scalars with a .get() method. All of these will be automatically added to Tensorboard
@@ -287,8 +288,8 @@ def train_config():
                     v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
                     v_in_backup = torch.cat([v_in_backup, v_in])
                     if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
-                        logger.plot_spectrograms(x_in, x_out, sample_info, main_dataset)
-                        logger.plot_decoder_interpolation(ae_model, z_K_sampled, sample_info, main_dataset)
+                        logger.plot_spectrograms(x_in, x_out, sample_info, validation_audio_dataset)
+                        logger.plot_decoder_interpolation(ae_model, z_K_sampled, sample_info, validation_audio_dataset)
         scalars['Latent/MaxAbsVal/Valid'].set(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
         scalars['VAELoss/Valid'].set(
             scalars['ReconsLoss/Backprop/Valid'].get() + scalars['Latent/BackpropLoss/Valid'].get())
