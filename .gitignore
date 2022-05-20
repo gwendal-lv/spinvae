@@ -1,4 +1,7 @@
 
+# Confidential files - not to be published
+utils/config_confidential.py
+
 # Python/IPython
 *.pyc
 *.ipynb_checkpoints

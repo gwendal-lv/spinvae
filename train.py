@@ -38,21 +38,19 @@ import utils.figures
 import utils.exception
 
 
+
 def train_config():
     """ Performs a full training run, as described by parameters in config.py.
 
     Some attributes from config.py might be dynamically changed by train_queue.py (or this script,
     after loading the datasets) - so they can be different from what's currently written in config.py. """
-    torch.manual_seed(0)
-
 
     # ========== Datasets and DataLoaders ==========
+    torch.manual_seed(0)
     pretrain_vae = config.train.pretrain_ae_only  # type: bool
     if pretrain_vae:
         train_audio_dataset, validation_audio_dataset = data.build.get_pretrain_datasets(config.model, config.train)
-        dataset = None
         main_dataset = train_audio_dataset
-        labels_count = train_audio_dataset.available_labels_count
         # dataloader is a dict of 2 dataloaders ('train' and 'validation')
         dataloader, dataloaders_nb_items = data.build.get_pretrain_dataloaders(
             config.model, config.train, train_audio_dataset, validation_audio_dataset)
@@ -61,8 +59,6 @@ def train_config():
         # Must be constructed first because dataset output sizes will be required to automatically
         # infer models output sizes.
         dataset = data.build.get_dataset(config.model, config.train)
-        train_audio_dataset, validation_audio_dataset = None, None
-        labels_count = dataset.available_labels_count
         preset_indexes_helper = dataset.preset_indexes_helper
         # dataloader is a dict of 3 subsets dataloaders ('train', 'validation' and 'test')
         # This function will make copies of the original dataset (some with, some without data augmentation)
@@ -135,9 +131,9 @@ def train_config():
     # Some of these metrics might be unused during pre-training
     # Special 'super-metrics', used by 1D scalars or metrics to retrieve stored data. Not directly logged
     super_metrics = {'LatentMetric/Train': LatentMetric(config.model.dim_z, dataloaders_nb_items['train'],
-                                                        dim_label=labels_count),
+                                                        dim_label=main_dataset.available_labels_count),
                      'LatentMetric/Valid': LatentMetric(config.model.dim_z, dataloaders_nb_items['validation'],
-                                                        dim_label=labels_count),
+                                                        dim_label=main_dataset.available_labels_count),
                      'RegOutValues/Train': VectorMetric(dataloaders_nb_items['train']),
                      'RegOutValues/Valid': VectorMetric(dataloaders_nb_items['validation'])}
     # 1D scalars with a .get() method. All of these will be automatically added to Tensorboard
@@ -153,6 +149,7 @@ def train_config():
                # Latent-space and VAE losses
                'Latent/BackpropLoss/Train': EpochMetric(), 'Latent/BackpropLoss/Valid': EpochMetric(),
                'Latent/MMD/Train': EpochMetric(), 'Latent/MMD/Valid': EpochMetric(),
+               'Latent/MaxAbsVal/Train': SimpleMetric(), 'Latent/MaxAbsVal/Valid': SimpleMetric(),
                'VAELoss/Train': SimpleMetric(), 'VAELoss/Valid': SimpleMetric(),
                # 'LatCorr/z0/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'z0'),  # Disabled
                # 'LatCorr/z0/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'z0'),  # (unused and
@@ -170,16 +167,6 @@ def train_config():
                'Sched/VAE/beta': LinearDynamicParam(config.train.beta_start_value, config.train.beta,
                                                     end_epoch=config.train.beta_warmup_epochs,
                                                     current_epoch=config.train.start_epoch) }
-    # Validation metrics have a '_' suffix to be different from scalars (tensorboard mixes them)
-    metrics = {'ReconsLoss/MSE/Valid_': logs.metrics.BufferedMetric(),
-               'Latent/MMD/Valid_': logs.metrics.BufferedMetric(),
-               'Latent/MaxAbsVal/Valid_': logs.metrics.BufferedMetric(),
-               # 'LatCorr/z0/Valid_': logs.metrics.BufferedMetric(),
-               # 'LatCorr/zK/Valid_': logs.metrics.BufferedMetric(),
-               'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
-               'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
-               'epochs': config.train.start_epoch}
-    logger.tensorboard.init_hparams_and_metrics(metrics)  # hparams added knowing config.*
 
 
     # ========== PyTorch Profiling (optional) ==========
@@ -189,10 +176,7 @@ def train_config():
     # ========== Model training epochs ==========
     for epoch in range(config.train.start_epoch, config.train.n_epochs):
         # = = = = = Re-init of epoch metrics and useful scalars (warmup ramps, ...) = = = = =
-        for _, s in super_metrics.items():
-            s.on_new_epoch()
-        for _, s in scalars.items():
-            s.on_new_epoch()
+        logger.on_epoch_starts(epoch, scalars, super_metrics)
         should_plot = (epoch % config.train.plot_period == 0)
 
         # = = = = = LR warmup (bypasses the scheduler during first epochs) = = = = =
@@ -204,7 +188,7 @@ def train_config():
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =
         # when profiling is disabled: true no-op context manager, and prof is None
-        with optional_profiler.get_prof(epoch) as prof:
+        with optional_profiler.get_prof(epoch) as prof:  # TODO use comet context if available
             ae_model_parallel.train()
             reg_model_parallel.train()
             dataloader_iter = iter(dataloader['train'])
@@ -254,14 +238,15 @@ def train_config():
                 (recons_loss + lat_loss + extra_lat_reg_loss + cont_loss + cont_reg_loss).backward()
                 ae_model.optimizer.step(), reg_model.optimizer.step()
                 # End of mini-batch (step)
-                logger.on_minibatch_finished(i)
+                logger.on_train_minibatch_finished(i)
                 if prof is not None:
                     prof.step()
-        scalars['VAELoss/Train'].set(scalars['ReconsLoss/Backprop/Train'].get()
-                                     + scalars['Latent/BackpropLoss/Train'].get())
+        scalars['Latent/MaxAbsVal/Train'].set(np.abs(super_metrics['LatentMetric/Train'].get_z('zK')).max())
+        scalars['VAELoss/Train'].set(
+            scalars['ReconsLoss/Backprop/Train'].get() + scalars['Latent/BackpropLoss/Train'].get())
 
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
-        with torch.no_grad():
+        with torch.no_grad():  # TODO use comet context if available
             ae_model_parallel.eval()  # BN stops running estimates
             reg_model_parallel.eval()
             v_out_backup = torch.Tensor().to(device=recons_loss.device)  # Params inference error (Tensorboard plot)
@@ -302,13 +287,11 @@ def train_config():
                     v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
                     v_in_backup = torch.cat([v_in_backup, v_in])
                     if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
-                        logger.plot_train_spectrograms(epoch, x_in, x_out, sample_info, main_dataset,
-                                                       config.model, config.train)
-                        # "CUDA illegal memory access (stacktrace might be incorrect)" - fixed by torch 1.10, CUDA 11.3
-                        logger.plot_decoder_interpolation(epoch, ae_model, z_K_sampled, sample_info, main_dataset)
-        metrics['Latent/MaxAbsVal/Valid_'].append(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
-        scalars['VAELoss/Valid'].set(scalars['ReconsLoss/Backprop/Valid'].get()
-                                     + scalars['Latent/BackpropLoss/Valid'].get())
+                        logger.plot_spectrograms(x_in, x_out, sample_info, main_dataset)
+                        logger.plot_decoder_interpolation(ae_model, z_K_sampled, sample_info, main_dataset)
+        scalars['Latent/MaxAbsVal/Valid'].set(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
+        scalars['VAELoss/Valid'].set(
+            scalars['ReconsLoss/Backprop/Valid'].get() + scalars['Latent/BackpropLoss/Valid'].get())
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
         if pretrain_vae or (not pretrain_vae and config.train.enable_ae_scheduler_after_pretrain):
@@ -329,37 +312,19 @@ def train_config():
         early_stop = (reg_model.learning_rate < config.train.early_stop_lr_threshold['reg'])
 
         # = = = = = Epoch logs (scalars/sounds/images + updated metrics) = = = = =
-        for k, s in scalars.items():  # All available scalars are written to tensorboard
-            try:
-                # don't need to log everything for every train procedure (during pre-train, if no flow, etc...)
-                if (k.startswith('Controls') and pretrain_vae) or (k.startswith('Sched/Controls') and pretrain_vae)\
-                        or (k.startswith('LatCorr/zK') and config.model.latent_flow_arch is None):
-                    pass
-                else:
-                    logger.tensorboard.add_scalar(k, s.get(), epoch)  # .get might raise except if empty/unused scalar
-            except ValueError:  # unused scalars with buffer (e.g. during pretrain) will raise that exception
-                pass
+        logger.add_scalars(scalars)  # Some scalars might not be added (e.g. during pretrain)
         if should_plot or early_stop:
-            logger.plot_stats_tensorboard__threaded(config.train, epoch, super_metrics, ae_model)  # non-blocking
+            # FIXME reactivate
+            # logger.plot_stats_tensorboard__threaded(config.train, epoch, super_metrics, ae_model)  # non-blocking
             if v_in_backup.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_vst_error(
                     v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_indexes_helper)
-                logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
-        metrics['epochs'] = epoch + 1
-        metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
-        metrics['Latent/MMD/Valid_'].append(scalars['Latent/MMD/Valid'].get())
-        # metrics['LatCorr/z0/Valid_'].append(scalars['LatCorr/z0/Valid'].get())
-        if config.model.latent_flow_arch is not None:
-            pass  # metrics['LatCorr/zK/Valid_'].append(scalars['LatCorr/zK/Valid'].get())
-        if not pretrain_vae:
-            metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
-            metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
-        logger.tensorboard.update_metrics(metrics)
+                logger.add_figure('SynthControlsError', fig)
 
         # = = = = = Model+optimizer(+scheduler) save - ready for next epoch = = = = =
         if (epoch > 0 and epoch % config.train.save_period == 0)\
                 or (epoch == config.train.n_epochs-1) or early_stop:
-            logger.save_checkpoint(epoch, ae_model, (None if pretrain_vae else reg_model))
+            logger.save_checkpoint(ae_model, (None if pretrain_vae else reg_model))
         logger.on_epoch_finished(epoch)
         if early_stop:
             print("[train.py] Training stopped early (final loss plateau)")
@@ -370,14 +335,14 @@ def train_config():
     logger.on_training_finished()  # Might have to wait for threads
 
 
-    # ========== "Manual GC" (to try to prevent random CUDA out-of-memory between enqueued runs ==========
+    # ========== "Manual GC" (to try to prevent random CUDA out-of-memory between enqueued runs) ==========
     del reg_model_parallel, ae_model_parallel
     del extended_ae_model, ae_model
     del reg_model
     del v_in, v_out, v_in_backup, v_out_backup, x_in, x_out, sample_info
     del ae_out, z_0_sampled, z_K_sampled, z_0_mu_logvar
     del extra_lat_reg_loss, lat_loss
-    del metrics, super_metrics
+    del scalars, super_metrics
     del logger
     del dataloader, dataset
     del train_audio_dataset, validation_audio_dataset

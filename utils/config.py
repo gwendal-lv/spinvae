@@ -1,3 +1,5 @@
+# FIXME rename configutils.py
+
 
 import json
 import collections
@@ -7,7 +9,7 @@ import collections
 class _Config(object):
     pass
 
-
+# FIXME move directly to ../evalconfig.py
 class EvalConfig:
     def __init__(self):
         self.start_datetime = ''
@@ -51,6 +53,6 @@ def get_config_from_file(absolute_file_path):
 
 
 if __name__ == "__main__":
-    # config.json read test
+    # FIXME REMOVE config.json read test
     model_config, train_config = get_config_from_file("/home/gwendal/Jupyter/nn-synth-interp/saved/BasicVAE/11_tanh_output/config.json")
     pass

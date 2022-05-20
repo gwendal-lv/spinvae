@@ -14,21 +14,27 @@ parameters, please only use simple types such as string, ints, floats, tuples (n
 
 import datetime
 from utils.config import _Config  # Empty class - to ease JSON serialization of this file
-
+# The config_confidential.py must be created - required global attributes are described later in this file
+from utils import config_confidential
 
 # ===================================================================================================================
 # ================================================= Model configuration =============================================
 # ===================================================================================================================
-model = _Config()
+model = _Config()  # TODO turn this into a proper class - for auto-complete
 
 # ----------------------------------------------- Data ---------------------------------------------------
-model.data_root_path = "/media/gwendal/Data/Datasets"  # TODO anonymize path
+model.data_root_path = config_confidential.data_root_path
 model.logs_root_dir = "saved"  # Path from this directory
-model.name = "FlowInterp"
-model.run_name = 'dummy_test'  # run: different hyperparams, optimizer, etc... for a given model
-model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
+model.name = "VAE_embeds"  # experiment base name
+model.run_name = 'dummy16'  # experiment run: different hyperparams, optimizer, etc... for a given experiment
+# TODO anonymous automatic relative path
 model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                   "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
+model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
+# Comet.ml logger (replaces Tensorboard)
+model.comet_api_key = config_confidential.comet_api_key
+model.comet_project_name = config_confidential.comet_project_name
+model.comet_workspace = config_confidential.comet_workspace
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
@@ -40,7 +46,7 @@ model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/"
 #    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
 #    '_res' residual connections (blocks of 2 conv layer)
 #    '_time+' increases time resolution in the deepest layers
-model.encoder_architecture = 'speccnn8l1_res_big'
+model.encoder_architecture = 'speccnn8l1_res'
 model.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
 # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
 # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
@@ -61,7 +67,7 @@ model.forward_controls_loss = True  # Must be true for non-invertible MLP regres
 # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concatenated to the latent vector
 model.concat_midi_to_z = None  # See update_dynamic_config_params()
 # Latent space dimension  *************** When using a Flow regressor, this dim is automatically set ******************
-model.dim_z = 5020  # Including possibly concatenated midi pitch and velocity
+model.dim_z = 512  # Including possibly concatenated midi pitch and velocity
 # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
 #    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
@@ -120,9 +126,9 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # ======================================= Training procedure configuration ==========================================
 # ===================================================================================================================
 train = _Config()
-train.pretrain_ae_only = False  # Should we pre-train the auto-encoder model only?
+train.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 64  # 128: faster train but lower higher MMD (more posterior collapse)
+train.minibatch_size = 256  # 128: faster train but lower higher MMD (more posterior collapse). 64: better MMD perf
 train.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...). -1 indicates CPU (untested)
 train.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
 train.k_folds = 9  # 10% for validation set, 80% for training
@@ -174,7 +180,7 @@ train.optimizer = 'Adam'
 # Maximal learning rate (reached after warmup, then reduced on plateaus)
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
 # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
-train.initial_learning_rate = {'ae': 1e-4, 'reg': 1e-4}
+train.initial_learning_rate = {'ae': 2e-5, 'reg': 1e-4}  # FIXME reset to 1e-4
 train.initial_ae_lr_factor_after_pretrain = 1e-1  # AE LR reduced when used with regression model after pre-train
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
 # The warmup will be must faster during pre-train  (See update_dynamic_config_params())

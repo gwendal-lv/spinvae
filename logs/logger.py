@@ -24,6 +24,7 @@ import utils
 import utils.figures
 import utils.stat
 from .tbwriter import TensorboardSummaryWriter  # Custom modified summary writer
+from .cometwriter import CometWriter
 import logs.logger_mp
 
 _erase_security_time_s = 5.0
@@ -77,14 +78,12 @@ def get_model_last_checkpoint(root_path: pathlib.Path, model_config, verbose=Tru
 
 def get_tensorboard_run_directory(root_path, model_config):
     """ Returns the directory where Tensorboard model metrics are stored, for a particular run. """
-    # pb s'il y en a plusieurs ? (semble résolu avec override de add_hparam PyTorch)
     return root_path.joinpath(model_config.logs_root_dir).joinpath('runs')\
         .joinpath(model_config.name).joinpath(model_config.run_name)
 
 
 def erase_run_data(root_path, model_config):
-    """ Erases all previous data (Tensorboard, config, saved models)
-    for a particular run of the model. """
+    """ Erases all previous data (Tensorboard, config, saved models) for a particular run of the model. """
     if _erase_security_time_s > 0.1:
         print("[RunLogger] *** WARNING *** '{}' run for model '{}' will be erased in {} seconds. "
               "Stop this program to cancel ***"
@@ -98,21 +97,24 @@ def erase_run_data(root_path, model_config):
 
 class RunLogger:
     """ Class for saving interesting data during a training run:
-     - graphs, losses, metrics, and some results to Tensorboard
+     - graphs, losses, metrics, and some results to Comet or Tensorboard
      - config.py as a json file
-     - trained models
+     - trained models (checkpoints)
 
-     See ../README.md to get more info on storage location.
+     See ../README.md to get more info on storage locations.
      """
-    def __init__(self, root_path, model_config, train_config, minibatches_count=0,
-                 use_multiprocessing=True):
+    def __init__(self, root_path, model_config, train_config,  # TODO typing hints after refactoring
+                 logger_type='comet', use_multiprocessing=True):
         """
 
         :param root_path: pathlib.Path of the project's root folder
         :param model_config: from config.py
         :param train_config: from config.py
-        :param minibatches_count: Length of the 'train' dataloader
+        :param logger_type: 'comet', 'tensorboard' or 'comet|tensorboard' (tensorboard is deprecated, incomplete logs)
         """
+        self.logger_type = logger_type.lower()
+        if ('comet' not in self.logger_type) and ('tensorboard' not in self.logger_type):
+            raise ValueError("Unsupported logger_type '{}'".format(logger_type))
         # Configs are stored but not modified by this class
         self.model_config = model_config
         self.train_config = train_config
@@ -121,9 +123,16 @@ class RunLogger:
         _erase_security_time_s = train_config.init_security_pause
         assert train_config.start_epoch >= 0  # Cannot start from a negative epoch
         self.restart_from_checkpoint = (train_config.start_epoch > 0)
+        self.current_epoch = -1  # Will be init later
+        if self.restart_from_checkpoint:
+            raise NotImplementedError("Cannot compute the current step after restarting from checkpoint")
+        else:
+            self.current_step = 0
+        self.current_step = 0  # FIXME if restart
         # - - - - - Directories creation (if not exists) for model - - - - -
         self.log_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)
         self._make_dirs_if_dont_exist(self.log_dir)
+        # Tensorboard directory is always required for the PyTorch Profiler to write its results
         self.tensorboard_model_dir = root_path.joinpath(model_config.logs_root_dir)\
             .joinpath('runs').joinpath(model_config.name)
         self._make_dirs_if_dont_exist(self.tensorboard_model_dir)
@@ -132,7 +141,7 @@ class RunLogger:
             print("[RunLogger] Starting logging into '{}'".format(self.log_dir))
         self.run_dir = self.log_dir.joinpath(model_config.run_name)  # This is the run's reference folder
         self.checkpoints_dir = self.run_dir.joinpath('checkpoints')
-        self.tensorboard_run_dir = self.tensorboard_model_dir.joinpath(model_config.run_name)
+        self.tensorboard_run_dir = self.tensorboard_model_dir.joinpath(model_config.run_name)  # Required for profiler
         # Check: does the run folder already exist?
         if not os.path.exists(self.run_dir):
             if train_config.start_epoch != 0:
@@ -154,14 +163,18 @@ class RunLogger:
                     erase_run_data(root_path, model_config)  # module function
                     self._make_model_run_dirs()
         # - - - - - Epochs, Batches, ... - - - - -
-        self.minibatches_count = minibatches_count
         self.minibatch_duration_running_avg = 0.0
         self.minibatch_duration_avg_coeff = 0.05  # auto-regressive running average coefficient
         self.last_minibatch_start_datetime = datetime.datetime.now()
         self.epoch_start_datetimes = [datetime.datetime.now()]  # This value can be erased in init_with_model
-        # - - - - - Tensorboard - - - - -
-        self.tensorboard = TensorboardSummaryWriter(log_dir=self.tensorboard_run_dir, flush_secs=5,
-                                                    model_config=model_config, train_config=train_config)
+        # - - - - - Tensorboard / Comet - - - - -
+        self.tensorboard, self.comet = None, None
+        if 'tensorboard' in self.logger_type:
+            warnings.warn("Tensorboard experiment logging is not maintained anymore", category=DeprecationWarning)
+            self.tensorboard = TensorboardSummaryWriter(log_dir=self.tensorboard_run_dir, flush_secs=5,
+                                                        model_config=model_config, train_config=train_config)
+        if 'comet' in self.logger_type:
+            self.comet = CometWriter(model_config, train_config)
         # - - - - - Multi-processed plotting (plot time: approx. 20s / plotted epoch) - - - - -
         # Use multiprocessing if required by args, and if PyCharm debugger not detected
         self.use_multiprocessing = use_multiprocessing and (not (sys.gettrace() is not None))
@@ -183,12 +196,13 @@ class RunLogger:
          after all checks (configuration consistency, etc...) have been performed, because it overwrites files. """
         # Write config file on startup only - any previous config file will be erased
         # New/Saved configs compatibility must have been checked before calling this function
+        # TODO check this after config refactoring
         config_dict = {'model': self.model_config.__dict__, 'train': self.train_config.__dict__}
         with open(self.run_dir.joinpath('config.json'), 'w') as f:
             json.dump(config_dict, f)
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
             self.write_model_summary(main_model, input_tensor_size, 'VAE')
-            if write_graph:
+            if write_graph and self.tensorboard is not None:
                 self.tensorboard.add_graph(main_model, torch.zeros(input_tensor_size))
         self.epoch_start_datetimes = [datetime.datetime.now()]
 
@@ -196,16 +210,20 @@ class RunLogger:
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
             description = torchinfo.summary(model, input_size=input_tensor_size, depth=6,
                                             device=torch.device('cpu'), verbose=0)
+            if self.comet is not None:
+                self.comet.experiment.set_model_graph(description.__str__())
             with open(self.run_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
-                f.write(description.__str__())
+                f.write(description.__str__())  # FIXME also write to comet
 
     def get_previous_config_from_json(self):
         with open(self.run_dir.joinpath('config.json'), 'r') as f:
             full_config = json.load(f)
         return full_config
 
-    def on_minibatch_finished(self, minibatch_idx):
-        # TODO time stats - running average
+    def on_train_minibatch_finished(self, minibatch_idx):
+        self.current_step += 1
+        if self.comet is not None:
+            self.comet.experiment.set_step(self.current_step)
         minibatch_end_time = datetime.datetime.now()
         delta_t = (minibatch_end_time - self.last_minibatch_start_datetime).total_seconds()
         self.minibatch_duration_running_avg *= (1.0 - self.minibatch_duration_avg_coeff)
@@ -215,24 +233,19 @@ class RunLogger:
                                                              int(1000.0 * self.minibatch_duration_running_avg)))
         self.last_minibatch_start_datetime = minibatch_end_time
 
-    def save_checkpoint(self, epoch, ae_model: model.base.TrainableModel,
-                        reg_model: Optional[model.base.TrainableModel] = None):
-        # These keys will be re-used by model/base.py, TrainableModel::load_checkpoint(...)
-        checkpoint_dict = {'epoch': epoch,
-                           'ae': {'model_state_dict': ae_model.state_dict(),
-                                  'optimizer_state_dict': ae_model.optimizer.state_dict(),  # TODO maybe optional?
-                                  'scheduler_state_dict': ae_model.scheduler.state_dict()}}
-        if reg_model is not None:
-            checkpoint_dict['reg'] = {'model_state_dict': reg_model.state_dict(),
-                                      'optimizer_state_dict': reg_model.optimizer.state_dict(),
-                                      'scheduler_state_dict': reg_model.scheduler.state_dict()}
-        checkpoint_path = self.checkpoints_dir.joinpath('{:05d}.tar'.format(epoch))
-        torch.save(checkpoint_dict, checkpoint_path)
-        if self.verbosity >= 1:
-            print("[RunLogger] Saved epoch {} checkpoint (models, optimizers, schedulers) to {}"
-                  .format(epoch, checkpoint_path))
+    def on_epoch_starts(self, epoch: int, scalars, super_metrics):
+        self.current_epoch = epoch
+        for _, s in super_metrics.items():
+            s.on_new_epoch()
+        for _, s in scalars.items():
+            s.on_new_epoch()
+        if self.comet is not None:
+            self.comet.experiment.set_epoch(self.current_epoch)
+            self.comet.experiment.set_step(self.current_step)  # To ensure step actualisation for epoch 0
 
     def on_epoch_finished(self, epoch):
+        if epoch != self.current_epoch:
+            raise RuntimeError("Given epoch is different from epoch given to on_epoch_starts(...)")
         self.epoch_start_datetimes.append(datetime.datetime.now())
         epoch_duration = self.epoch_start_datetimes[-1] - self.epoch_start_datetimes[-2]
         avg_duration_s = np.asarray([(self.epoch_start_datetimes[i+1] - self.epoch_start_datetimes[i]).total_seconds()
@@ -246,28 +259,75 @@ class RunLogger:
                   .format(epoch, epoch-self.train_config.start_epoch+1, run_total_epochs,
                           epoch_duration.total_seconds(), avg_duration_s,
                           remaining_datetime, humanize.naturaldelta(remaining_datetime)))
+        if self.comet is not None:
+            self.comet.experiment.log_epoch_end(epoch_cnt=self.train_config.n_epochs)
+
+    def save_checkpoint(self, ae_model: model.base.TrainableModel,
+                        reg_model: Optional[model.base.TrainableModel] = None):
+        # These keys will be re-used by model/base.py, TrainableModel::load_checkpoint(...)
+        checkpoint_dict = {'epoch': self.current_epoch,
+                           'ae': {'model_state_dict': ae_model.state_dict(),
+                                  'optimizer_state_dict': ae_model.optimizer.state_dict(),  # TODO maybe optional?
+                                  'scheduler_state_dict': ae_model.scheduler.state_dict()}}
+        if reg_model is not None:
+            checkpoint_dict['reg'] = {'model_state_dict': reg_model.state_dict(),
+                                      'optimizer_state_dict': reg_model.optimizer.state_dict(),
+                                      'scheduler_state_dict': reg_model.scheduler.state_dict()}
+        checkpoint_path = self.checkpoints_dir.joinpath('{:05d}.tar'.format(self.current_epoch))
+        torch.save(checkpoint_dict, checkpoint_path)
+        if self.verbosity >= 1:
+            print("[RunLogger] Saved epoch {} checkpoint (models, optimizers, schedulers) to {}"
+                  .format(self.current_epoch, checkpoint_path))
 
     def on_training_finished(self):
         # wait for all plotting threads to join
-        print("[logger.py] Waiting for tensorboard plotting threads to join...")
+        print("[logger.py] Waiting for comet/tensorboard plotting threads to join...")
         for t in self.figures_threads:
             if t is not None:
                 t.join()
-        # TODO write training stats
-        self.tensorboard.flush()
-        self.tensorboard.close()
+        if self.tensorboard is not None:
+            self.tensorboard.flush()
+            self.tensorboard.close()
         if self.train_config.verbosity >= 1:
             print("[RunLogger] Training has finished")
 
-    # - - - - - - - - - - Non-threaded plots to tensorbard - - - - - - - - - -
+    # - - - - - - - - - - Scalars - - - - - - - - - -
 
-    def plot_train_spectrograms(self, epoch, x_in, x_out, sample_info, dataset: AudioDataset,
-                                model_config, train_config):
-        fig, _ = utils.figures.plot_train_spectrograms(x_in, x_out, sample_info, dataset, model_config, train_config)
-        self.tensorboard.add_figure('Spectrogram', fig, epoch)
+    def add_scalars(self, scalars):
+        for k, s in scalars.items():
+            # don't need to log everything for every train procedure (during pre-train, if no flow, etc...)
+            if (self.train_config.pretrain_ae_only and (k.startswith('Controls') or k.startswith('Sched/Controls'))) \
+                    or (k.startswith('LatCorr/zK') and self.model_config.latent_flow_arch is None):
+                pass
+            else:  # ok, we can log this
+                try:
+                    scalar_value = s.get()  # .get might raise except if empty/unused scalar
+                except ValueError:  # unused scalars with buffer (e.g. during pretrain) will raise that exception
+                    continue
+                if self.tensorboard is not None:
+                    self.tensorboard.add_scalar(k, scalar_value, self.current_epoch)
+                if self.comet is not None:
+                    self.comet.experiment.log_metric(k, scalar_value)
 
-    def plot_decoder_interpolation(self, epoch, generative_model, z_minibatch, sample_info, dataset: AudioDataset,
-                                   output_channel_to_plot=0):
+    # - - - - - - - - - - Non-threaded plots to comet/tensorbard - - - - - - - - - -
+
+    def add_figure(self, name: str, fig):
+        if self.tensorboard is not None:
+            self.tensorboard.add_figure(name, fig, self.current_epoch)
+        if self.comet is not None:
+            raise NotImplementedError("TODOOOO COMET FIG")  # TODO oooooooooooooooooo
+
+    def plot_spectrograms(self, x_in, x_out, sample_info, dataset: AudioDataset, name='Spectrogram/Valid'):
+        fig, _ = utils.figures.plot_train_spectrograms(
+            x_in, x_out, sample_info, dataset, self.model_config, self.train_config)
+        if self.tensorboard is not None:
+            self.tensorboard.add_figure(name, fig, self.current_epoch)
+        if self.comet is not None:
+            self.comet.experiment.log_figure(figure_name=name, figure=fig)
+
+    def plot_decoder_interpolation(self, generative_model, z_minibatch, sample_info, dataset: AudioDataset,
+                                   output_channel_to_plot=0, name='DecoderInterp/Valid'):
+        # "CUDA illegal memory access (stacktrace might be incorrect)" - seems to be fixed by torch 1.10, CUDA 11.3
         from evaluation.interp import LatentInterpolation  # local import to prevent circular import
         interpolator = LatentInterpolation(generator=generative_model, device=z_minibatch.device)
         # z start/end tensors must be be provided as 1 x D vectors
@@ -278,11 +338,14 @@ class RunLogger:
         preset_names = [dataset.get_name_from_preset_UID(UID) for UID in preset_UIDs]
         title = "{} '{}' ----> {} '{}'".format(preset_UIDs[0], preset_names[0], preset_UIDs[1], preset_names[1])
         fig, _ = utils.figures.plot_spectrograms_interp(u, x, z=z, title=title, plot_delta_spectrograms=True)
-        self.tensorboard.add_figure("DecoderInterpolation", fig, epoch)
+        if self.tensorboard is not None:
+            self.tensorboard.add_figure(name, fig, self.current_epoch)
+        if self.comet is not None:
+            print("TODOOO comet write train specs")
 
-    # - - - - - Multi threaded + multiprocessing plots to tensorboard - - - - -
-
-    def plot_stats_tensorboard__threaded(self, train_config, epoch, super_metrics, ae_model):
+    # - - - - - Multi threaded + multiprocessing plots to comet/tensorboard - - - - -
+    # FIXME remove train_config (use self.train_config)
+    def plot_stats_tensorboard__threaded(self, train_config, epoch, super_metrics, ae_model):  # FIXME rename
         if self.figures_threads[0] is not None:
             if self.figures_threads[0].is_alive():
                 warnings.warn("A new threaded plot request has been issued but the previous has not finished yet. "
