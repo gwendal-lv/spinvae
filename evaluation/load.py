@@ -9,7 +9,7 @@ import torch.cuda
 import data.build
 import logs.logger
 import model.build
-import utils.config
+import utils.configutils
 
 
 class ModelLoader:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import config
 import logs.logger
-from utils.config import _Config
+from utils.configutils import _Config
 
 
 if __name__ == "__main__":

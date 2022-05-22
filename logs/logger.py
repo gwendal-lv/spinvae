@@ -18,6 +18,7 @@ import torchinfo
 
 import humanize
 
+import config
 from data.abstractbasedataset import AudioDataset
 import model.base
 import model.VAE
@@ -104,7 +105,7 @@ class RunLogger:
 
      See ../README.md to get more info on storage locations.
      """
-    def __init__(self, root_path, model_config, train_config,  # TODO typing hints after refactoring
+    def __init__(self, root_path, model_config: config.ModelConfig, train_config: config.TrainConfig,
                  logger_type='comet', use_multiprocessing=True):
         """
 
@@ -245,6 +246,12 @@ class RunLogger:
         if self.comet is not None:
             self.comet.experiment.set_epoch(self.current_epoch)
             self.comet.experiment.set_step(self.current_step)  # To ensure step actualisation for epoch 0
+
+    @property
+    def should_plot(self):
+        """ Returns whether this epoch should be plotted (costs a lot of CPU and disk space) or not. """
+        return (self.current_epoch % self.train_config.plot_period == 0) \
+            and (self.train_config.plot_epoch_0 or self.current_epoch > 0)
 
     def on_epoch_finished(self, epoch):
         if epoch != self.current_epoch:

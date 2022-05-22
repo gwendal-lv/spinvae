@@ -27,7 +27,7 @@ import logs.metrics
 import model.build
 import model.loss
 import utils.audio
-import utils.config
+import utils.configutils
 import synth.dexed
 
 

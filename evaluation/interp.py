@@ -14,7 +14,7 @@ import data.build
 import data.preset
 import logs.logger
 import model.build
-import utils.config
+import utils.configutils
 
 import evaluation.load
 import evaluation.interpbase

@@ -5,7 +5,7 @@ This script is not intended to be run, it only describes parameters.
 
 
 import datetime
-from utils.config import EvalConfig
+from utils.configutils import EvalConfig
 
 
 eval = EvalConfig()  # (shadows unused built-in name)

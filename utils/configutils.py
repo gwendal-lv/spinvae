@@ -1,5 +1,3 @@
-# FIXME rename configutils.py
-
 
 import json
 import collections
@@ -31,7 +29,9 @@ class LoadedRunConfig:
 
 def get_config_from_file(absolute_file_path):
     """ Returns the model_config and train_config from a config.json saved run file,
-    which contains the same values as the original config.py file that was used during trainin. """
+    which contains the same values as the original config.py file that was used during training. """
+    # FIXME create config default instances, then update all attributes
+    # (and check that each attribute is properly set)
     with open(absolute_file_path) as f:
         config_json = json.load(f)
     # All lists (default json parse) must be converted to tuples
@@ -49,6 +49,7 @@ def get_config_from_file(absolute_file_path):
             '''
         config_objects[main_k] = LoadedRunConfig(**config_json[main_k])
 
+    raise AssertionError("This function must be updated")
     return config_objects['model'], config_objects['train']
 
 
