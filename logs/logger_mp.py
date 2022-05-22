@@ -8,7 +8,7 @@ import multiprocessing
 import utils.figures
 
 
-def get_stats_figures(epoch, super_metrics, networks_layers_params):
+def get_stats_figures(super_metrics, networks_layers_params):
     # TODO output values plot
     figs_dict = {
         'LatentStats': utils.figures.plot_latent_distributions_stats(
@@ -31,6 +31,6 @@ def get_stats_figures(epoch, super_metrics, networks_layers_params):
     return figs_dict
 
 
-def get_stats_figs__multiproc(q: multiprocessing.Queue, epoch, super_metrics, networks_layers_params):
-    q.put(get_stats_figures(epoch, super_metrics, networks_layers_params))
+def get_stats_figs__multiproc(q: multiprocessing.Queue, super_metrics, networks_layers_params):
+    q.put(get_stats_figures(super_metrics, networks_layers_params))
 

@@ -155,7 +155,7 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
                            global_step=global_step, bins=bins)
 
     def add_latent_embedding(self, latent_metric: LatentMetric, dataset_type: str, global_step: int):
-        """ TODO doc """
+        """ FIXME nothing shows up in tensorboard - this is one of the reasons for moving to comet """
         rng = np.random.default_rng(seed=global_step)
         labels_uint8 = latent_metric.get_z('label')  # One sample can have 0, 1 or multiple labels
         # labels converted to strings

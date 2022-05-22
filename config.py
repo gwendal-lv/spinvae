@@ -26,7 +26,7 @@ model = _Config()  # TODO turn this into a proper class - for auto-complete
 model.data_root_path = config_confidential.data_root_path
 model.logs_root_dir = "saved"  # Path from this directory
 model.name = "VAE_embeds"  # experiment base name
-model.run_name = 'dummy16'  # experiment run: different hyperparams, optimizer, etc... for a given experiment
+model.run_name = 'dummy_embeds_09'  # experiment run: different hyperparams, optimizer, etc... for a given experiment
 # TODO anonymous automatic relative path
 model.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                   "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -35,6 +35,7 @@ model.allow_erase_run = True  # If True, a previous run with identical name will
 model.comet_api_key = config_confidential.comet_api_key
 model.comet_project_name = config_confidential.comet_project_name
 model.comet_workspace = config_confidential.comet_workspace
+model.comet_experiment_key = 'xxxxxxxx'  # Will be set by cometwriter.py after experiment has been created
 
 # ---------------------------------------- General Architecture --------------------------------------------
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
@@ -180,7 +181,7 @@ train.optimizer = 'Adam'
 # Maximal learning rate (reached after warmup, then reduced on plateaus)
 # LR decreased if non-normalized losses (which are expected to be 90,000 times bigger with a 257x347 spectrogram)
 # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
-train.initial_learning_rate = {'ae': 2e-5, 'reg': 1e-4}  # FIXME reset to 1e-4
+train.initial_learning_rate = {'ae': 8e-5, 'reg': 1e-4}  # FIXME reset to 1e-4
 train.initial_ae_lr_factor_after_pretrain = 1e-1  # AE LR reduced when used with regression model after pre-train
 # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
 # The warmup will be must faster during pre-train  (See update_dynamic_config_params())

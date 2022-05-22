@@ -12,6 +12,7 @@ import warnings
 from typing import List, Optional
 
 import numpy as np
+
 import torch
 import torchinfo
 
@@ -196,6 +197,8 @@ class RunLogger:
          after all checks (configuration consistency, etc...) have been performed, because it overwrites files. """
         # Write config file on startup only - any previous config file will be erased
         # New/Saved configs compatibility must have been checked before calling this function
+        if self.comet is not None:  # Log the entire config.py file to comet
+            self.comet.experiment.log_code(file_name=pathlib.Path(__file__).parent.parent.joinpath('config.py'))
         # TODO check this after config refactoring
         config_dict = {'model': self.model_config.__dict__, 'train': self.train_config.__dict__}
         with open(self.run_dir.joinpath('config.json'), 'w') as f:
@@ -213,7 +216,7 @@ class RunLogger:
             if self.comet is not None:
                 self.comet.experiment.set_model_graph(description.__str__())
             with open(self.run_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
-                f.write(description.__str__())  # FIXME also write to comet
+                f.write(description.__str__())
 
     def get_previous_config_from_json(self):
         with open(self.run_dir.joinpath('config.json'), 'r') as f:
@@ -267,7 +270,7 @@ class RunLogger:
         # These keys will be re-used by model/base.py, TrainableModel::load_checkpoint(...)
         checkpoint_dict = {'epoch': self.current_epoch,
                            'ae': {'model_state_dict': ae_model.state_dict(),
-                                  'optimizer_state_dict': ae_model.optimizer.state_dict(),  # TODO maybe optional?
+                                  'optimizer_state_dict': ae_model.optimizer.state_dict(),
                                   'scheduler_state_dict': ae_model.scheduler.state_dict()}}
         if reg_model is not None:
             checkpoint_dict['reg'] = {'model_state_dict': reg_model.state_dict(),
@@ -288,6 +291,8 @@ class RunLogger:
         if self.tensorboard is not None:
             self.tensorboard.flush()
             self.tensorboard.close()
+        if self.comet is not None:
+            self.comet.experiment.end()
         if self.train_config.verbosity >= 1:
             print("[RunLogger] Training has finished")
 
@@ -307,7 +312,7 @@ class RunLogger:
                 if self.tensorboard is not None:
                     self.tensorboard.add_scalar(k, scalar_value, self.current_epoch)
                 if self.comet is not None:
-                    self.comet.experiment.log_metric(k, scalar_value)
+                    self.comet.log_metric_with_context(k, scalar_value)
 
     # - - - - - - - - - - Non-threaded plots to comet/tensorbard - - - - - - - - - -
 
@@ -315,7 +320,7 @@ class RunLogger:
         if self.tensorboard is not None:
             self.tensorboard.add_figure(name, fig, self.current_epoch)
         if self.comet is not None:
-            raise NotImplementedError("TODOOOO COMET FIG")  # TODO oooooooooooooooooo
+            self.comet.log_figure_with_context(name, fig)
 
     def plot_spectrograms(self, x_in, x_out, sample_info, dataset: AudioDataset, name='Spectrogram/Valid'):
         fig, _ = utils.figures.plot_train_spectrograms(
@@ -323,7 +328,7 @@ class RunLogger:
         if self.tensorboard is not None:
             self.tensorboard.add_figure(name, fig, self.current_epoch)
         if self.comet is not None:
-            self.comet.experiment.log_figure(figure_name=name, figure=fig)
+            self.comet.log_figure_with_context(name, fig)
 
     def plot_decoder_interpolation(self, generative_model, z_minibatch, sample_info, dataset: AudioDataset,
                                    output_channel_to_plot=0, name='DecoderInterp/Valid'):
@@ -341,11 +346,10 @@ class RunLogger:
         if self.tensorboard is not None:
             self.tensorboard.add_figure(name, fig, self.current_epoch)
         if self.comet is not None:
-            print("TODOOO comet write train specs")
+            self.comet.log_figure_with_context(name, fig)
 
     # - - - - - Multi threaded + multiprocessing plots to comet/tensorboard - - - - -
-    # FIXME remove train_config (use self.train_config)
-    def plot_stats_tensorboard__threaded(self, train_config, epoch, super_metrics, ae_model):  # FIXME rename
+    def plot_stats__threaded(self, super_metrics, ae_model):
         if self.figures_threads[0] is not None:
             if self.figures_threads[0].is_alive():
                 warnings.warn("A new threaded plot request has been issued but the previous has not finished yet. "
@@ -353,55 +357,75 @@ class RunLogger:
             self.figures_threads[0].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
         networks_layers_params = dict()  # If remains empty: no plot
-        if epoch > 2 * train_config.beta_warmup_epochs:  # Don't plot ae_model weights histograms during first epochs
+        # Don't plot ae_model weights histograms during first epochs (will get much tinier during training)
+        if self.current_epoch > 2 * self.train_config.beta_warmup_epochs:
             # returns clones of layers' parameters
             networks_layers_params['Decoder'] = ae_model.decoder.get_fc_layers_parameters()
         # Launch thread using copied data
-        self.figures_threads[0] = threading.Thread(target=self._plot_stats_thread,
-                                                   args=(copy.deepcopy(epoch),
-                                                         copy.deepcopy(super_metrics),
-                                                         networks_layers_params))
+        self.figures_threads[0] = threading.Thread(
+            target=self._plot_stats_thread,
+            args=(self.current_epoch, self.current_step, copy.deepcopy(super_metrics), networks_layers_params)
+        )
         self.figures_threads[0].start()
 
-    def _plot_stats_thread(self, epoch, super_metrics, networks_layers_params):
+    def _plot_stats_thread(self, epoch: int, step: int, super_metrics, networks_layers_params):
+        # Asynchronous (delayed) plots: epoch and step are probably different from the current (self.) ones
         if not self.use_multiprocessing:
-            figs_dict = logs.logger_mp.get_stats_figures(epoch, super_metrics, networks_layers_params)
+            figs_dict = logs.logger_mp.get_stats_figures(super_metrics, networks_layers_params)
         else:
             # 'spawn' context is slower, but solves observed deadlock
-            #     deadlock seems to be caused by serializing this instance
-            ctx = multiprocessing.get_context('spawn')  # Utilisé au lieu de multiproc
+            #     - deadlock seems to be caused by serializing this instance
+            #     - https://docs.python.org/3/library/multiprocessing.html 'spawn':
+            #       The parent process starts a fresh python interpreter process
+            ctx = multiprocessing.get_context('spawn')  # ctx used instead of multiproc
             q = ctx.Queue()
             p = ctx.Process(target=logs.logger_mp.get_stats_figs__multiproc,
-                            args=(q, epoch, super_metrics, networks_layers_params))
+                            args=(q, super_metrics, networks_layers_params))
             p.start()
             figs_dict = q.get()  # Will block until an item is available
             p.join()
             p.close()
 
         for fig_name, fig in figs_dict.items():
-            self.tensorboard.add_figure(fig_name, fig, epoch, close=True)
+            if self.tensorboard is not None:
+                self.tensorboard.add_figure(fig_name, fig, epoch, close=True)
+            if self.comet is not None:
+                self.comet.log_figure_with_context(fig_name, fig, step)
 
         # Those plots do not need to be here, but multi threading might help improve perfs a bit...
         if epoch > 0:
             try:
                 for metric_name in ['RegOutValues/Train', 'RegOutValues/Valid']:
-                    self.tensorboard.add_vector_histograms(super_metrics[metric_name], metric_name, epoch)
+                    if self.tensorboard is not None:
+                        self.tensorboard.add_vector_histograms(super_metrics[metric_name], metric_name, epoch)
+                    if self.comet is not None:
+                        pass  # FIXME TODO - required after pretrain only
             except AssertionError:
                 pass  # RegOut metric are not filled during pretrain, and will raise errors
         # Latent metrics: TB histograms + TB embeddings (for t-SNE and UMAP visualisations)
-        self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
-        self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+        if self.tensorboard is not None:
+            self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch)
+            self.tensorboard.add_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+        if self.comet is not None:
+            self.comet.log_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch, step)
+            self.comet.log_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch, step)
         # Validation embeddings only (Train embeddings tensor is very large, slow download and analysis)
-        self.tensorboard.add_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+        if self.tensorboard is not None:
+            self.tensorboard.add_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+        if self.comet is not None:
+            self.comet.log_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
         # Network weights histograms
         for network_name, network_layers in networks_layers_params.items():  # key: e.g. 'Decoder'
             for layer_name, layer_params in network_layers.items():  # key: e.g. 'FC0'
                 for param_name, param_values in layer_params.items():  # key: e.g. 'weight_abs'
-                    # Default bins estimator: 'tensorflow'. Other estimator: 'fd' (robust for outliers)
-                    self.tensorboard.add_histogram('{}/{}/{}'.format(network_name, layer_name, param_name),
-                                                   param_values, epoch)
-                    self.tensorboard.add_histogram('{}_no_outlier/{}/{}'.format(network_name, layer_name, param_name),
-                                                   utils.stat.remove_outliers(param_values), epoch)
+                    name = '{}/{}/{}'.format(network_name, layer_name, param_name)
+                    if self.tensorboard is not None:
+                        # Default bins estimator: 'tensorflow'. Other estimator: 'fd' (robust for outliers)
+                        self.tensorboard.add_histogram(name, param_values, epoch)
+                        self.tensorboard.add_histogram('{}_no_outlier/{}/{}'.format(network_name, layer_name, param_name),
+                                                       utils.stat.remove_outliers(param_values), epoch)
+                    if self.comet is not None:
+                        self.comet.experiment.log_histogram_3d(param_values, name, step=step, epoch=epoch)
 
 
 

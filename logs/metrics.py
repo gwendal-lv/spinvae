@@ -132,13 +132,11 @@ class LatentMetric:
 
     def on_new_epoch(self):
         self.next_dataset_index = 0  # Current row index to append data
-        self._z, self._z_buf = dict(), dict()
+        self._z = dict()
         for k in self.valid_keys:
             if k != 'label':
-                self._z_buf[k] = np.zeros((self.dataset_len, self.dim_z))
                 self._z[k] = np.zeros((self.dataset_len, self.dim_z))
             else:  # 'label'
-                self._z_buf[k] = np.zeros((self.dataset_len, self.dim_label), dtype=np.uint8)
                 self._z[k] = np.zeros((self.dataset_len, self.dim_label), dtype=np.uint8)
         # Correlation matrices will be computed on-demand - reinit here to empty arrays
         self._spearman_corr_matrix = {'z0': np.zeros(0), 'zK': np.zeros(0)}
@@ -160,7 +158,7 @@ class LatentMetric:
             if labels is None:
                 raise ValueError("labels argument must be provided (dim_label was provided to class ctor)")
             else:
-                self._z_buf['label'][storage_rows, :] = labels.clone().detach().cpu().numpy()
+                self._z['label'][storage_rows, :] = labels.clone().detach().cpu().numpy()
         else:
             if labels is not None:
                 raise ValueError("labels argument cannot be provided because dim_label was not provided to class ctor")
