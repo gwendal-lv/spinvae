@@ -167,7 +167,7 @@ class LatentMetric:
     def get_z(self, z_type):
         """ Returns the requested latent values.
 
-        :param z_type: 'mu', 'sigma', 'z0', 'zK' or 'latent'
+        :param z_type: 'mu', 'sigma', 'z0', 'zK' or 'label'
         """
         if self.next_dataset_index != self.dataset_len:
             raise AssertionError("Internal storage matrices are not entirely set: {} items expected, {} items appended"

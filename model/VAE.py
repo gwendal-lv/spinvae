@@ -10,6 +10,7 @@ from nflows.transforms.base import CompositeTransform
 from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.transforms.permutations import ReversePermutation
 
+import config
 import model.base
 import model.loss
 import model.flows
@@ -27,7 +28,7 @@ class BasicVAE(model.base.TrainableModel):
 
     def __init__(self, encoder, dim_z, decoder, style_arch: str,
                  concat_midi_to_z0=False,  # FIXME remove that arg - midi note should be concat to style vectors w
-                 train_config=None):
+                 train_config: Optional[config.TrainConfig] = None):
         super().__init__(train_config=train_config, model_type='ae')
         # No size checks performed. Encoder and decoder must have been properly designed
         self.encoder = encoder
@@ -40,7 +41,8 @@ class BasicVAE(model.base.TrainableModel):
         # if train_config is None: all losses have to be unavailable
         if train_config is None:
             self.is_encoder_deterministic = True
-            self.normalize_losses = None
+            self.normalize_reconstruction_loss = None
+            self.normalize_latent_loss = None
             self._reconstruction_criterion = None
             self.latent_loss_type = None
             self.latent_loss_compensation_factor = None
@@ -50,14 +52,15 @@ class BasicVAE(model.base.TrainableModel):
         else:
             self.is_encoder_deterministic = False  # MMD might reset this to True
             self.latent_loss_compensation_factor = 1.0  # Default value, may be written below
-            self.normalize_losses = train_config.normalize_losses
+            self.normalize_reconstruction_loss = train_config.normalize_losses
+            self.normalize_latent_loss = train_config.normalize_latent_loss
             self.mmd_num_estimates = train_config.mmd_num_estimates
             if not isinstance(self.mmd_num_estimates, int) or self.mmd_num_estimates < 1:
                 raise ValueError("train.config.mmd_num_estimates must be a > 1 integer value.")
             # reconstruction criterion
             self._monitoring_recons_criterion = nn.MSELoss(reduction='mean')  # to compare models w/ different losses
             if train_config.reconstruction_loss.lower() == "mse":
-                if self.normalize_losses:
+                if self.normalize_reconstruction_loss:
                     self._reconstruction_criterion = nn.MSELoss(reduction='mean')
                 else:
                     self._reconstruction_criterion = model.loss.L2Loss()
@@ -68,7 +71,7 @@ class BasicVAE(model.base.TrainableModel):
             # Latent criterion
             self.latent_loss_type = train_config.latent_loss
             if self.latent_loss_type.lower() == 'dkl':
-                self.latent_criterion = model.loss.GaussianDkl(normalize=self.normalize_losses)
+                self.latent_criterion = model.loss.GaussianDkl(normalize=self.normalize_latent_loss)
             elif self.latent_loss_type[0:3].lower() == 'mmd':
                 if self.latent_loss_type.lower() == 'mmd_determ_enc':
                     self.is_encoder_deterministic = True
@@ -76,13 +79,9 @@ class BasicVAE(model.base.TrainableModel):
                     raise ValueError("Invalid latent loss '{}'".format(self.latent_loss_type))
                 self.latent_loss_type = 'mmd'
                 self.latent_loss_compensation_factor = train_config.mmd_compensation_factor
-                # No need to assign self.latent_criterion (proper function will be called directly)
             else:  # Might be assigned by child class
                 self.latent_criterion = None
             self.mmd_criterion = MMD()
-
-        if not self.normalize_losses:
-            raise AssertionError("MMD criterion (used for monitoring all VAEs) cannot be un-normalized.")
 
         # TODO parse style arch
         style_args = style_arch.split('_')
@@ -163,8 +162,13 @@ class BasicVAE(model.base.TrainableModel):
             loss = self.latent_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
         elif self.latent_loss_type.lower() == 'mmd':
             loss = self.mmd(z_K_sampled)
+            # The MMD is not normalized, strictly speaking, but the kernels contain some coefficients proportional to
+            # the features' dimensionality. So, the result is quite independent of the features' dimensionality.
+            # To "un-normalize" it, we'll multiply the result by the latent dimension
+            if not self.normalize_latent_loss:
+                loss *= z_0_sampled.shape[1]
         else:
-            raise AssertionError("Cannot compute loss - this class was probably instantiated with a train config.")
+            raise AssertionError("Cannot compute loss - this class was probably instantiated without a train config.")
         return loss * self.latent_loss_compensation_factor
 
     def mmd(self, z_samples):
@@ -212,7 +216,7 @@ class FlowVAE(BasicVAE):
         if train_config is None:  # This model won't be usable for training anyway (no loss computation)
             self.flows_internal_dropout_p = 0.0
         else:
-            self.flows_internal_dropout_p = train_config.fc_dropout
+            self.flows_internal_dropout_p = train_config.ae_fc_dropout
 
         # Latent flow setup
         self.flow_type, self.flow_num_layers, self.flow_num_hidden_units_per_layer, self.flow_bn_between_layers, \
@@ -240,7 +244,7 @@ class FlowVAE(BasicVAE):
         self.latent_flow_input_regul_weight = 0.0
         if train_config is not None:
             if train_config.latent_flow_input_regularization.lower() == 'dkl':
-                self.latent_flow_input_reg_criterion = model.loss.GaussianDkl(normalize=self.normalize_losses)
+                self.latent_flow_input_reg_criterion = model.loss.GaussianDkl(normalize=self.normalize_latent_loss)
                 self.latent_flow_input_regul_weight = train_config.latent_flow_input_regul_weight
             else:  # Can be 'BN' (placed near encoder output) or 'None' - or train_config was not given at all
                 pass
@@ -287,15 +291,17 @@ class FlowVAE(BasicVAE):
 
     def latent_loss(self, z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac):
         if self.latent_loss_type.lower() == 'mmd':
+            # TODO raise error? MMD with flow-VAE has no way to regularize mu0, sigma0
             return super().latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
         else:  # Flow-specific loss
             # log-probability of z_0 is evaluated knowing the gaussian distribution it was sampled from
+            # TODO
             log_q_Z0_z0 = gaussian_log_probability(z_0_sampled, z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
             # log-probability of z_K in the prior p_theta distribution
             # We model this prior as a zero-mean unit-variance multivariate gaussian
             log_p_theta_zK = standard_gaussian_log_probability(z_K_sampled)
             # Returned is the opposite of the ELBO terms
-            if not self.normalize_losses:  # Default, which returns actual ELBO terms
+            if not self.normalize_latent_loss:  # Default, which returns actual ELBO terms
                 loss = -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean()  # Mean over batch dimension
             else:  # Mean over batch dimension and latent vector dimension (D)
                 loss = -(log_p_theta_zK - log_q_Z0_z0 + log_abs_det_jac).mean() / z_0_sampled.shape[1]

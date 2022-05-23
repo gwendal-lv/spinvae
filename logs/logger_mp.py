@@ -11,7 +11,7 @@ import utils.figures
 def get_stats_figures(super_metrics, networks_layers_params):
     # TODO output values plot
     figs_dict = {
-        'LatentStats': utils.figures.plot_latent_distributions_stats(
+        'LatentStats/Valid': utils.figures.plot_latent_distributions_stats(
             latent_metric=super_metrics['LatentMetric/Valid'])[0],
         # 'LatentRhoCorr': utils.figures.plot_spearman_correlation(  # disabled, useless for big latent vectors
         #    latent_metric=super_metrics['LatentMetric/Valid'])[0]

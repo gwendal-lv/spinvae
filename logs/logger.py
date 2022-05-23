@@ -192,6 +192,7 @@ class RunLogger:
         """ Creates (no check) the directories for storing config and saved models. """
         os.makedirs(self.run_dir)
         os.makedirs(self.checkpoints_dir)
+        os.makedirs(self.tensorboard_run_dir)  # Always required for profiling data
 
     def init_with_model(self, main_model, input_tensor_size, write_graph=True):
         """ Finishes to initialize this logger given the fully-build model. This function must be called
@@ -356,11 +357,11 @@ class RunLogger:
             self.comet.log_figure_with_context(name, fig)
 
     # - - - - - Multi threaded + multiprocessing plots to comet/tensorboard - - - - -
-    def plot_stats__threaded(self, super_metrics, ae_model):
+    def plot_stats__threaded(self, super_metrics, ae_model, validation_dataset: AudioDataset):
         if self.figures_threads[0] is not None:
             if self.figures_threads[0].is_alive():
                 warnings.warn("A new threaded plot request has been issued but the previous has not finished yet. "
-                              "Please ignore this message if the training run is about to end.")
+                              "Please ignore this message if the training run is about to end. (Joining thread...)")
             self.figures_threads[0].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
         networks_layers_params = dict()  # If remains empty: no plot
@@ -371,11 +372,13 @@ class RunLogger:
         # Launch thread using copied data
         self.figures_threads[0] = threading.Thread(
             target=self._plot_stats_thread,
-            args=(self.current_epoch, self.current_step, copy.deepcopy(super_metrics), networks_layers_params)
+            args=(self.current_epoch, self.current_step, copy.deepcopy(super_metrics), networks_layers_params,
+                  copy.deepcopy(validation_dataset))
         )
         self.figures_threads[0].start()
 
-    def _plot_stats_thread(self, epoch: int, step: int, super_metrics, networks_layers_params):
+    def _plot_stats_thread(self, epoch: int, step: int, super_metrics, networks_layers_params,
+                           validation_dataset: AudioDataset):
         # Asynchronous (delayed) plots: epoch and step are probably different from the current (self.) ones
         if not self.use_multiprocessing:
             figs_dict = logs.logger_mp.get_stats_figures(super_metrics, networks_layers_params)
@@ -420,7 +423,7 @@ class RunLogger:
         if self.tensorboard is not None:
             self.tensorboard.add_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
         if self.comet is not None:
-            self.comet.log_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+            self.comet.log_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch, validation_dataset)
         # Network weights histograms
         for network_name, network_layers in networks_layers_params.items():  # key: e.g. 'Decoder'
             for layer_name, layer_params in network_layers.items():  # key: e.g. 'FC0'

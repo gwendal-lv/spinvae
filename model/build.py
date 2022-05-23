@@ -6,10 +6,11 @@ Decomposed into numerous small function for easier module-by-module debugging.
 """
 import warnings
 
+from config import ModelConfig, TrainConfig
 from model import VAE, encoder, decoder, extendedAE, regression
 
 
-def build_encoder_and_decoder_models(model_config, train_config):
+def build_encoder_and_decoder_models(model_config: ModelConfig, train_config: TrainConfig):
     # Multi-MIDI notes but single-ch spectrogram model must be bigger (to perform a fairer comparison w/ multi-ch)
     force_bigger_network = ((len(model_config.midi_notes) > 1) and not model_config.stack_spectrograms)
     # Encoder and decoder with the same architecture
@@ -19,24 +20,24 @@ def build_encoder_and_decoder_models(model_config, train_config):
     encoder_model = \
         encoder.SpectrogramEncoder(model_config.encoder_architecture,
                                    enc_z_length, train_config.latent_loss.endswith('_determ_enc'),
-                                   model_config.input_tensor_size, train_config.fc_dropout,
+                                   model_config.input_tensor_size, train_config.ae_fc_dropout,
                                    output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
                                    output_dropout_p=train_config.latent_input_dropout,
                                    deep_features_mix_level=model_config.stack_specs_features_mix_level,
                                    force_bigger_network=force_bigger_network)
     decoder_model = decoder.SpectrogramDecoder(model_config.encoder_architecture, model_config.dim_z,
-                                               model_config.input_tensor_size, train_config.fc_dropout,
+                                               model_config.input_tensor_size, train_config.ae_fc_dropout,
                                                model_config.midi_notes,
                                                force_bigger_network=force_bigger_network)
     return encoder_model, decoder_model
 
 
-def build_ae_model(model_config, train_config):
+def build_ae_model(model_config: ModelConfig, train_config: TrainConfig):
     """
     Builds an auto-encoder model given a configuration. Built model can be initialized later
     with a previous state_dict.
 
-    :param model_config: model global attribute from the config.py module
+    :param model_config: model attributes from the config.py module
     :param train_config: train attributes (a few are required, e.g. dropout probability)
     :return: Tuple: encoder, decoder, full AE model
     """
@@ -63,7 +64,7 @@ def build_ae_model(model_config, train_config):
     return encoder_model, decoder_model, ae_model
 
 
-def build_extended_ae_model(model_config, train_config, idx_helper):
+def build_extended_ae_model(model_config: ModelConfig, train_config: TrainConfig, idx_helper):
     """ Builds a spectral auto-encoder model, and a synth parameters regression model which takes
     latent vectors as input. Both models are integrated into an ExtendedAE model. """
     # Spectral VAE
@@ -100,15 +101,16 @@ def _is_attr_equal(attr1, attr2):
     return _attr1 == _attr2
 
 
-def check_configs_on_resume_from_checkpoint(new_model_config, new_train_config, config_json_checkpoint):
+def check_configs_on_resume_from_checkpoint(new_model_config: ModelConfig, new_train_config: TrainConfig,
+                                            config_json_checkpoint):
     """
     Performs a full consistency check between the last checkpoint saved config (stored into a .json file)
     and the new required config as described in config.py
 
     :raises: ValueError if any incompatibility is found
 
-    :param new_model_config: model Class of the config.py file
-    :param new_train_config: train Class of the config.py file
+    :param new_model_config: model Class instance of the config.py file
+    :param new_train_config: train Class instance of the config.py file
     :param config_json_checkpoint: config.py attributes from previous run, loaded from the .json file
     :return:
     """

@@ -6,12 +6,13 @@ from comet_ml import Experiment  # Needs to be imported first
 
 import matplotlib.pyplot as plt
 
-import utils.stat
+import config
+from data.abstractbasedataset import AudioDataset
 from logs.metrics import LatentMetric
 
 
 class CometWriter:
-    def __init__(self, model_config, train_config):  # TODO typing hint after config.py refactoring
+    def __init__(self, model_config: config.ModelConfig, train_config: config.TrainConfig):
         # We'll create a new experiment, or load an existing one if restarting from a checkpoint
         if train_config.start_epoch == 0:
             self.experiment = Experiment(
@@ -20,10 +21,44 @@ class CometWriter:
                 log_git_patch=False,  # Quite large, and useless during remote dev (different commit on remote machine)
             )
             self.experiment.set_name(model_config.name + '/' + model_config.run_name)
+            self.experiment.add_tags(model_config.comet_tags)
             # TODO refactor - MODEL CONFIG IS MODIFIED HERE - dirty but quick....
             model_config.comet_experiment_key = self.experiment.get_key()
+            self.log_config_hparams(model_config, train_config)
         else:
             raise NotImplementedError()  # TODO implement ExistingExperiment
+
+    def log_config_hparams(self, model_config: config.ModelConfig, train_config: config.TrainConfig):
+        # Ordering is the same as in config.py (easier to find added/removed params)
+        self.experiment.log_parameter("encoder_arch", model_config.encoder_architecture)
+        self.experiment.log_parameter("att_gamma", model_config.attention_gamma)
+        self.experiment.log_parameter("style_arch", model_config.style_architecture)
+        self.experiment.log_parameter("params_regr_arch", model_config.params_regression_architecture)
+        self.experiment.log_parameter("z_dim", model_config.dim_z)
+        self.experiment.log_parameter("z_flow_arch", str(model_config.latent_flow_arch))  # Possibly None
+        self.experiment.log_parameter("mel_bins", model_config.mel_bins)
+        self.experiment.log_parameter("n_midi_notes", len(model_config.midi_notes))
+        self.experiment.log_parameter("params_cat_learned", model_config.synth_vst_params_learned_as_categorical)
+        self.experiment.log_parameter("batch_size", train_config.minibatch_size)
+        self.experiment.log_parameter("att_gamma_warmup", train_config.attention_gamma_warmup_period)
+        self.experiment.log_parameter("z_loss", train_config.latent_loss)
+        self.experiment.log_parameter("z_beta", train_config.beta)
+        self.experiment.log_parameter("z_beta_warmup", train_config.beta_warmup_epochs)
+        self.experiment.log_parameter("params_loss_factor", train_config.params_loss_compensation_factor)
+        self.experiment.log_parameter("params_loss_exclude", train_config.params_loss_exclude_useless)
+        self.experiment.log_parameter("params_loss_permut", train_config.params_loss_with_permutations)
+        self.experiment.log_parameter("optimizer", train_config.optimizer)
+        if train_config.optimizer.lower() == 'adam':
+            self.experiment.log_parameter("opt_adam_beta1", train_config.adam_betas[0])
+            self.experiment.log_parameter("opt_adam_beta2", train_config.adam_betas[1])
+        self.experiment.log_parameter("LR_ae_initial", train_config.initial_learning_rate['ae'])
+        self.experiment.log_parameter("LR_reg_initial", train_config.initial_learning_rate['reg'])
+        self.experiment.log_parameter("LR_sched", train_config.scheduler_name)
+        self.experiment.log_parameter("LR_sched_period", train_config.scheduler_period)
+        self.experiment.log_parameter("weight_decay", train_config.weight_decay)
+        self.experiment.log_parameter("AE_FC_dropout", train_config.ae_fc_dropout)
+        self.experiment.log_parameter("reg_FC_dropout", train_config.reg_fc_dropout)
+
 
     def log_metric_with_context(self, name: str, value):
         """ Logs a scalar metric, and tries to set a comet context before doing it (e.g. "Loss/Train" will be
@@ -82,20 +117,18 @@ class CometWriter:
         """
         Adds histograms related to z0 and zK samples to Tensorboard.
 
-        :param dataset_type: 'Train', 'Valid', ...
+        :param dataset_type: 'Train' or 'Valid'
         :param epoch: Optional epoch, should be used with async (threaded) plot rendering.
         :param step: Optional step, should be used with async (threaded) plot rendering.
         """
-        dataset_type = dataset_type.lower()
-        if dataset_type != 'train' and dataset_type != 'valid':
-            raise ValueError("Only 'train' and 'valid' dataset types are supported by this method.")
-        with self.experiment.train() if dataset_type == 'train' else self.experiment.validate():
+        is_training = self._assert_is_train_or_valid_dataset_type(dataset_type)
+        with self.experiment.train() if is_training else self.experiment.validate():
             z0 = latent_metric.get_z('z0').flatten()
             zK = latent_metric.get_z('zK').flatten()
             self.experiment.log_histogram_3d(z0, name='z0', step=step, epoch=epoch)
             self.experiment.log_histogram_3d(zK, name='zK', step=step, epoch=epoch)
 
-    def log_latent_embedding(self, latent_metric: LatentMetric, dataset_type: str, epoch: int):
+    def log_latent_embedding(self, latent_metric: LatentMetric, dataset_type: str, epoch: int, dataset: AudioDataset):
         rng = np.random.default_rng(seed=epoch)  # TODO refactor this, move to utils/label.py
         labels_uint8 = latent_metric.get_z('label')  # One sample can have 0, 1 or multiple labels
         # labels converted to strings
@@ -103,17 +136,12 @@ class CometWriter:
         for i in range(labels_uint8.shape[0]):  # np.nonzero does not have a proper row-by-row option
             label_indices = np.flatnonzero(labels_uint8[i, :])
             if len(label_indices) == 0:
-                # labels.append("No label")
-                labels.append(-1)
+                labels.append("-")
             else:  # Only 1 label will be displayed (randomly chosen if multiple labels)
                 # TODO try add multiple labels ? or use metadata to build a secondary label ?
                 rng.shuffle(label_indices)  # in-place
-                # labels.append(str(label_indices[0]))  # FIXME use string label instead of int index
-                labels.append(label_indices[0])
-        # labels = nup(labels)  # TODO don't send torch tensors ?
-        # TODO add z0 and zK embeddings
-        with self.experiment.train() if self._assert_is_train_or_valid_dataset_type(dataset_type) \
-                else self.experiment.validate():
-            self.experiment.log_embedding(latent_metric.get_z('z0'), labels, title="z0")
-            print("LOGGED Z0")  # FIXME stuck here ??? TOO BIG ?
+                labels.append(dataset.available_labels_names[label_indices[0]])
+        is_training = self._assert_is_train_or_valid_dataset_type(dataset_type)
+        with self.experiment.train() if is_training else self.experiment.validate():
+            self.experiment.log_embedding(latent_metric.get_z('zK'), labels, title="zK")
 

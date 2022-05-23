@@ -25,8 +25,8 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
-        self.name = "VAE_embeds"  # experiment base name
-        self.run_name = 'dummy_refactor_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.name = "z_loss"  # experiment base name
+        self.run_name = 'dummy_embed_03'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -36,6 +36,7 @@ class ModelConfig:
         self.comet_project_name = config_confidential.comet_project_name
         self.comet_workspace = config_confidential.comet_workspace
         self.comet_experiment_key = 'xxxxxxxx'  # Will be set by cometwriter.py after experiment has been created
+        self.comet_tags = []
 
         # ---------------------------------------- General Architecture --------------------------------------------
         # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
@@ -150,16 +151,19 @@ class TrainConfig:
         self.reconstruction_loss = 'MSE'
         # Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' or 'MMD' loss with flow-VAE
         # 'MMD_determ_enc' also available: use a deterministic encoder
-        self.latent_loss = 'MMD'
+        self.latent_loss = 'Dkl'
         self.mmd_compensation_factor = 5.0  # Factor applied to MMD backprop losses only
         self.mmd_num_estimates = 1  # Number of MMD estimates per batch (maybe increase if small batch size)
         # Losses normalization allow to get losses in the same order of magnitude, but does not optimize the true ELBO.
         # When un-normalized, the reconstruction loss (log-probability of a multivariate gaussian) is orders of
-        # magnitude bigger than other losses.
-        # Train does not work with normalize=False at the moment - use train.beta to compensate
-        self.normalize_losses = True  # Normalize losses over the vector-dim (e.g. spectrogram pixels count, D, ...)
-        # (beta<1, normalize=True) corresponds to (beta>>1, normalize=False) in the beta-VAE formulation (ICLR 2017)
-        self.beta = 0.2  # latent loss factor (base value: 0.2) - use much lower value (e-2) to get closer the ELBO
+        # magnitude bigger than other losses. Must remain True to ease convergence (too big recons loss)
+        self.normalize_losses = True  # Normalize reconstruction and regression losses over their dimension
+        # To compare different latent sizes, Dkl or MMD losses are not normalized such that each latent
+        # coordinate always 'has' the same amount of regularization
+        self.normalize_latent_loss = False
+        # Here, beta = beta_vae / Dx in the beta-VAE formulation (ICLR 2017)
+        # where Dx is the input dimensionality (257 * 251 = 64 507)
+        self.beta = 0.01  # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
         self.beta_start_value = self.beta / 2.0  # Should not be zero (risk of a very unstable training)
         # Epochs of warmup increase from start_value to beta
         self.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only
@@ -172,6 +176,7 @@ class TrainConfig:
         # - Loss for a dense dequantized output loss (set to 'None' to activate other losses)
         self.params_dense_dequantized_loss = 'None'  # Preempts CE losses
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
+        # TODO log the more important as hparams into comet.ml
         self.params_cat_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
         self.params_target_noise = 0.00
         self.params_cat_CE_use_weights = False
@@ -183,6 +188,7 @@ class TrainConfig:
         # Different optimizer parameters can be used for the pre-trained AE and the regression networks
         # (see below: 'ae' or 'reg' prefixes or dict keys)
         self.optimizer = 'Adam'
+        self.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
         # Maximal learning rate (reached after warmup, then reduced on plateaus)
         # LR decreased if non-normalized losses (which are expected to be 9e4 times bigger with a 257x347 spectrogram)
         # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
@@ -192,8 +198,7 @@ class TrainConfig:
         # The warmup will be must faster during pre-train  (See update_dynamic_config_params())
         self.lr_warmup_epochs = 20
         self.lr_warmup_start_factor = 0.05  # Reduced for large realnvp flows
-        self.adam_betas = (0.9, 0.999)  # default (0.9, 0.999)
-        self.scheduler_name = 'StepLR'  # use ReduceLROnPlateau during pre-train (stable CNN), StepLR for reg model
+        self.scheduler_name = 'StepLR'  # can use ReduceLROnPlateau during pre-train (stable CNN), StepLR for reg model
         self.enable_ae_scheduler_after_pretrain = False
         self.scheduler_lr_factor = {'ae': 0.4, 'reg': 0.2}
         # - - - StepLR scheduler options - - -
@@ -215,7 +220,7 @@ class TrainConfig:
         # WD definitely helps for regularization but significantly impairs results. 1e-4 seems to be a good compromise
         # for both Basic and MMD VAEs (without regression net). 3e-6 allows for the lowest reconstruction error.
         self.weight_decay = 1e-5
-        self.fc_dropout = 0.0  # 0.3 without MMD, to try to help prevent VAE posterior collapse
+        self.ae_fc_dropout = 0.0  # 0.3 without MMD, to try to help prevent VAE posterior collapse
         self.reg_fc_dropout = 0.4
         self.latent_input_dropout = 0.0  # Should always remain zero... intended for tests (not tensorboard-logged)
         # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl
@@ -227,7 +232,7 @@ class TrainConfig:
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
         self.save_period = 500  # Period for checkpoint saves (large disk size)
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
-        self.plot_epoch_0 = False
+        self.plot_epoch_0 = True
         self.verbosity = 1  # 0: no console output --> 3: fully-detailed per-batch console output
         self.init_security_pause = 0.0  # Short pause before erasing an existing run
         # Number of logged audio and spectrograms for a given epoch
@@ -245,15 +250,13 @@ class TrainConfig:
 
 
 
-def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainConfig):  # Required before any actual train
-    """
-    FIXME DOC Updates some global attributes of this config.py module.
-    This function should be called before using any train attribute
-    """
+def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainConfig):
+    """ This function must be called before using any train attribute """
 
     # TODO perform config coherence checks in this function
 
     if train_config.pretrain_ae_only:
+        model_config.comet_tags.append('pretrain')
         model_config.params_regression_architecture = 'None'
         train_config.lr_warmup_epochs = train_config.lr_warmup_epochs // 2
         train_config.lr_warmup_start_factor *= 2
@@ -261,6 +264,7 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
     else:
         train_config.initial_learning_rate['ae'] *= train_config.initial_ae_lr_factor_after_pretrain
         train_config.beta_warmup_epochs = 0
+        train_config.attention_gamma_warmup_period = 0
 
     # stack_spectrograms must be False for 1-note datasets - security check
     model_config.stack_spectrograms = model_config.stack_spectrograms and (len(model_config.midi_notes) > 1)

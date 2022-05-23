@@ -318,7 +318,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # = = = = = Epoch logs (scalars/sounds/images + updated metrics) = = = = =
         logger.add_scalars(scalars)  # Some scalars might not be added (e.g. during pretrain)
         if logger.should_plot or early_stop:
-            logger.plot_stats__threaded(super_metrics, ae_model)  # non-blocking
+            logger.plot_stats__threaded(super_metrics, ae_model, validation_audio_dataset)  # non-blocking
             if v_in_backup.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_vst_error(
                     v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_indexes_helper)

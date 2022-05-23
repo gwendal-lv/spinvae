@@ -48,7 +48,7 @@ class GaussianDkl:
     covariance matrices). mu 2 and logs(var) 2 are optional and will be resp. zeros and zeros if not given.
 
     A normalization over the batch dimension will automatically be performed.
-    An optional normalization over the channels dimension can also be performed.
+    An optional normalization over the features dimension can also be performed.
 
     All tensor sizes should be (N_minibatch, N_channels) """
     def __init__(self, normalize=True):

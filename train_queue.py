@@ -24,8 +24,11 @@ import utils.exception
 
 
 
-""" automatically train all cross-validation folds? """
-train_all_k_folds = False
+""" Global config modifications (applied to all runs) """
+train_all_k_folds = False  # automatically train all cross-validation folds?
+plot_period = 40  # when launching lots of runs: don't plot too much (approx. 500MB of comet.ml data / run...)
+plot_epoch_0 = False
+
 """
 Please write two lists of dicts, such that:
 - (model|train)_config_mods contains the modifications applied to config.model and config.train, resp.
@@ -37,9 +40,9 @@ model_config_mods, train_config_mods = list(), list()
 
 
 #for label_smoothing in [0.0, 0.1, 0.5]:
-for dropout_p in [0.4, 0.1]:
-    model_config_mods.append({'run_name': 'dummy0_dropout{:.1f}'.format(dropout_p)})
-    train_config_mods.append({'reg_fc_dropout': dropout_p, 'n_epochs': 5})
+for beta in np.flip(np.logspace(-4.0, -2.0, num=5, endpoint=False)):  # Powers of 10.0
+    model_config_mods.append({'run_name': 'beta{:.1e}'.format(beta)})
+    train_config_mods.append({'beta': beta})
 
 
 
@@ -74,8 +77,10 @@ if __name__ == "__main__":
         print("=============== Enqueued Training Run {}/{} starts ==============="
               .format(run_index+1, len(model_config_mods)))
 
-        # Direct dirty modification of config.py module attributes
-        # The dynamically modified config.py will be used by train.py
+        # Modifications applied to all runs
+        train_config.plot_epoch_0 = False
+        train_config.plot_period = plot_period
+        # Per-run config modifications
         for k, v in model_config_mods[run_index].items():
             model_config.__dict__[k] = v
         for k, v in train_config_mods[run_index].items():
