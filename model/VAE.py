@@ -17,7 +17,6 @@ import model.flows
 from utils.probability import gaussian_log_probability, standard_gaussian_log_probability, MMD
 
 
-
 class BasicVAE(model.base.TrainableModel):
     """
     A standard VAE that uses some given encoder and decoder networks.
@@ -101,7 +100,7 @@ class BasicVAE(model.base.TrainableModel):
             self.style_mlp.add_module('fc{}'.format(i),
                                       nn.Linear(style_n_units if i > 0 else self.dim_z, style_n_units))
             self.style_mlp.add_module('act{}'.format(i), nn.ReLU())
-            if i < (style_n_layers-1) or (i == (style_n_layers-1) and output_bn):
+            if i < (style_n_layers - 1) or (i == (style_n_layers - 1) and output_bn):
                 self.style_mlp.add_module('bn{}'.format(i), nn.BatchNorm1d(style_n_units))
 
     def _encode_and_sample(self, x, sample_info=None):
@@ -172,8 +171,9 @@ class BasicVAE(model.base.TrainableModel):
         return loss * self.latent_loss_compensation_factor
 
     def mmd(self, z_samples):
-        """ Returns the estimated Maximum Mean Discrepancy between the given samples, and samples drawn for a
-        multivariate standard normal distribution. Multiple MMDs may be computed and averaged (see train.config). """
+        """ Returns the estimated Maximum Mean Discrepancy (normalized) between the given samples, and samples
+        drawn for a multivariate standard normal distribution. Multiple MMDs may be computed and averaged
+        (depends on train_config). """
         mmds = [self.mmd_criterion(z_samples) for _ in range(self.mmd_num_estimates)]
         return sum(mmds) / len(mmds)
 
@@ -184,13 +184,22 @@ class BasicVAE(model.base.TrainableModel):
     def reconstruction_loss(self, x_out, x_in):
         return self._reconstruction_criterion(x_out, x_in)
 
+    def vae_loss_total(self, monitoring_reconstruction_loss, latent_loss, x_shape, z_shape):
+        """
+        Returns the un-normalized total VAE loss (reconstruction loss + latent loss).
+        :param monitoring_reconstruction_loss: Normalized MSE reconstruction loss (corresponds to a gaussian log-prob)
+        :param latent_loss: Latent loss computed by this class, may be normalized or not
+        """
+        return monitoring_reconstruction_loss * x_shape[1] * x_shape[2] * x_shape[3] \
+               + (latent_loss if not self.normalize_latent_loss else latent_loss * z_shape[1])
+
     @property
     def is_flow_based_latent_space(self):
         return False
 
     def additional_latent_regularization_loss(self, z_0_mu_logvar):
         """ Returns an optional additional regularization loss, as configured using ctor args. """
-        return torch.zeros((1, ), device=z_0_mu_logvar.device)
+        return torch.zeros((1,), device=z_0_mu_logvar.device)
 
 
 class FlowVAE(BasicVAE):
@@ -202,7 +211,7 @@ class FlowVAE(BasicVAE):
     TODO also allow MMD loss
     """
 
-    def __init__(self, encoder, dim_z, decoder,  style_arch: str, flow_arch: str,
+    def __init__(self, encoder, dim_z, decoder, style_arch: str, flow_arch: str,
                  concat_midi_to_z0=False, train_config=None):
         """
         :param flow_arch: Full string-description of the flow, e.g. 'realnvp_4l200' (flow type, number of flows,
@@ -220,7 +229,7 @@ class FlowVAE(BasicVAE):
 
         # Latent flow setup
         self.flow_type, self.flow_num_layers, self.flow_num_hidden_units_per_layer, self.flow_bn_between_layers, \
-            self.flow_bn_inside_layers, self.flow_output_bn = model.flows.parse_flow_args(flow_arch)
+        self.flow_bn_inside_layers, self.flow_output_bn = model.flows.parse_flow_args(flow_arch)
         if self.flow_type.lower() == 'maf':  # TODO finir ça proprement
             transforms = []
             for _ in range(self.flow_layers_count):
@@ -313,4 +322,4 @@ class FlowVAE(BasicVAE):
             return self.latent_flow_input_reg_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :]) \
                    * self.latent_flow_input_regul_weight
         else:
-            return torch.zeros((1, ), device=z_0_mu_logvar.device)
+            return torch.zeros((1,), device=z_0_mu_logvar.device)

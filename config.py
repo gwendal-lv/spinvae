@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "z_loss"  # experiment base name
-        self.run_name = 'dummy_embed_03'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'dummy_embds_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -163,7 +163,9 @@ class TrainConfig:
         self.normalize_latent_loss = False
         # Here, beta = beta_vae / Dx in the beta-VAE formulation (ICLR 2017)
         # where Dx is the input dimensionality (257 * 251 = 64 507)
-        self.beta = 0.01  # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
+        # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
+        #            ELBO loss is obtained by using beta = 1.55 e-5
+        self.beta = 1.6e-4
         self.beta_start_value = self.beta / 2.0  # Should not be zero (risk of a very unstable training)
         # Epochs of warmup increase from start_value to beta
         self.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only

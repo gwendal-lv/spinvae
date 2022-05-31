@@ -146,20 +146,18 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                'ReconsLoss/Backprop/Train': EpochMetric(), 'ReconsLoss/Backprop/Valid': EpochMetric(),
                'ReconsLoss/MSE/Train': EpochMetric(), 'ReconsLoss/MSE/Valid': EpochMetric(),
                # 'ReconsLoss/SC/Train': EpochMetric(), 'ReconsLoss/SC/Valid': EpochMetric(),  # TODO
+               # Latent-space and VAE losses
+               'Latent/Loss/Train': EpochMetric(), 'Latent/Loss/Valid': EpochMetric(),  # without beta
+               'Latent/BackpropLoss/Train': EpochMetric(), 'Latent/BackpropLoss/Valid': EpochMetric(),
+               'Latent/MMD/Train': EpochMetric(), 'Latent/MMD/Valid': EpochMetric(),
+               'Latent/MaxAbsVal/Train': SimpleMetric(), 'Latent/MaxAbsVal/Valid': SimpleMetric(),
+               'VAELoss/Total/Train': EpochMetric(), 'VAELoss/Total/Valid': EpochMetric(),
+               'VAELoss/Backprop/Train': EpochMetric(), 'VAELoss/Backprop/Valid': EpochMetric(),
                # Controls losses used for backprop + monitoring metrics (quantized numerical loss, categorical accuracy)
                'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),
                'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
                'Controls/QLoss/Train': EpochMetric(), 'Controls/QLoss/Valid': EpochMetric(),
                'Controls/Accuracy/Train': EpochMetric(), 'Controls/Accuracy/Valid': EpochMetric(),
-               # Latent-space and VAE losses
-               'Latent/BackpropLoss/Train': EpochMetric(), 'Latent/BackpropLoss/Valid': EpochMetric(),
-               'Latent/MMD/Train': EpochMetric(), 'Latent/MMD/Valid': EpochMetric(),
-               'Latent/MaxAbsVal/Train': SimpleMetric(), 'Latent/MaxAbsVal/Valid': SimpleMetric(),
-               'VAELoss/Train': SimpleMetric(), 'VAELoss/Valid': SimpleMetric(),
-               # 'LatCorr/z0/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'z0'),  # Disabled
-               # 'LatCorr/z0/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'z0'),  # (unused and
-               # 'LatCorr/zK/Train': LatentCorrMetric(super_metrics['LatentMetric/Train'], 'zK'),  # very expensive)
-               # 'LatCorr/zK/Valid': LatentCorrMetric(super_metrics['LatentMetric/Valid'], 'zK'),
                # Other misc. metrics
                'Sched/LRwarmup': LinearDynamicParam(
                    train_config.lr_warmup_start_factor, 1.0,
@@ -213,10 +211,15 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
                 # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
-                scalars['Latent/BackpropLoss/Train'].append(lat_loss)
-                lat_loss *= scalars['Sched/VAE/beta'].get(epoch)
+                scalars['Latent/Loss/Train'].append(lat_loss)
+                lat_backprop_loss = lat_loss * scalars['Sched/VAE/beta'].get(epoch)
+                scalars['Latent/BackpropLoss/Train'].append(lat_backprop_loss)
                 with torch.no_grad():  # Monitoring-only losses
-                    scalars['ReconsLoss/MSE/Train'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
+                    monitoring_recons_loss = ae_model.monitoring_reconstruction_loss(x_out, x_in)
+                    scalars['ReconsLoss/MSE/Train'].append(monitoring_recons_loss)
+                    scalars['VAELoss/Total/Train'].append(ae_model.vae_loss_total(
+                        monitoring_recons_loss, lat_loss, x_in.shape, z_K_sampled.shape))
+                    scalars['VAELoss/Backprop/Train'].append(recons_loss + lat_backprop_loss)
                     scalars['Latent/MMD/Train'].append(ae_model.mmd(z_K_sampled))  # TODO don't compute twice
                     if not pretrain_vae:
                         accuracy, numerical_error = reg_model.eval_criterion_values
@@ -237,17 +240,15 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 else:
                     cont_loss, cont_reg_loss = torch.zeros((1,), device=device), torch.zeros((1,), device=device)
                 utils.exception.check_nan_values(
-                    epoch, recons_loss, lat_loss, extra_lat_reg_loss, cont_loss, cont_reg_loss)
+                    epoch, recons_loss, lat_backprop_loss, extra_lat_reg_loss, cont_loss, cont_reg_loss)
                 # Backprop and optimizers' step (before schedulers' step)
-                (recons_loss + lat_loss + extra_lat_reg_loss + cont_loss + cont_reg_loss).backward()
+                (recons_loss + lat_backprop_loss + extra_lat_reg_loss + cont_loss + cont_reg_loss).backward()
                 ae_model.optimizer.step(), reg_model.optimizer.step()
                 # End of mini-batch (step)
                 logger.on_train_minibatch_finished(i)
                 if prof is not None:
                     prof.step()
         scalars['Latent/MaxAbsVal/Train'].set(np.abs(super_metrics['LatentMetric/Train'].get_z('zK')).max())
-        scalars['VAELoss/Train'].set(
-            scalars['ReconsLoss/Backprop/Train'].get() + scalars['Latent/BackpropLoss/Train'].get())
 
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
         with torch.no_grad():  # TODO use comet context if available
@@ -268,10 +269,15 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 recons_loss = ae_model.reconstruction_loss(x_out, x_in)
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
                 lat_loss = ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
-                scalars['Latent/BackpropLoss/Valid'].append(lat_loss)
-                # lat_loss *= scalars['Sched/beta'].get(epoch)  # Warmup factor: useless for monitoring
+                scalars['Latent/Loss/Valid'].append(lat_loss)
+                lat_backprop_loss = lat_loss * scalars['Sched/VAE/beta'].get(epoch)
+                scalars['Latent/BackpropLoss/Valid'].append(lat_backprop_loss)
                 # Monitoring losses
-                scalars['ReconsLoss/MSE/Valid'].append(ae_model.monitoring_reconstruction_loss(x_out, x_in))
+                monitoring_recons_loss = ae_model.monitoring_reconstruction_loss(x_out, x_in)
+                scalars['ReconsLoss/MSE/Valid'].append(monitoring_recons_loss)
+                scalars['VAELoss/Total/Valid'].append(ae_model.vae_loss_total(
+                    monitoring_recons_loss, lat_loss, x_in.shape, z_K_sampled.shape))
+                scalars['VAELoss/Backprop/Valid'].append(recons_loss + lat_backprop_loss)
                 scalars['Latent/MMD/Valid'].append(ae_model.mmd(z_K_sampled))
                 if not pretrain_vae:
                     accuracy, numerical_error = reg_model.eval_criterion_values
@@ -294,8 +300,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                         logger.plot_spectrograms(x_in, x_out, sample_info, validation_audio_dataset)
                         logger.plot_decoder_interpolation(ae_model, z_K_sampled, sample_info, validation_audio_dataset)
         scalars['Latent/MaxAbsVal/Valid'].set(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
-        scalars['VAELoss/Valid'].set(
-            scalars['ReconsLoss/Backprop/Valid'].get() + scalars['Latent/BackpropLoss/Valid'].get())
+
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
         if pretrain_vae or (not pretrain_vae and train_config.enable_ae_scheduler_after_pretrain):

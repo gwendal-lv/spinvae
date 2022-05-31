@@ -19,6 +19,7 @@ class CometWriter:
                 api_key=model_config.comet_api_key, workspace=model_config.comet_workspace,
                 project_name=model_config.comet_project_name,
                 log_git_patch=False,  # Quite large, and useless during remote dev (different commit on remote machine)
+                log_env_cpu=False,  # annoying with numerous CPU cores
             )
             self.experiment.set_name(model_config.name + '/' + model_config.run_name)
             self.experiment.add_tags(model_config.comet_tags)
@@ -129,19 +130,23 @@ class CometWriter:
             self.experiment.log_histogram_3d(zK, name='zK', step=step, epoch=epoch)
 
     def log_latent_embedding(self, latent_metric: LatentMetric, dataset_type: str, epoch: int, dataset: AudioDataset):
+        z_K = latent_metric.get_z('zK')
+        embeddings = list()
+        # labels converted to strings
         rng = np.random.default_rng(seed=epoch)  # TODO refactor this, move to utils/label.py
         labels_uint8 = latent_metric.get_z('label')  # One sample can have 0, 1 or multiple labels
-        # labels converted to strings
         labels = list()
         for i in range(labels_uint8.shape[0]):  # np.nonzero does not have a proper row-by-row option
             label_indices = np.flatnonzero(labels_uint8[i, :])
-            if len(label_indices) == 0:
-                labels.append("-")
+            if len(label_indices) == 0:  # We remove latent samples which do not contain any label
+                # All samples might be logged in the future, if samples (presets) names are also provided
+                pass  # labels.append("-")
             else:  # Only 1 label will be displayed (randomly chosen if multiple labels)
                 # TODO try add multiple labels ? or use metadata to build a secondary label ?
                 rng.shuffle(label_indices)  # in-place
                 labels.append(dataset.available_labels_names[label_indices[0]])
+                embeddings.append(z_K[i, :])
         is_training = self._assert_is_train_or_valid_dataset_type(dataset_type)
         with self.experiment.train() if is_training else self.experiment.validate():
-            self.experiment.log_embedding(latent_metric.get_z('zK'), labels, title="zK")
+            self.experiment.log_embedding(embeddings, labels, title="zK")
 
