@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "z_loss"  # experiment base name
-        self.run_name = 'dummy_embds_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'dummy_arch_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -40,7 +40,7 @@ class ModelConfig:
 
         # ---------------------------------------- General Architecture --------------------------------------------
         # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-        # 'speccnn8l1' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
+        # 'speccnn8l' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
         # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
         # Arch args:
         #    '_adain' some BN layers are replaced by AdaIN (fed with a style vector w, dim_w < dim_z)
@@ -48,7 +48,10 @@ class ModelConfig:
         #    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
         #    '_res' residual connections (blocks of 2 conv layer)
         #    '_time+' increases time resolution in the deepest layers
-        self.encoder_architecture = 'speccnn8l1_res'
+        self.vae_main_conv_architecture = 'speccnn8l_res'
+        # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
+        # E.g.: 'mlp_1l' means MLP, 1 layer
+        self.vae_latent_extract_architecture = 'mlp_1l'
         self.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
         # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
         # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
@@ -98,7 +101,8 @@ class ModelConfig:
         # self.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
         self.midi_notes = self.required_dataset_midi_notes
         self.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
-        self.stack_specs_features_mix_level = -2  # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
+        # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
+        self.stack_specs_features_mix_level = -2  # FIXME allow 0 for RNN "features mixer"
         # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
         # dataset size is increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
         self.increased_dataset_size = None  # See update_dynamic_config_params()
@@ -194,7 +198,7 @@ class TrainConfig:
         # Maximal learning rate (reached after warmup, then reduced on plateaus)
         # LR decreased if non-normalized losses (which are expected to be 9e4 times bigger with a 257x347 spectrogram)
         # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
-        self.initial_learning_rate = {'ae': 8e-5, 'reg': 1e-4}  # FIXME reset to 1e-4
+        self.initial_learning_rate = {'ae': 2e-4, 'reg': 1e-4}  # FIXME reset to 1e-4
         self.initial_ae_lr_factor_after_pretrain = 1e-1  # AE LR reduced after pre-train
         # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
         # The warmup will be must faster during pre-train  (See update_dynamic_config_params())

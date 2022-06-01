@@ -11,24 +11,21 @@ from model import VAE, encoder, decoder, extendedAE, regression
 
 
 def build_encoder_and_decoder_models(model_config: ModelConfig, train_config: TrainConfig):
-    # Multi-MIDI notes but single-ch spectrogram model must be bigger (to perform a fairer comparison w/ multi-ch)
-    force_bigger_network = ((len(model_config.midi_notes) > 1) and not model_config.stack_spectrograms)
     # Encoder and decoder with the same architecture
     enc_z_length = (model_config.dim_z - 2 if model_config.concat_midi_to_z else model_config.dim_z)
 
-    print("MIDI NOTES = {}".format(model_config.midi_notes))  # TODO remove
-    encoder_model = \
-        encoder.SpectrogramEncoder(model_config.encoder_architecture,
-                                   enc_z_length, train_config.latent_loss.endswith('_determ_enc'),
-                                   model_config.input_tensor_size, train_config.ae_fc_dropout,
-                                   output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
-                                   output_dropout_p=train_config.latent_input_dropout,
-                                   deep_features_mix_level=model_config.stack_specs_features_mix_level,
-                                   force_bigger_network=force_bigger_network)
-    decoder_model = decoder.SpectrogramDecoder(model_config.encoder_architecture, model_config.dim_z,
-                                               model_config.input_tensor_size, train_config.ae_fc_dropout,
-                                               model_config.midi_notes,
-                                               force_bigger_network=force_bigger_network)
+    encoder_model = encoder.SpectrogramEncoder(
+        model_config.vae_main_conv_architecture, model_config.vae_latent_extract_architecture,
+        enc_z_length, train_config.latent_loss.endswith('_determ_enc'),
+        model_config.input_tensor_size, train_config.ae_fc_dropout,
+        output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
+        output_dropout_p=train_config.latent_input_dropout,
+        deep_features_mix_level=model_config.stack_specs_features_mix_level
+    )
+    decoder_model = decoder.SpectrogramDecoder(
+        model_config.vae_main_conv_architecture,
+        model_config.dim_z,model_config.input_tensor_size, train_config.ae_fc_dropout,model_config.midi_notes
+    )
     return encoder_model, decoder_model
 
 

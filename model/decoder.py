@@ -13,19 +13,19 @@ from model import encoder  # Contains an architecture parsing method
 
 
 class SpectrogramDecoder(nn.Module):
-    """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu/logsigma2 values"""
-    def __init__(self, architecture: str, dim_z: int, output_tensor_size: Tuple[int, int, int, int],
+    def __init__(self, conv_architecture: str,
+                 dim_z: int, output_tensor_size: Tuple[int, int, int, int],
                  fc_dropout: float,
-                 midi_notes: Optional[Tuple[Tuple[int, int]]] = None,
-                 force_bigger_network=False):
+                 midi_notes: Optional[Tuple[Tuple[int, int]]] = None):
         """
+        Contains a MLP to split the latent vectors into multiple inputs to reconstruct each spectrogram channel
+        (independently). TODO take latent_arch input arg and allow RNN-based latent vector splitting
 
-        :param architecture:
+        :param conv_architecture:
         :param dim_z:
         :param output_tensor_size:
         :param fc_dropout:
-        :param force_bigger_network: If True, some layers will contain more channels. Optional, should be
-            used to perform fair comparisons (same number of params) between different models.
+        :param midi_notes:
         """
         super().__init__()
         self.output_tensor_size = output_tensor_size
@@ -34,27 +34,27 @@ class SpectrogramDecoder(nn.Module):
         self.spectrogram_channels = output_tensor_size[1]
         self.dim_z = dim_z  # Latent-vector size
         self.midi_notes = midi_notes
-        self.dim_w_single_ch_cnn = 512  # TODO contact MIDI notes to the style vector?  FIXME constant size
+        self.dim_w_single_ch_cnn = 512  # TODO concat MIDI notes to the style vector?  FIXME constant size
         if self.midi_notes is not None:
             self.dim_w_single_ch_cnn += 2  # midi pitch/vel will be concatenated to the style vector
         elif self.spectrogram_channels > 1:
             warnings.warn("midi_notes argument was not given but multi-channel spectrograms are being decoded.")
-        self.full_architecture = architecture
+        self.conv_architecture = conv_architecture
         self.cnn_input_shape = None  # shape not including batch size
 
-        self.base_arch_name, self.num_cnn_layers, self.num_fc_layers, self.arch_args \
-            = encoder.parse_architecture(self.full_architecture)
-        if self.base_arch_name == 'speccnn8l1':
+        self.conv_arch_name, self.num_cnn_layers, self.conv_arch_args \
+            = encoder.parse_main_conv_architecture(self.conv_architecture)
+        # TODO parse latent arch args
+        self.num_fc_layers = 1  # FIXME use new arch input arg
+        if self.conv_arch_name == 'speccnn8l':
             self.mixer_1x1conv_ch = 1024
-            self.first_gt1_conv_ch = (512 if not force_bigger_network else 1800)
+            self.first_gt1_conv_ch = 512
             self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 3)  # 16kHz sr: 3x3 instead of 3x4
-        elif self.base_arch_name.startswith('sprescnn'):
-            self.mixer_1x1conv_ch = 96 if self.arch_args['time+'] else 192  # Much larger feature maps?
+        elif self.conv_arch_name.startswith('sprescnn'):
+            self.mixer_1x1conv_ch = 96 if self.conv_arch_args['time+'] else 192  # Much larger feature maps?
             self.first_gt1_conv_ch = 1024
-            if force_bigger_network:
-                raise NotImplementedError()
             # Encoder output size: 5, 16 if better_time_res else 5, 4
-            self.cnn_input_shape = (self.mixer_1x1conv_ch, 4, (16 if self.arch_args['time+'] else 4))
+            self.cnn_input_shape = (self.mixer_1x1conv_ch, 4, (16 if self.conv_arch_args['time+'] else 4))
         else:
             raise NotImplementedError()
         self.fc_dropout = fc_dropout
@@ -81,18 +81,18 @@ class SpectrogramDecoder(nn.Module):
         single_spec_output_size[1] = 1  # Single-channel output
         self.single_ch_cnn = nn.Sequential()
 
-        if self.base_arch_name == 'speccnn8l1':
+        if self.conv_arch_name == 'speccnn8l':
             ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes are drastically reduced
             (especially the last, not so useful but very GPU-expensive layer on large images) '''
             _in_ch, _out_ch = -1, -1  # backup for res blocks
             for i in range(1, self.num_cnn_layers):  # 'normal' channels: (1024, ) 512, 256, ...., 8
                 in_ch = self.first_gt1_conv_ch if i == 1 else 2 ** (10 - i)
                 out_ch = 2 ** (10 - (i + 1)) if (i < (self.num_cnn_layers - 1)) else 1
-                if self.arch_args['bigger']:
+                if self.conv_arch_args['bigger']:
                     in_ch = max(in_ch, 128)
                     if out_ch > 1:
                         out_ch = max(out_ch, 128)
-                elif self.arch_args['big']:
+                elif self.conv_arch_args['big']:
                     in_ch = in_ch if in_ch > 64 else in_ch * 2
                     if out_ch > 1:
                         out_ch = out_ch if out_ch > 64 else out_ch * 2
@@ -111,20 +111,20 @@ class SpectrogramDecoder(nn.Module):
                     act = nn.LeakyReLU(0.1)
                     # keep using BN with some layers (don't use AdaIN only, BN is very effective)
                     if 1 <= i <= 4:
-                        norm = 'bn+adain' if self.arch_args['adain'] else 'bn'
+                        norm = 'bn+adain' if self.conv_arch_args['adain'] else 'bn'
                     elif i == 5:  # TODO try adain on layer 6?
-                        norm = 'adain' if self.arch_args['adain'] else 'bn'
+                        norm = 'adain' if self.conv_arch_args['adain'] else 'bn'
                     else:
                         norm = 'bn'
                 else:
                     norm = None
                     act = nn.Identity()
                 # Don't use attention for small (useless) or big (too costly) feature maps
-                self_attention = (self.arch_args['att'] and (2 <= (i-1) < (self.num_cnn_layers-3)),
-                                  self.arch_args['att'] and (2 <= i < (self.num_cnn_layers-3)))
-                if self.arch_args['res'] and i in [1, 3, 5]:  # FIXME 5-6 RES BLOCK ????
+                self_attention = (self.conv_arch_args['att'] and (2 <= (i - 1) < (self.num_cnn_layers - 3)),
+                                  self.conv_arch_args['att'] and (2 <= i < (self.num_cnn_layers - 3)))
+                if self.conv_arch_args['res'] and i in [1, 3, 5]:  # FIXME 5-6 RES BLOCK ????
                     _in_ch, _out_ch = in_ch, out_ch
-                elif self.arch_args['res'] and i in [2, 4, 6]:
+                elif self.conv_arch_args['res'] and i in [2, 4, 6]:
                     l = convlayer.ResTConv2D(
                         _in_ch, in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
                         adain_num_style_features=self.dim_w_single_ch_cnn, self_attention=self_attention)
@@ -135,13 +135,14 @@ class SpectrogramDecoder(nn.Module):
                         adain_num_style_features=self.dim_w_single_ch_cnn, self_attention=self_attention[1])
                     self.single_ch_cnn.add_module('dec{}'.format(i), l)
 
-        elif self.base_arch_name.startswith('sprescnn'):
-            better_time_res = (self.base_arch_name == 'sprescnnt')
-            norm = 'bn+adain' if self.arch_args['adain'] else 'bn'
+        elif self.conv_arch_name.startswith('sprescnn'):
+            raise AssertionError("This arch must be refactored (proper decomposition into seq/non-seq networks)")
+            better_time_res = (self.conv_arch_name == 'sprescnnt')
+            norm = 'bn+adain' if self.conv_arch_args['adain'] else 'bn'
             # See encoder.py: this decoder is quite symmetrical (not really...) to the corresponding encoder
             # However, the "features mixer" layer is always the first
             main_blocks_indices = [0, 1, 2, 3, 4, 5]
-            if self.arch_args['big']:
+            if self.conv_arch_args['big']:
                 res_blocks_counts = [3, 4, 3, 2, 1, 1]
                 res_blocks_ch = [self.first_gt1_conv_ch, 512, 256, 128, 128, 64]
             else:
@@ -157,7 +158,7 @@ class SpectrogramDecoder(nn.Module):
                         # Last block of a main block adapts the size for the following block
                         if res_block_idx == (res_blocks_counts[main_block_idx] - 1):
                             out_ch = res_blocks_ch[main_block_idx + 1]
-                            if main_block_idx <= 1 and self.arch_args['time+']:
+                            if main_block_idx <= 1 and self.conv_arch_args['time+']:
                                 upsample = (True, False)  # Optional: No temporal stride for first layers
                             else:
                                 upsample = (True, True)
@@ -173,7 +174,7 @@ class SpectrogramDecoder(nn.Module):
                                             norm_layer=norm, adain_num_style_features=self.dim_w_single_ch_cnn)
                         self.single_ch_cnn.add_module('resblk{}'.format(layer_idx), l)
                     else:  # Last layer: no norm or act, 6x6 Tconv (https://distill.pub/2016/deconv-checkerboard/)
-                        kernel_size, padding = ((6, 6), (2, 2)) if self.arch_args['big'] else ((4, 4), (1, 1))
+                        kernel_size, padding = ((6, 6), (2, 2)) if self.conv_arch_args['big'] else ((4, 4), (1, 1))
                         self.single_ch_cnn.add_module('tconv',
                                                       TConv2D(res_blocks_ch[-1], 1, kernel_size, (2, 2),
                                                               padding=padding, output_padding=(0, 0),
@@ -211,7 +212,7 @@ class SpectrogramDecoder(nn.Module):
 
         # Concatenate single-ch spectrograms, crop if necessary
         single_ch_cnn_outputs = torch.cat(single_ch_cnn_outputs, dim=1)
-        if self.base_arch_name.startswith('sprescnn'):  # Output is 264 x 256 ; target is 257 x 251 (+ 4.7% pixels)
+        if self.conv_arch_name.startswith('sprescnn'):  # Output is 264 x 256 ; target is 257 x 251 (+ 4.7% pixels)
             single_ch_cnn_outputs = single_ch_cnn_outputs[:, :, 3:3+257, 2:2+251]
 
         # Final activation

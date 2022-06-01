@@ -31,7 +31,8 @@ class CometWriter:
 
     def log_config_hparams(self, model_config: config.ModelConfig, train_config: config.TrainConfig):
         # Ordering is the same as in config.py (easier to find added/removed params)
-        self.experiment.log_parameter("encoder_arch", model_config.encoder_architecture)
+        self.experiment.log_parameter("vae_conv_arch", model_config.vae_main_conv_architecture)
+        self.experiment.log_parameter("vae_latent_arch", model_config.vae_latent_extract_architecture)
         self.experiment.log_parameter("att_gamma", model_config.attention_gamma)
         self.experiment.log_parameter("style_arch", model_config.style_architecture)
         self.experiment.log_parameter("params_regr_arch", model_config.params_regression_architecture)

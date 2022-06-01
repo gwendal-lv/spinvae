@@ -86,7 +86,7 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['regloss_cat_weights'] = self.train_config.params_cat_CE_use_weights
         # Auto-Encoder hparams
         self.hyper_params['VAE_FCdrop'] = self.train_config.ae_fc_dropout
-        self.hyper_params['enc_arch'] = self.model_config.encoder_architecture
+        self.hyper_params['main_conv_arch'] = self.model_config.vae_main_conv_architecture
         self.hyper_params['recons_loss'] = self.train_config.reconstruction_loss
         # self.hyper_params['recloss'] = self.train_config.ae_reconstruction_loss
         self.hyper_params['specmindB'] = self.model_config.spectrogram_min_dB
