@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "z_loss"  # experiment base name
-        self.run_name = 'dummy_arch_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'hierarchical_vae_03'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -42,21 +42,27 @@ class ModelConfig:
         # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
         # 'speccnn8l' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
         # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
+        # 'specladder': ladder CNNs (cells, outputs from different levels) for spectrogram reconstruction
+        #       also contains num of blocks and num of conv layers per block (e.g. 8x1)
         # Arch args:
         #    '_adain' some BN layers are replaced by AdaIN (fed with a style vector w, dim_w < dim_z)
         #    '_att' self-attention in deep conv layers  TODO encoder and decoder
         #    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
         #    '_res' residual connections (blocks of 2 conv layer)
-        #    '_time+' increases time resolution in the deepest layers
-        self.vae_main_conv_architecture = 'speccnn8l_res'
+        #    TODO depth-separable convs
+        self.vae_main_conv_architecture = 'specladder8x1'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'mlp_1l' means MLP, 1 layer
-        self.vae_latent_extract_architecture = 'mlp_1l'
+        self.vae_latent_levels = 2
+        self.vae_latent_extract_architecture = 'convk11_1l'
+        # Sets the family of decoder output probability distribution p_theta(x|z), e.g. :
+        #    - 'gaussian_unitvariance' corresponds to the usual MSE reconstruction loss (up to a constant and factor)
+        self.audio_decoder_distribution = 'gaussian_unitvariance'
         self.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
         # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
         # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
         # e.g. 8l1024: 8 layers, 1024 units per layer
-        self.style_architecture = 'mlp_2l128_outputbn'  # batch norm layers are always added inside the mlp
+        self.style_architecture = 'mlp_2l128_outputbn'  # DEPRECATED batch norm layers are always added inside the mlp
         # Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
         # TODO random permutations when building flows
         # 3l600 is associated to bad MMD values and "dirac-like" posteriors.
@@ -71,8 +77,9 @@ class ModelConfig:
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector
         self.concat_midi_to_z = None  # See update_dynamic_config_params()
-        # Latent space dimension  ********* When using a Flow regressor, this dim is automatically set *************
-        self.dim_z = 512  # Including possibly concatenated midi pitch and velocity
+        # Latent space dimension  ********* this dim is automatically set when using a Hierarchical VAE *************
+        self.dim_z = -1
+        self.approx_requested_dim_z = 2000  # Hierarchical VAE will try to get close to this, will often be higher
         # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
         #    - base architectures can be realnvp, maf, ...
         #    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
@@ -107,7 +114,7 @@ class ModelConfig:
         # dataset size is increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
         self.increased_dataset_size = None  # See update_dynamic_config_params()
         self.spectrogram_min_dB = -120.0
-        self.input_tensor_size = None  # see update_dynamic_config_params()
+        self.input_audio_tensor_size = None  # see update_dynamic_config_params()
 
         # ---------------------------------- Synth (not used during pre-training) ----------------------------------
         self.synth = 'dexed'
@@ -136,7 +143,7 @@ class TrainConfig:
         self.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
         # 128: faster train but lower higher MMD (more posterior collapse). 64: better MMD perf
-        self.minibatch_size = 256
+        self.minibatch_size = 128
         self.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
         self.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
         self.k_folds = 9  # 10% for validation set, 80% for training
@@ -278,7 +285,7 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
     model_config.increased_dataset_size = (len(model_config.midi_notes) > 1) and not model_config.stack_spectrograms
     model_config.concat_midi_to_z = (len(model_config.midi_notes) > 1) and not model_config.stack_spectrograms
     # Mini-batch size can be smaller for the last mini-batches and/or during evaluation
-    model_config.input_tensor_size = \
+    model_config.input_audio_tensor_size = \
         (train_config.minibatch_size, 1 if not model_config.stack_spectrograms else len(model_config.midi_notes),
          model_config.spectrogram_size[0], model_config.spectrogram_size[1])
 

@@ -107,6 +107,8 @@ class TrainableModel(nn.Module):
             # FIXME scheduler might be different after loading the model
             self.scheduler.load_state_dict(sub_checkpoint['scheduler_state_dict'])
 
+    def get_detailed_summary(self) -> str:
+        raise NotImplementedError()
 
 
 class DummyModel(TrainableModel):

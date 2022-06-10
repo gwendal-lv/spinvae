@@ -33,10 +33,12 @@ class CometWriter:
         # Ordering is the same as in config.py (easier to find added/removed params)
         self.experiment.log_parameter("vae_conv_arch", model_config.vae_main_conv_architecture)
         self.experiment.log_parameter("vae_latent_arch", model_config.vae_latent_extract_architecture)
+        self.experiment.log_parameter("vae_latent_levels", model_config.vae_latent_levels)
         self.experiment.log_parameter("att_gamma", model_config.attention_gamma)
         self.experiment.log_parameter("style_arch", model_config.style_architecture)
         self.experiment.log_parameter("params_regr_arch", model_config.params_regression_architecture)
         self.experiment.log_parameter("z_dim", model_config.dim_z)
+        self.experiment.log_parameter("z_dim_requested", model_config.approx_requested_dim_z)
         self.experiment.log_parameter("z_flow_arch", str(model_config.latent_flow_arch))  # Possibly None
         self.experiment.log_parameter("mel_bins", model_config.mel_bins)
         self.experiment.log_parameter("n_midi_notes", len(model_config.midi_notes))

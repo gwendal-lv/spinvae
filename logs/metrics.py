@@ -10,6 +10,8 @@ import scipy.stats
 
 import torch
 
+from model.hierarchicalvae import HierarchicalVAEOutputs
+
 
 class BufferedMetric:
     """ Can store a limited number of metric values in order to get a smoothed estimate of the metric. """
@@ -143,15 +145,15 @@ class LatentMetric:
         self._spearman_corr_matrix_zerodiag = {'z0': np.zeros(0), 'zK': np.zeros(0)}
         self._avg_abs_corr_spearman_zerodiag = {'z0': -1.0, 'zK': -1.0}
 
-    def append(self, z_mu_logvar, z0_samples, zK_samples=None, labels=None):
+    def append(self, z_mu, z_var, z0_samples, zK_samples, labels=None):
         """ Internally duplicates the latent values (and labels) of a minibatch """
         batch_len = z0_samples.shape[0]
         if zK_samples is None:
             zK_samples = z0_samples
         # Use pre-allocated storage matrices
         storage_rows = range(self.next_dataset_index, self.next_dataset_index+batch_len)
-        self._z['mu'][storage_rows, :] = z_mu_logvar[:, 0, :].clone().detach().cpu().numpy()
-        self._z['sigma'][storage_rows, :] = np.exp(z_mu_logvar[:, 1, :].clone().detach().cpu().numpy() * 0.5)
+        self._z['mu'][storage_rows, :] = z_mu[:, :].clone().detach().cpu().numpy()
+        self._z['sigma'][storage_rows, :] = np.sqrt(z_var[:, :].clone().detach().cpu().numpy())
         self._z['z0'][storage_rows, :] = z0_samples.clone().detach().cpu().numpy()
         self._z['zK'][storage_rows, :] = zK_samples.clone().detach().cpu().numpy()
         if 'label' in self.valid_keys:
@@ -163,6 +165,10 @@ class LatentMetric:
             if labels is not None:
                 raise ValueError("labels argument cannot be provided because dim_label was not provided to class ctor")
         self.next_dataset_index += batch_len
+
+    def append_hierarchical_latent(self, ae_out: HierarchicalVAEOutputs, label=None):
+        z_sampled = ae_out.get_z_sampled_no_hierarchy()  # FIXME no zK yet (NFlows)
+        self.append(ae_out.get_z_mu_no_hierarchy(), ae_out.get_z_var_no_hierarchy(), z_sampled, z_sampled, label)
 
     def get_z(self, z_type):
         """ Returns the requested latent values.

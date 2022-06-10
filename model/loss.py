@@ -66,7 +66,6 @@ class GaussianDkl:
             return Dkl
 
 
-
 class SynthParamsLossBase:
     def __init__(self, idx_helper: PresetIndexesHelper, compute_symmetrical_presets=False):
         self.idx_helper = idx_helper

@@ -1,45 +1,12 @@
 import warnings
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torchinfo
 
 from model import convlayer
-from model.convlayer import ResBlock3Layers, Conv2D, TConv2D
-
-
-def parse_main_conv_architecture(full_architecture: str):
-    """ Parses an argument used to describe the encoder and decoder conv architectures (e.g. speccnn8l_big_res) """
-    # Decompose architecture to retrieve number of conv layers, options, ...
-    arch_args = full_architecture.split('_')
-    base_arch_name = arch_args[0]  # type: str
-    del arch_args[0]
-    if base_arch_name.startswith('speccnn'):
-        num_layers = int(base_arch_name.replace('speccnn', '').replace('l', ''))
-    elif base_arch_name.startswith('sprescnn'):
-        num_layers = None
-    else:
-        raise AssertionError("Base architecture not available for given arch '{}'".format(base_arch_name))
-    # Check arch args, transform
-    arch_args_dict = {'adain': False, 'big': False, 'bigger': False, 'res': False, 'att': False, 'time+': False}
-    for arch_arg in arch_args:
-        if arch_arg in ['adain', 'big', 'bigger', 'res', 'time+', 'att']:
-            arch_args_dict[arch_arg] = True  # Authorized arguments
-        else:
-            raise ValueError("Unvalid encoder argument '{}' from architecture '{}'".format(arch_arg, full_architecture))
-    return base_arch_name, num_layers, arch_args_dict
-
-
-def parse_latent_extract_architecture(full_architecture: str):
-    arch_args = full_architecture.split('_')
-    base_arch_name = arch_args[0].lower()
-    num_layers = int(arch_args[1].replace('l', ''))
-    # TODO process other args
-    arch_args_dict = {}
-    if len(arch_args) != 2:
-        raise NotImplementedError("Exactly 2 arch arguments must be provided at the moment")
-    return base_arch_name, num_layers, arch_args_dict
+from model.convlayer import ResBlock3Layers, Conv2D
+from model.hierarchicalvae import parse_latent_extract_architecture, parse_main_conv_architecture
 
 
 class SpectrogramEncoder(nn.Module):
@@ -81,7 +48,7 @@ class SpectrogramEncoder(nn.Module):
 
         # - - - - - 3) Latent inference network (from sequential CNN outputs) - - - - -
         self.latent_inference = nn.Sequential()
-        # Automatic sequential/reccurent CNN output tensor size inference
+        # Automatic sequential/recurrent CNN output tensor size inference
         with torch.no_grad():
             self._train_input_tensor_size = input_tensor_size
             single_element_input_tensor_size = list(self._train_input_tensor_size)
@@ -122,6 +89,7 @@ class SpectrogramEncoder(nn.Module):
     def _build_cnns(self):
         """ Builds the main sequential CNN (applied to the input spectrograms, channels are sequence indices)
             and the features mixer CNN, which may not be used. """
+        # TODO implement a structure to possibly obtain a hierarchical VAE (multiple outputs from the single_ch_cnn)
         single_ch_cnn, features_mixer_cnn = nn.Sequential(), nn.Sequential()
         if self.conv_arch_name == 'speccnn8l':
             ''' Where to use BN? 'ESRGAN' generator does not use BN in the first and last conv layers.
@@ -334,7 +302,7 @@ if __name__ == '__main__':  # for debugging
     summary = encoder_model.get_single_ch_cnn_summary()
     print(summary)
 
-    dummy_input_spec = torch.zeros(model_config.input_tensor_size)
+    dummy_input_spec = torch.zeros(model_config.input_audio_tensor_size)
     dummy_z = encoder_model(dummy_input_spec, None)
 
     #encoder_model.set_attention_gamma(0.7)

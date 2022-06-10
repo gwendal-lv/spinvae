@@ -1,4 +1,6 @@
 """
+Deprecated, see hierarchicalvae.py
+
 Defines 'Extended Auto-Encoders', which are basically spectrogram VAEs with an additional neural network
 which infers synth parameters values from latent space values.
 """

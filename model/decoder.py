@@ -7,6 +7,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import model.hierarchicalvae
+import model.ladderencoder
 from model.convlayer import Conv2D, TConv2D, ResBlock3Layers
 from model import convlayer
 from model import encoder  # Contains an architecture parsing method
@@ -43,7 +45,7 @@ class SpectrogramDecoder(nn.Module):
         self.cnn_input_shape = None  # shape not including batch size
 
         self.conv_arch_name, self.num_cnn_layers, self.conv_arch_args \
-            = encoder.parse_main_conv_architecture(self.conv_architecture)
+            = model.hierarchicalvae.parse_main_conv_architecture(self.conv_architecture)
         # TODO parse latent arch args
         self.num_fc_layers = 1  # FIXME use new arch input arg
         if self.conv_arch_name == 'speccnn8l':

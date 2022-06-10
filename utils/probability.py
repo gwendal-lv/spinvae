@@ -1,6 +1,8 @@
 """
-Utility functions related to probabilities and statistics, e.g. log likelihoods, ...
+Utility functions and classes related to probabilities and statistics, e.g. log likelihoods, ...
 """
+
+from abc import abstractmethod
 
 import numpy as np
 
@@ -12,23 +14,85 @@ __log_2_pi = np.log(2*np.pi)
 
 
 def standard_gaussian_log_probability(samples, add_log_2pi_term=True):
-    """
-    Computes the log-probabilities of given batch of samples using a multivariate gaussian distribution
-    of independent components (zero-mean, identity covariance matrix).
-    """
+    """ Computes the log-probabilities of given batch of samples using a multivariate gaussian distribution
+    of independent components (zero-mean, identity covariance matrix). """
+    if len(samples.shape) > 2:
+        raise NotImplementedError()
     return -0.5 * ((samples.shape[1] * __log_2_pi if add_log_2pi_term else 0.0) +
                    torch.sum(samples**2, dim=1))
 
 
 def gaussian_log_probability(samples, mu, log_var, add_log_2pi_term=True):
-    """
-    Computes the log-probabilities of given batch of samples using a multivariate gaussian distribution
-    of independent components (diagonal covariance matrix).
-    """
+    """ Computes the log-probabilities of given batch of samples using a multivariate gaussian distribution
+    of independent components (diagonal covariance matrix). """
     # if samples and mu do not have the same size,
     # torch automatically properly performs the subtract if mu is 1 dim smaller than samples
+    if len(samples.shape) > 2:
+        raise NotImplementedError()
     return -0.5 * ((samples.shape[1] * __log_2_pi if add_log_2pi_term else 0.0) +
                    torch.sum( log_var + ((samples - mu)**2 / torch.exp(log_var)), dim=1))
+
+
+def gaussian_unitvar_log_probability(samples, mu, add_log_2pi_term=True):
+    if len(samples.shape) > 2:
+        raise NotImplementedError()
+    return -0.5 * ((samples.shape[1] * __log_2_pi if add_log_2pi_term else 0.0) +
+                   torch.sum( ((samples - mu)**2), dim=1))
+
+
+def standard_gaussian_dkl(mu, var, reduction='none'):
+    """
+    Computes the Dkl between a factorized gaussian distribution (given in input args as 2D tensors) and
+    the standard gaussian distribution.
+
+    :param reduction: If 'none',
+    """
+    Dkl = 0.5 * torch.sum(var + torch.square(mu) - torch.log(var) - 1.0, dim=1)
+    if reduction == 'none':
+        return Dkl
+    elif reduction == 'mean':
+        return torch.mean(Dkl)
+    else:
+        raise NotImplementedError(reduction)
+
+
+class ProbabilityDistribution:
+    def __init__(self, mu_activation=torch.nn.Hardtanh()):
+        """ Generic class to use decoder outputs as parameters of a probability distribution. """
+        self.mu_act = mu_activation
+
+    @abstractmethod
+    def apply_activations(self, nn_raw_output: torch.Tensor):
+        """ Applies the proper activations the returns the distribution parameters. """
+        pass
+
+    @abstractmethod
+    def log_prob(self, x: torch.Tensor, distribution_parameters: torch.Tensor):
+        pass
+
+    @abstractmethod
+    def sample(self, distribution_parameters: torch.Tensor):
+        pass
+
+
+class GaussianUnitVariance(ProbabilityDistribution):
+    def __init__(self, mu_activation=torch.nn.Hardtanh()):
+        super().__init__(mu_activation)
+
+    def apply_activations(self, nn_raw_output: torch.Tensor):
+        if nn_raw_output.shape[1] != 1:
+            raise ValueError("Parameters should be 1-ch (Gaussian means are the only free parameters)")
+        return self.mu_act(nn_raw_output)
+
+    def log_prob(self, distribution_parameters: torch.Tensor, x: torch.Tensor):
+        # We can evaluate the prob in a single operation - don't need to compute it channel-by-channel
+        # Distribution parameters are expected to be means only. This computation is very close to being an MSE loss...
+        distrib = torch.distributions.Normal(distribution_parameters, torch.ones_like(distribution_parameters))
+        return - torch.mean(distrib.log_prob(x))
+
+    def sample(self, distribution_parameters: torch.Tensor):
+        return distribution_parameters  # No sampling: parameters contain means only
+
 
 
 class MMD:

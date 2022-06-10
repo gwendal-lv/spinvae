@@ -17,14 +17,14 @@ def build_encoder_and_decoder_models(model_config: ModelConfig, train_config: Tr
     encoder_model = encoder.SpectrogramEncoder(
         model_config.vae_main_conv_architecture, model_config.vae_latent_extract_architecture,
         enc_z_length, train_config.latent_loss.endswith('_determ_enc'),
-        model_config.input_tensor_size, train_config.ae_fc_dropout,
+        model_config.input_audio_tensor_size, train_config.ae_fc_dropout,
         output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
         output_dropout_p=train_config.latent_input_dropout,
         deep_features_mix_level=model_config.stack_specs_features_mix_level
     )
     decoder_model = decoder.SpectrogramDecoder(
         model_config.vae_main_conv_architecture,
-        model_config.dim_z,model_config.input_tensor_size, train_config.ae_fc_dropout,model_config.midi_notes
+        model_config.dim_z,model_config.input_audio_tensor_size, train_config.ae_fc_dropout,model_config.midi_notes
     )
     return encoder_model, decoder_model
 
@@ -38,6 +38,7 @@ def build_ae_model(model_config: ModelConfig, train_config: TrainConfig):
     :param train_config: train attributes (a few are required, e.g. dropout probability)
     :return: Tuple: encoder, decoder, full AE model
     """
+    raise DeprecationWarning("Deprecated: use Hierarchical VAE constructor")
     # Build encoder and decoder first
     encoder_model, decoder_model = build_encoder_and_decoder_models(model_config, train_config)
     # Backward compatibility - recently added config args

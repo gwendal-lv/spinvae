@@ -213,12 +213,11 @@ class RunLogger:
 
     def write_model_summary(self, model, input_tensor_size, model_name):
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
-            description = torchinfo.summary(model, input_size=input_tensor_size, depth=6,
-                                            device=torch.device('cpu'), verbose=0)
+            description = model.get_detailed_summary()
             if self.comet is not None:
-                self.comet.experiment.set_model_graph(description.__str__())
+                self.comet.experiment.set_model_graph(description)
             with open(self.run_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
-                f.write(description.__str__())
+                f.write(description)
 
     def get_previous_config_from_json(self):
         with open(self.run_dir.joinpath('config.json'), 'r') as f:

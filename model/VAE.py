@@ -1,3 +1,5 @@
+""" Deprecated, see hierarchicalvae.py """
+
 from typing import Optional
 
 import numpy as np

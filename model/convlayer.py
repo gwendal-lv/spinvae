@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# ================= Conv, act and norm blocks (including res blocks) supporting the w_style input arg =============
 
 class AdaIN(nn.Module):
     def __init__(self, num_style_features, num_conv_ch):
@@ -354,3 +355,36 @@ class ResBlock3Layers(nn.Module):
             x = res
 
         return x, w
+
+
+# =============================== Blocks used by ladder encoder/decoder ======================================
+
+class ConvBlock2D(nn.Sequential):
+    def __init__(self, conv: nn.Module, act: Optional[nn.Module] = None, norm: Optional[nn.Module] = None,
+                 order='nac'):
+        """
+        An elementary convolutional block, with optional activation and normalisation layers
+        (can be ordered as desired).
+
+        :param conv:
+        :param act:
+        :param norm:
+        :param order: Defines the ordering of conv, act and norm layers,
+            e.g. 'can' is the basic ordering, 'nac' is reversed. String length can be 1 to 3 chars.
+        """
+        super().__init__()
+        if not (1 <= len(order) <= 3):
+            raise ValueError("order argument must contain exactly 3 chars e.g. 'nac' or 'can'")
+        modules_dict = {'c': conv, 'a': act, 'n': norm}
+        for module_key in order:
+            if modules_dict[module_key] is not None:
+                self.add_module(module_key, modules_dict[module_key])
+
+
+# TODO depth-separable conv block (more channels after 1x1, wider depth-ser kernels)
+
+class UpsamplingResBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # TODO up/down sampling in 2 different classes
+

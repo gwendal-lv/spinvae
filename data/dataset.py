@@ -3,7 +3,9 @@ Datasets of synth sounds. PyTorch-compatible, with a lot of added method and pro
 parameters learning.
 Concrete preset Datasets are available from this module but are implemented in their own files.
 """
+from typing import Tuple
 
+import torch
 
 from . import dexeddataset
 from . import surgedataset
@@ -32,3 +34,4 @@ def model_config_to_dataset_kwargs(model_config):
             'spectrogram_min_dB': model_config.spectrogram_min_dB,
             'data_storage_root_path': model_config.data_root_path
             }
+
