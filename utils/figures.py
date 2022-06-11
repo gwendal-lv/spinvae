@@ -332,7 +332,7 @@ def plot_vector_distributions_stats(metrics: Dict[str, logs.metrics.VectorMetric
 
 
 def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, figsize=None, eps=1e-7,
-                                    max_displayed_latent_coords=150):
+                                    max_displayed_latent_coords=140):
     """ Uses boxplots to represent the distribution of the mu and/or sigma parameters of
     latent gaussian distributions. Also plots a general histogram of all samples.
 
@@ -341,45 +341,67 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     :param eps: Value added to bounds for numerical stability (when a latent value is constant).
     """
     metrics_names = ['mu', 'sigma', 'zK']
-    data_limited = dict()
+    data_limited = [dict(), dict()]  # We display the first and the last latent coordinates
+    n_latent_coords_per_column = max_displayed_latent_coords // 2
     # - - - stats on all metrics - - -
-    data_full_flat = dict()
+    data_flat = dict()
     outlier_limits = dict()  # measured lower and upper outliers bounds
     x_label = None  # Might include the number of not-displayed latent items
-    for k in metrics_names:
-        data_limited[k] = latent_metric.get_z(k)
-        if k == 'sigma':  # log10 applied to sigma
-            data_limited[k] = np.log10(data_limited[k])
-        data_full_flat[k] = data_limited[k].flatten()
-        if data_limited[k].shape[1] > max_displayed_latent_coords:
-            x_label = 'z index (partial subplot: {} to {} are not displayed)'\
-                .format(max_displayed_latent_coords, data_limited[k].shape[1]-1)
-            data_limited[k] = data_limited[k][:, 0:max_displayed_latent_coords]
-        outlier_limits[k] = utils.stat.get_outliers_bounds(data_full_flat[k])
+    for i, k in enumerate(metrics_names):
+        latent_data = latent_metric.get_z(k)  # Not limited yet, but will be limited at the end of this iteration
+        data_flat[k] = latent_data.flatten()
+        # Increased outliers display (IQR factor default value was 1.5) to be able to observe posterior collapse
+        outlier_limits[k] = utils.stat.get_outliers_bounds(data_flat[k], IQR_factor=10.0)
         outlier_limits[k] = (outlier_limits[k][0] - eps, outlier_limits[k][1] + eps)
+        # get a subset if too large - otherwise the figured is rendered to 160MB (!!!) SVG files for dim_z = 2000
+        data_flat[k] = utils.stat.get_random_subset_keep_minmax(data_flat[k], latent_data.shape[0] * 10)
+
+        # FIXME build 2 tables of data_limited
+        if i == 0:  # Build indices when processing the very first metric
+            dim_z = latent_data.shape[1]
+            if dim_z < n_latent_coords_per_column:
+                raise ValueError("This function can't be used for small (dim < {}) latent spaces"
+                                 .format(n_latent_coords_per_column))
+            data_limited_indices = [range(0, n_latent_coords_per_column),
+                                    range(dim_z-n_latent_coords_per_column, dim_z)]
+            x_labels = ['First z coords ({} to {})'.format(data_limited_indices[0].start, data_limited_indices[0].stop-1),
+                        'Last z coords ({} to {})'.format(data_limited_indices[1].start, data_limited_indices[1].stop-1)]
+        for ii, data_limited_coord_range in enumerate(data_limited_indices):
+            data_limited[ii][k] = latent_data[:, data_limited_coord_range]
     # - - - box plots (general and per component) - - -
     general_plots_eq_num_items = 10  # equivalent number of "small component boxplots", to properly divide fig width
     if figsize is None:
-        figsize = (__param_width * (data_limited['mu'].shape[1] + 8 + general_plots_eq_num_items), 6.5)
-    fig, axes = plt.subplots(3, 2, figsize=figsize, sharex='col',
-                             gridspec_kw={'width_ratios': [general_plots_eq_num_items, data_limited['mu'].shape[1] + 8]})
+        figsize = (__param_width * (max_displayed_latent_coords + 8 + general_plots_eq_num_items), 6.5)
+    fig, axes = plt.subplots(3, 3, figsize=figsize, sharex='col',
+                             gridspec_kw={'width_ratios': [general_plots_eq_num_items,
+                                                           n_latent_coords_per_column + 4,
+                                                           n_latent_coords_per_column + 4]})
     flierprops = dict(marker='.', markerfacecolor='k', markersize=0.5, markeredgecolor='none')
     for i, k in enumerate(metrics_names):
-        axes[i][0].boxplot(x=data_full_flat[k], vert=True, sym='.k', flierprops=flierprops)
-        sns.boxplot(data=data_limited[k], ax=axes[i][1], fliersize=0.3, linewidth=0.5)
+        axes[i][0].boxplot(x=data_flat[k], vert=True, sym='.k', flierprops=flierprops)
+        sns.boxplot(data=data_limited[0][k], ax=axes[i][1], fliersize=0.3, linewidth=0.5)
+        sns.boxplot(data=data_limited[1][k], ax=axes[i][2], fliersize=0.3, linewidth=0.5)
     # - - - axes labels, limits and ticks - - -
     axes[2][0].set_xticks((1.0, ))
-    axes[2][0].set_xticklabels(('all', ))
+    axes[2][0].set_xticklabels(('all (rnd subset)', ))
+    axes[0][0].set(ylabel='$q_{\phi}(z_0|x) : \mu_0$')
+    axes[1][0].set(ylabel='$q_{\phi}(z_0|x) : \sigma_0$')
+    axes[2][0].set(ylabel='$z_K$ samples')
     # mu0 and sigma0: unknown distributions, limit detailed per-component display to exclude outliers
-    # zK (supposed to be approx. Standard Gaussian): limit display to +/- 4 std (-4std: cumulative distributions < e-4)
-    axes[0][1].set(ylabel='$q_{\phi}(z_0|x) : \mu_0$', ylim=outlier_limits['mu'])
-    axes[1][1].set(ylabel='$q_{\phi}(z_0|x) : \log_{10}(\sigma_0)$', ylim=outlier_limits['sigma'])
-    axes[2][1].set(xlabel=('z index' if x_label is None else x_label), ylabel='$z_K$ samples', ylim=[-4.0, 4.0])
+    # zK (supposed to be approx. Standard Gaussian for training data):
+    #     limit display to +/- 4 std (-4std: cumulative distributions < e-4)
+    for i in [1, 2]:
+        axes[0][i].set(ylim=outlier_limits['mu'])
+        axes[1][i].set(ylim=outlier_limits['sigma'])
+        axes[2][i].set_xticklabels([str(t) for t in data_limited_indices[i-1]])
+    axes[2][1].set(xlabel=x_labels[0], ylim=[-4.0, 4.0])
+    axes[2][2].set(xlabel=x_labels[1], ylim=[-4.0, 4.0])
     # Target 25 and 75 percentiles as horizontal lines (+/- 0.6745 for standard normal distributions)
-    axes[2][1].hlines([-0.6745, 0.0, 0.6745], -0.5, data_limited['mu'].shape[1]-0.5, colors='grey', linewidth=0.5)
-    #     And target outliers limits (Q1/Q3 +/- 1.5 IQR) as dotted lines
+    for i in [1, 2]:
+        axes[2][i].hlines([-0.6745, 0.0, 0.6745], -0.5, n_latent_coords_per_column-0.5, colors='grey', linewidth=0.5)
+    # TODO x ticks axes 2
     # Small ticks for right subplots only (component indexes)
-    for ax in [axes[0][1], axes[1][1], axes[2][1]]:
+    for ax in [axes[2][1], axes[2][2]]:
         for tick in ax.get_xticklabels():
             tick.set_rotation(90)
             tick.set_fontsize(8)
@@ -657,4 +679,21 @@ def plot_synth_preset_vst_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_hel
 
     fig.tight_layout()
     return fig, ax
+
+
+if __name__ == "__main__":
+
+    # Latent Metric plot tests - filled with artificial values
+    dim_z = 200
+    latent_metrics = logs.metrics.LatentMetric(dim_z, 3000)  # dim_z is the 2nd dim in the hidden data member
+    for k in ['mu', 'sigma', 'zK']:
+        latent_metrics._z[k] = np.random.normal(0.0, 1.0, (3000, dim_z))
+    latent_metrics.next_dataset_index = latent_metrics.dataset_len  # Force values, for testing only
+    fig, ax = plot_latent_distributions_stats(latent_metrics)
+    from pathlib import Path
+    dir = Path(__file__).resolve().parent
+    svg_file = dir.joinpath("plot_latent_distributions_stats_TEST.svg")
+    fig.savefig(svg_file)
+    print("SVG file size = {:.1f} M bytes".format(svg_file.stat().st_size / 1000000.0))
+    plt.show()
 

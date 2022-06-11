@@ -380,11 +380,85 @@ class ConvBlock2D(nn.Sequential):
             if modules_dict[module_key] is not None:
                 self.add_module(module_key, modules_dict[module_key])
 
+    @property
+    def in_channels(self):
+        return self.c.in_channels
 
-# TODO depth-separable conv block (more channels after 1x1, wider depth-ser kernels)
+    @property
+    def out_channels(self):
+        return self.c.out_channels
 
-class UpsamplingResBlock(nn.Module):
-    def __init__(self):
+# TODO depth-separable conv block (more channels after 1x1, wider depth-separable kernels)
+
+
+class ResBlockBase(nn.Module):
+    def __init__(self, conv_blocks: nn.Sequential):
+        """
+        :param conv_blocks: Sequence of ConvBlock2D modules, which provide .in_channels and .out_channels properties
+        """
         super().__init__()
-        # TODO up/down sampling in 2 different classes
+        self.conv_blocks = conv_blocks
+
+    @property
+    def in_channels(self):
+        return self.conv_blocks[0].in_channels
+
+    @property
+    def out_channels(self):
+        return self.conv_blocks[-1].out_channels
+
+
+class DownsamplingResBlock(ResBlockBase):
+    def __init__(self, conv_blocks: nn.Sequential):
+        """
+        A res-block with pre-built convolutional blocks as residuals' path.
+        Conv blocks are expected to perform a downsampling, and this block will resize the skip-connection feature
+        maps.
+        If possible, the skip-connection will use the resized input channels only (no 1x1 conv to adapt num ch)
+        TODO try checkerboard-method for downsampling residuals (RealNVP-, Glow-like networks)
+        """
+        super().__init__(conv_blocks)
+        assert self.in_channels <= self.out_channels
+        self.out_ch_is_multiple_of_in_ch = (self.out_channels % self.in_channels == 0)
+        if not self.out_ch_is_multiple_of_in_ch:
+            self.skip_conv_1x1 = nn.Conv2d(self.in_channels, self.out_channels - self.in_channels, (1, 1))
+        else:
+            self.skip_conv_1x1 = None
+
+    def forward(self, x):
+        # Compute residuals' values
+        res = self.conv_blocks(x)  # Have a greater or equal number of channels than x channels
+        # Compute the skip-connection, using as much as original (unmodified, no gradient) information as possible.
+        # the first output channels are the resized input channels
+        x_resized = F.adaptive_avg_pool2d(x, res.shape[2:])
+        # TODO the last output channels are extracted using a 1x1 conv layer if strictly necessary ;
+        #     if out_ch is a multiple of in_ch, we used the resized-only residuals multiple times
+        if self.out_ch_is_multiple_of_in_ch:
+            for i in range(self.out_channels // self.in_channels):
+                res[:, i*self.in_channels:(i+1)*self.in_channels, :, :] += x_resized
+        else:
+            res[:, 0:self.in_channels, :, :] += x_resized
+            res[:, self.in_channels:, :, :] += self.skip_conv_1x1(x_resized)
+        return res
+
+
+class UpsamplingResBlock(ResBlockBase):
+    def __init__(self, conv_blocks: nn.Sequential, interpolate_mode='bilinear'):
+        """
+        conv_blocks are expected to perform an up sampling (e.g. transposed strided convolution)
+
+        :param conv_blocks: see ResBlockBase
+        :param interpolate_mode: see https://pytorch.org/docs/stable/generated/torch.nn.functional.interpolate.html
+        """
+        super().__init__(conv_blocks)
+        self.interpolate_mode = interpolate_mode
+        # We use a skip-connection conv layer which remains as simple as possible
+        self.skip_conv_1x1 = nn.Conv2d(self.in_channels, self.out_channels, (1, 1),
+                                       groups=min(self.in_channels, self.out_channels))
+
+    def forward(self, x):
+        res = self.conv_blocks(x)
+        x = self.skip_conv_1x1(x)  # We apply this first, because the number of channels usually decreases
+        x = F.interpolate(x, res.shape[2:], mode='bilinear', align_corners=False)
+        return x + res
 

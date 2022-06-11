@@ -174,6 +174,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                'Sched/VAE/beta': LinearDynamicParam(train_config.beta_start_value, train_config.beta,
                                                     end_epoch=train_config.beta_warmup_epochs,
                                                     current_epoch=train_config.start_epoch) }
+    # All hparams are supposed to be set (e.g. automatic dim_z) at this point, and can be logged
+    logger.log_hyper_parameters()
 
 
     # ========== PyTorch Profiling (optional) ==========
@@ -337,9 +339,9 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     del reg_model_parallel, ae_model_parallel
     del extended_ae_model, ae_model
     del reg_model
-    del v_in, v_out, v_in_backup, v_out_backup, x_in, x_out, sample_info
-    del ae_out, z_0_sampled, z_K_sampled, z_0_mu_logvar
-    del extra_lat_reg_loss, lat_loss
+    del x_in, v_in, sample_info, label
+    del ae_out, v_out, v_in_backup, v_out_backup
+    del audio_log_prob_loss, cont_loss, cont_reg_loss, extra_lat_reg_loss, lat_backprop_loss, lat_loss
     del scalars, super_metrics
     del logger
     del dataloader

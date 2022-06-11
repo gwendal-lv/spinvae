@@ -25,8 +25,8 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
-        self.name = "z_loss"  # experiment base name
-        self.run_name = 'hierarchical_vae_03'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.name = "hierarch_vae"  # experiment base name
+        self.run_name = 'debug_encdecres_00'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -48,9 +48,9 @@ class ModelConfig:
         #    '_adain' some BN layers are replaced by AdaIN (fed with a style vector w, dim_w < dim_z)
         #    '_att' self-attention in deep conv layers  TODO encoder and decoder
         #    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
-        #    '_res' residual connections (blocks of 2 conv layer)
+        #    '_res' residual connections after each hidden strided conv layer (up/down sampling layers)
         #    TODO depth-separable convs
-        self.vae_main_conv_architecture = 'specladder8x1'
+        self.vae_main_conv_architecture = 'specladder8x1_res'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'mlp_1l' means MLP, 1 layer
         self.vae_latent_levels = 2
@@ -178,7 +178,7 @@ class TrainConfig:
         #            ELBO loss is obtained by using beta = 1.55 e-5
         self.beta = 1.6e-4
         self.beta_start_value = self.beta / 2.0  # Should not be zero (risk of a very unstable training)
-        # Epochs of warmup increase from start_value to beta
+        # Epochs of warmup increase from start_value to beta TODO increase to reduce posterior collapse
         self.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only
         # - - - Synth parameters losses - - -
         # - General options

@@ -211,6 +211,12 @@ class RunLogger:
                 self.tensorboard.add_graph(main_model, torch.zeros(input_tensor_size))
         self.epoch_start_datetimes = [datetime.datetime.now()]
 
+    def log_hyper_parameters(self):
+        if self.tensorboard is not None:
+            raise NotImplementedError()
+        if self.comet is not None:
+            self.comet.log_config_hparams(self.model_config, self.train_config)
+
     def write_model_summary(self, model, input_tensor_size, model_name):
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
             description = model.get_detailed_summary()
@@ -366,14 +372,15 @@ class RunLogger:
         networks_layers_params = dict()  # If remains empty: no plot
         # Don't plot ae_model weights histograms during first epochs (will get much tinier during training)
         if self.current_epoch > 2 * self.train_config.beta_warmup_epochs:
-            # returns clones of layers' parameters
-            networks_layers_params['Decoder'] = ae_model.decoder.get_fc_layers_parameters()
+            # FIXME re-activate, get conv weights also - returns clones of layers' parameters
+            pass  # networks_layers_params['Decoder'] = ae_model.decoder.get_fc_layers_parameters()
         # Launch thread using copied data
         self.figures_threads[0] = threading.Thread(
             target=self._plot_stats_thread,
             args=(self.current_epoch, self.current_step, copy.deepcopy(super_metrics), networks_layers_params,
                   copy.deepcopy(validation_dataset))
         )
+        self.figures_threads[0].name = "LoggerPlottingThread"
         self.figures_threads[0].start()
 
     def _plot_stats_thread(self, epoch: int, step: int, super_metrics, networks_layers_params,

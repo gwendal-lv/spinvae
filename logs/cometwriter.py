@@ -25,7 +25,6 @@ class CometWriter:
             self.experiment.add_tags(model_config.comet_tags)
             # TODO refactor - MODEL CONFIG IS MODIFIED HERE - dirty but quick....
             model_config.comet_experiment_key = self.experiment.get_key()
-            self.log_config_hparams(model_config, train_config)
         else:
             raise NotImplementedError()  # TODO implement ExistingExperiment
 

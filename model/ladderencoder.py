@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchinfo
 
-from model.convlayer import ConvBlock2D
+from model.convlayer import ConvBlock2D, DownsamplingResBlock
 
 
 class LadderEncoder(nn.Module):
@@ -37,7 +37,7 @@ class LadderEncoder(nn.Module):
         conv_args = self.single_ch_conv_arch['args']
         n_blocks = self.single_ch_conv_arch['n_blocks']
         if self.single_ch_conv_arch['name'].startswith('specladder'):
-            if conv_args['big'] or conv_args['bigger'] or conv_args['adain'] or conv_args['res'] or conv_args['att']:
+            if conv_args['big'] or conv_args['bigger'] or conv_args['adain'] or conv_args['att']:
                 raise NotImplementedError()
             self.single_ch_cells = list()
             if latent_levels == 1:
@@ -49,7 +49,7 @@ class LadderEncoder(nn.Module):
             self.single_ch_cells.append(nn.Sequential())
 
             for i_blk in range(n_blocks):
-                current_block = nn.Sequential()
+                residuals_path = nn.Sequential()
                 blk_in_ch = 2**(i_blk+2)  # number of input channels
                 blk_hid_ch = blk_in_ch  # base number of internal (hidden) block channels
                 blk_out_ch = 2**(i_blk+3)  # number of channels increases after each strided conv (at the block's end)
@@ -67,8 +67,13 @@ class LadderEncoder(nn.Module):
                     conv = nn.Conv2d(blk_hid_ch, blk_out_ch, kernel_size, (2, 2), 2)
                     act = nn.LeakyReLU(0.1) if i_blk > 0 else None
                     norm = nn.BatchNorm2d(blk_hid_ch) if i_blk > 0 else None
-                    current_block.add_module('strided', ConvBlock2D(conv, act, norm, 'nac'))
+                    residuals_path.add_module('strided', ConvBlock2D(conv, act, norm, 'nac'))
 
+                # Add a skip-connection if required, then add this new block to the current cell
+                if conv_args['res'] and i_blk > 0:
+                    current_block = DownsamplingResBlock(residuals_path)
+                else:
+                    current_block = residuals_path  # No skip-connection
                 self.single_ch_cells[-1].add_module('blk{}'.format(i_blk), current_block)
                 if i_blk in cells_last_block and i_blk < (n_blocks - 1):  # Start building the next cell
                     self.single_ch_cells.append(nn.Sequential())
@@ -92,8 +97,6 @@ class LadderEncoder(nn.Module):
                 kernel_size, padding = (3, 3), (1, 1)
             else:
                 raise NotImplementedError("Cannot build latent arch {}: name not implement".format(latent_arch))
-            if self.latent_arch['n_layers'] != 1:  # FIXME we should allow 2-layer conv latent inference
-                raise ValueError("Convolutional architecture for latent vector computation must be 1-layer.")
             for i, cell in enumerate(self.single_ch_cells):
                 # Latent space size: number of channels chosen such that the total num of latent coordinates
                 # is close the approx_dim_z_per_level value (these convolutions keep feature maps' H and W)
@@ -104,9 +107,18 @@ class LadderEncoder(nn.Module):
                     raise ValueError(
                         "Approximate requested dim_z is too low (cell {} output shape{}). Please increase the requested"
                         " latent dimension (current: {}).".format(i, self.cells_output_shapes[i], approx_dim_z))
-                self.latent_cells.append(nn.Conv2d(
-                    input_tensor_size[1] * self.cells_output_shapes[i][1], n_latent_ch, kernel_size, 1, padding
-                ))
+                n_input_ch = input_tensor_size[1] * self.cells_output_shapes[i][1]
+                if self.latent_arch['n_layers'] == 1:
+                    self.latent_cells.append(nn.Conv2d(n_input_ch, n_latent_ch, kernel_size, 1, padding))
+                elif self.latent_arch['n_layers'] == 2:  # No batch-norm inside the latent conv arch
+                    n_intermediate_ch = int(round(np.sqrt(n_input_ch * n_latent_ch)))
+                    self.latent_cells.append(nn.Sequential(
+                        nn.Conv2d(n_input_ch, n_intermediate_ch, kernel_size, 1, padding),
+                        nn.LeakyReLU(0.1),
+                        nn.Conv2d(n_intermediate_ch, n_latent_ch, kernel_size, 1, padding)
+                    ))
+                else:
+                    raise ValueError("Convolutional arch. for latent vector computation must contain <= 2 layers.")
         else:
             raise NotImplementedError("Cannot build latent arch {}: name not implemented".format(latent_arch))
 

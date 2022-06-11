@@ -225,15 +225,16 @@ class HierarchicalVAE(model.base.TrainableModel):
 if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
     _train_config.minibatch_size = 16
+    _model_config.vae_latent_extract_architecture = 'convk11_1l'
     config.update_dynamic_config_params(_model_config, _train_config)
 
     hVAE = HierarchicalVAE(_model_config, _train_config)
 
-    #print(hVAE.encoder.get_single_ch_conv_summary())
-    #print(hVAE.encoder.get_latent_cells_summaries())
+    print(hVAE.encoder.get_single_ch_conv_summary())
+    print(hVAE.encoder.get_latent_cells_summaries())
 
-    #print(hVAE.decoder.get_single_ch_conv_summary())
-    #print(hVAE.decoder.get_latent_cells_summaries())
+    print(hVAE.decoder.get_single_ch_conv_summary())
+    print(hVAE.decoder.get_latent_cells_summaries())
 
     print(hVAE.get_detailed_summary())
 

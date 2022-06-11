@@ -74,6 +74,12 @@ class ProbabilityDistribution:
     def sample(self, distribution_parameters: torch.Tensor):
         pass
 
+    @property
+    @abstractmethod
+    def num_parameters(self):
+        """ Number of parameters for each output pixel or time value (number of raw output channels). """
+        pass
+
 
 class GaussianUnitVariance(ProbabilityDistribution):
     def __init__(self, mu_activation=torch.nn.Hardtanh()):
@@ -92,6 +98,10 @@ class GaussianUnitVariance(ProbabilityDistribution):
 
     def sample(self, distribution_parameters: torch.Tensor):
         return distribution_parameters  # No sampling: parameters contain means only
+
+    @property
+    def num_parameters(self):
+        return 1
 
 
 

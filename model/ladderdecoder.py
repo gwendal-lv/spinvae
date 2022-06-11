@@ -1,3 +1,4 @@
+import warnings
 from typing import Dict, Tuple, List, Sequence
 
 import numpy as np
@@ -7,7 +8,7 @@ import torch.nn.functional as F
 import torchinfo
 
 import utils.probability
-from model.convlayer import ConvBlock2D
+from model.convlayer import ConvBlock2D, UpsamplingResBlock
 
 
 class LadderDecoder(nn.Module):
@@ -25,6 +26,12 @@ class LadderDecoder(nn.Module):
         self.num_audio_output_ch = self._audio_output_shape[1]
         self._cells_input_shapes = list()
 
+        # - - - - - 0) Output probability distribution helper class - - - - -
+        if audio_proba_distribution.lower() == "gaussian_unitvariance":
+            self.audio_proba_distribution = utils.probability.GaussianUnitVariance()
+        else:
+            raise ValueError("Unavailable audio probability distribution {}".format(audio_proba_distribution))
+
         # - - - - - 1) Build the single-channel CNN (outputs a single reconstructed audio channel) - - - - -
         # We build these cells first even if it will be applied after the latent cells.
         # The first cell takes only latent values as input, and other cells will use both previous features and
@@ -32,7 +39,7 @@ class LadderDecoder(nn.Module):
         conv_args = self.single_ch_conv_arch['args']
         n_blocks = self.single_ch_conv_arch['n_blocks']
         if self.single_ch_conv_arch['name'].startswith('specladder'):
-            if conv_args['big'] or conv_args['bigger'] or conv_args['adain'] or conv_args['res'] or conv_args['att']:
+            if conv_args['big'] or conv_args['bigger'] or conv_args['adain'] or conv_args['att']:
                 raise NotImplementedError()
             self.single_ch_cells = list()
             if self.n_latent_levels == 1:
@@ -43,14 +50,14 @@ class LadderDecoder(nn.Module):
                 raise NotImplementedError("Cannot build encoder with {} latent levels".format(self.n_latent_levels))
 
             for i_blk in range(n_blocks):
-                current_block = nn.Sequential()
+                residuals_path = nn.Sequential()
                 blk_in_ch = 2**(10 - i_blk)  # number of input channels
                 blk_hid_ch = blk_in_ch  # base number of internal (hidden) block channels
                 blk_out_ch = 2**(9 - i_blk)  # number of ch decreases after each strided Tconv (at block's end)
                 blk_in_ch, blk_hid_ch, blk_out_ch = min(blk_in_ch, 512), min(blk_hid_ch, 512), min(blk_out_ch, 512)
                 is_last_block = (i_blk == (n_blocks - 1))
                 if is_last_block:
-                    blk_out_ch = 1  # FIXME depends on the probability distribution
+                    blk_out_ch = self.audio_proba_distribution.num_parameters
                     kernel_size = (5, 5)
                 else:
                     kernel_size = (4, 4)
@@ -70,8 +77,12 @@ class LadderDecoder(nn.Module):
                     conv = nn.ConvTranspose2d(blk_hid_ch, blk_out_ch, kernel_size, (2, 2), 2, output_pad)
                     act = nn.LeakyReLU(0.1) if not is_last_block else None
                     norm = nn.BatchNorm2d(blk_hid_ch) if not is_last_block else None
-                    current_block.add_module('stridedT', ConvBlock2D(conv, act, norm, 'nac'))
+                    residuals_path.add_module('stridedT', ConvBlock2D(conv, act, norm, 'nac'))
 
+                if conv_args['res'] and not is_last_block:
+                    current_block = UpsamplingResBlock(residuals_path)
+                else:
+                    current_block = residuals_path  # No skip-connection
                 self.single_ch_cells[-1].add_module('blk{}'.format(i_blk), current_block)
 
         else:  # Spectrograms only are supported at the moment
@@ -92,25 +103,26 @@ class LadderDecoder(nn.Module):
                 kernel_size, padding = (3, 3), (1, 1)
             else:
                 raise NotImplementedError("Cannot build latent arch {}: name not implement".format(latent_arch))
-            if self.latent_arch['n_layers'] != 1:  # FIXME we should allow 2-layer conv latent inference
-                raise ValueError("Convolutional architecture for latent vector computation must be 1-layer.")
             for latent_level, latent_tensor_shape in enumerate(self._latent_tensors_shapes):
                 cell_index = self._get_cell_index(latent_level)
+                n_latent_input_ch = self._latent_tensors_shapes[latent_level][1]
                 n_latent_output_ch = self._cells_input_shapes[cell_index][1] * self.num_audio_output_ch
-                self.latent_cells.append(nn.Conv2d(
-                    self._latent_tensors_shapes[latent_level][1], n_latent_output_ch, kernel_size, 1, padding
-                ))
+                if self.latent_arch['n_layers'] == 1:
+                    self.latent_cells.append(nn.Conv2d(n_latent_input_ch, n_latent_output_ch, kernel_size, 1, padding))
+                elif self.latent_arch['n_layers'] == 2:  # No batch-norm inside the latent conv arch
+                    n_intermediate_ch = int(round(np.sqrt(n_latent_input_ch * n_latent_output_ch)))
+                    self.latent_cells.append(nn.Sequential(
+                        nn.Conv2d(n_latent_input_ch, n_intermediate_ch, kernel_size, 1, padding),
+                        nn.LeakyReLU(0.1),
+                        nn.Conv2d(n_intermediate_ch, n_latent_output_ch, kernel_size, 1, padding)
+                    ))
+                else:
+                    raise ValueError("Convolutional arch. for latent vector computation must contain <= 2 layers.")
                 # We can finish to set the (conv) cell input shape
                 self._cells_input_shapes[cell_index][2:] = latent_tensors_shapes[latent_level][2:]
 
         else:
             raise NotImplementedError("Cannot build latent arch {}: name not implemented".format(latent_arch))
-
-        # - - - - - 3) Probability distribution helper class - - - - -
-        if audio_proba_distribution.lower() == "gaussian_unitvariance":
-            self.audio_proba_distribution = utils.probability.GaussianUnitVariance()
-        else:
-            raise ValueError("Unavailable audio probability distribution {}".format(audio_proba_distribution))
 
         # Finally, Python lists must be converted to nn.ModuleList to be properly recognized by PyTorch
         self.single_ch_cells = nn.ModuleList(self.single_ch_cells)
@@ -177,9 +189,11 @@ class LadderDecoder(nn.Module):
     def get_latent_cells_summaries(self):
         summaries = dict()
         for latent_level, latent_cell in enumerate(self.latent_cells):
+            input_size = list(self._latent_tensors_shapes[latent_level])
+            input_size[0] = 1  # Single-element minibatch
             with torch.no_grad():
                 summaries['latent_cell_{}'.format(latent_level)] = torchinfo.summary(
-                    latent_cell, input_size=self._latent_tensors_shapes[latent_level],
+                    latent_cell, input_size=input_size,
                     depth=5, verbose=0, device=torch.device('cpu'),
                     col_names=self._summary_col_names, row_settings=("depth", "var_names")
                 )
