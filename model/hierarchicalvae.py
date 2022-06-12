@@ -226,6 +226,8 @@ if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
     _train_config.minibatch_size = 16
     _model_config.vae_latent_extract_architecture = 'convk11_1l'
+    _model_config.vae_latent_levels = 4
+    _model_config.approx_requested_dim_z = 1500
     config.update_dynamic_config_params(_model_config, _train_config)
 
     hVAE = HierarchicalVAE(_model_config, _train_config)

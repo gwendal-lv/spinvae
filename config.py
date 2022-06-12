@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'debug_encdecres_00'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'debug_latlvls_00'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -53,8 +53,13 @@ class ModelConfig:
         self.vae_main_conv_architecture = 'specladder8x1_res'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'mlp_1l' means MLP, 1 layer
-        self.vae_latent_levels = 2
         self.vae_latent_extract_architecture = 'convk11_1l'
+        # Number of latent levels increases the size of the shallowest latent feature maps, and increases the
+        # minimal dim_z requirement
+        #   2 latent levels allows dim_z close to 100
+        #   3 latent levels allows dim_z close to 350
+        #   4 latent levels allows dim_z close to 1500
+        self.vae_latent_levels = 3  # XXX seems
         # Sets the family of decoder output probability distribution p_theta(x|z), e.g. :
         #    - 'gaussian_unitvariance' corresponds to the usual MSE reconstruction loss (up to a constant and factor)
         self.audio_decoder_distribution = 'gaussian_unitvariance'
@@ -143,14 +148,15 @@ class TrainConfig:
         self.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
         # 128: faster train but lower higher MMD (more posterior collapse). 64: better MMD perf
-        self.minibatch_size = 128
+        self.minibatch_size = 32
         self.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
         self.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
         self.k_folds = 9  # 10% for validation set, 80% for training
         self.current_k_fold = 0
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
-        self.n_epochs = 400 if self.pretrain_ae_only else 275  # See update_dynamic_config_params().
+        #
+        self.n_epochs = 300 if self.pretrain_ae_only else 275  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -177,6 +183,7 @@ class TrainConfig:
         # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
         #            ELBO loss is obtained by using beta = 1.55 e-5
         self.beta = 1.6e-4
+        # TODO try much smaller beta start value - to try to reduce posterior collapse
         self.beta_start_value = self.beta / 2.0  # Should not be zero (risk of a very unstable training)
         # Epochs of warmup increase from start_value to beta TODO increase to reduce posterior collapse
         self.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only
@@ -245,6 +252,7 @@ class TrainConfig:
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
         self.save_period = 500  # Period for checkpoint saves (large disk size)
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
+        self.large_plots_min_period = 100  # Min num of epochs between plots (e.g. embeddings, approx. 80MB .tsv files)
         self.plot_epoch_0 = True
         self.verbosity = 1  # 0: no console output --> 3: fully-detailed per-batch console output
         self.init_security_pause = 0.0  # Short pause before erasing an existing run

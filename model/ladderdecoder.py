@@ -39,22 +39,30 @@ class LadderDecoder(nn.Module):
         conv_args = self.single_ch_conv_arch['args']
         n_blocks = self.single_ch_conv_arch['n_blocks']
         if self.single_ch_conv_arch['name'].startswith('specladder'):
-            if conv_args['big'] or conv_args['bigger'] or conv_args['adain'] or conv_args['att']:
+            if conv_args['adain'] or conv_args['att']:
                 raise NotImplementedError()
             self.single_ch_cells = list()
             if self.n_latent_levels == 1:
                 cells_first_block = [0]
             elif self.n_latent_levels == 2:
-                cells_first_block = [0, n_blocks // 2]
+                cells_first_block = [0, 3]
+            elif self.n_latent_levels == 3:
+                cells_first_block = [0, 2, 4]
+            elif self.n_latent_levels == 4:
+                cells_first_block = [0, 2, 4, 5]
             else:
                 raise NotImplementedError("Cannot build encoder with {} latent levels".format(self.n_latent_levels))
 
             for i_blk in range(n_blocks):
                 residuals_path = nn.Sequential()
                 blk_in_ch = 2**(10 - i_blk)  # number of input channels
-                blk_hid_ch = blk_in_ch  # base number of internal (hidden) block channels
                 blk_out_ch = 2**(9 - i_blk)  # number of ch decreases after each strided Tconv (at block's end)
-                blk_in_ch, blk_hid_ch, blk_out_ch = min(blk_in_ch, 512), min(blk_hid_ch, 512), min(blk_out_ch, 512)
+                if conv_args['big']:
+                    blk_in_ch, blk_out_ch = blk_in_ch * 2, blk_out_ch * 2
+                blk_hid_ch = blk_in_ch  # base number of internal (hidden) block channels
+                min_ch = 1 if not conv_args['bigger'] else 128
+                max_ch = 512 if not conv_args['bigger'] else 1024
+                blk_in_ch, blk_hid_ch, blk_out_ch = np.clip([blk_in_ch, blk_hid_ch, blk_out_ch], min_ch, max_ch)
                 is_last_block = (i_blk == (n_blocks - 1))
                 if is_last_block:
                     blk_out_ch = self.audio_proba_distribution.num_parameters

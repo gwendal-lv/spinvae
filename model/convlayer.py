@@ -443,12 +443,13 @@ class DownsamplingResBlock(ResBlockBase):
 
 
 class UpsamplingResBlock(ResBlockBase):
-    def __init__(self, conv_blocks: nn.Sequential, interpolate_mode='bilinear'):
+    def __init__(self, conv_blocks: nn.Sequential, interpolate_mode='nearest'):
         """
         conv_blocks are expected to perform an up sampling (e.g. transposed strided convolution)
 
         :param conv_blocks: see ResBlockBase
-        :param interpolate_mode: see https://pytorch.org/docs/stable/generated/torch.nn.functional.interpolate.html
+        :param interpolate_mode: see https://pytorch.org/docs/stable/generated/torch.nn.functional.interpolate.html.
+            Be careful, 'bilinear' and other actual interpolations are prohibitively costly (approx. +50% duration)
         """
         super().__init__(conv_blocks)
         self.interpolate_mode = interpolate_mode
@@ -459,6 +460,6 @@ class UpsamplingResBlock(ResBlockBase):
     def forward(self, x):
         res = self.conv_blocks(x)
         x = self.skip_conv_1x1(x)  # We apply this first, because the number of channels usually decreases
-        x = F.interpolate(x, res.shape[2:], mode='bilinear', align_corners=False)
+        x = F.interpolate(x, res.shape[2:], mode=self.interpolate_mode)   # align_corners=False
         return x + res
 

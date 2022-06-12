@@ -169,6 +169,7 @@ class RunLogger:
         self.minibatch_duration_avg_coeff = 0.05  # auto-regressive running average coefficient
         self.last_minibatch_start_datetime = datetime.datetime.now()
         self.epoch_start_datetimes = [datetime.datetime.now()]  # This value can be erased in init_with_model
+        self._last_large_plots_epoch = - train_config.large_plots_min_period
         # - - - - - Tensorboard / Comet - - - - -
         self.tensorboard, self.comet = None, None
         if 'tensorboard' in self.logger_type:
@@ -363,6 +364,7 @@ class RunLogger:
 
     # - - - - - Multi threaded + multiprocessing plots to comet/tensorboard - - - - -
     def plot_stats__threaded(self, super_metrics, ae_model, validation_dataset: AudioDataset):
+
         if self.figures_threads[0] is not None:
             if self.figures_threads[0].is_alive():
                 warnings.warn("A new threaded plot request has been issued but the previous has not finished yet. "
@@ -385,6 +387,10 @@ class RunLogger:
 
     def _plot_stats_thread(self, epoch: int, step: int, super_metrics, networks_layers_params,
                            validation_dataset: AudioDataset):
+        large_plots = (epoch - self._last_large_plots_epoch) >= self.train_config.large_plots_min_period
+        if large_plots:
+            self._last_large_plots_epoch = epoch
+
         # Asynchronous (delayed) plots: epoch and step are probably different from the current (self.) ones
         if not self.use_multiprocessing:
             figs_dict = logs.logger_mp.get_stats_figures(super_metrics, networks_layers_params)
@@ -426,10 +432,13 @@ class RunLogger:
             self.comet.log_latent_histograms(super_metrics['LatentMetric/Train'], 'Train', epoch, step)
             self.comet.log_latent_histograms(super_metrics['LatentMetric/Valid'], 'Valid', epoch, step)
         # Validation embeddings only (Train embeddings tensor is very large, slow download and analysis)
-        if self.tensorboard is not None:
-            self.tensorboard.add_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
-        if self.comet is not None:
-            self.comet.log_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch, validation_dataset)
+        #    warning: embeddings are converted to very large .tsv files (don't plot often)
+        if large_plots:
+            print("********* LARGE PLOTS - EPOCH {} *********".format(epoch))
+            if self.tensorboard is not None:
+                self.tensorboard.add_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
+            if self.comet is not None:
+                self.comet.log_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch, validation_dataset)
         # Network weights histograms
         for network_name, network_layers in networks_layers_params.items():  # key: e.g. 'Decoder'
             for layer_name, layer_params in network_layers.items():  # key: e.g. 'FC0'
