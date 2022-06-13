@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'debug_latlvls_00'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'debug_swish_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -49,8 +49,9 @@ class ModelConfig:
         #    '_att' self-attention in deep conv layers  TODO encoder and decoder
         #    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
         #    '_res' residual connections after each hidden strided conv layer (up/down sampling layers)
-        #    TODO depth-separable convs
-        self.vae_main_conv_architecture = 'specladder8x1_res'
+        #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
+        #    '_LN' uses LayerNorm instead of BatchNorm
+        self.vae_main_conv_architecture = 'specladder8x1_res_LN'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'mlp_1l' means MLP, 1 layer
         self.vae_latent_extract_architecture = 'convk11_1l'
@@ -59,7 +60,7 @@ class ModelConfig:
         #   2 latent levels allows dim_z close to 100
         #   3 latent levels allows dim_z close to 350
         #   4 latent levels allows dim_z close to 1500
-        self.vae_latent_levels = 3  # XXX seems
+        self.vae_latent_levels = 3
         # Sets the family of decoder output probability distribution p_theta(x|z), e.g. :
         #    - 'gaussian_unitvariance' corresponds to the usual MSE reconstruction loss (up to a constant and factor)
         self.audio_decoder_distribution = 'gaussian_unitvariance'
@@ -147,8 +148,8 @@ class TrainConfig:
     def __init__(self):
         self.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
-        # 128: faster train but lower higher MMD (more posterior collapse). 64: better MMD perf
-        self.minibatch_size = 32
+        # 256 is okay for smaller conv structures - reduce to 64 to fit '_big' models into 24GB GPU RAM
+        self.minibatch_size = 64  # TODO increase to 128 ?
         self.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
         self.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
         self.k_folds = 9  # 10% for validation set, 80% for training

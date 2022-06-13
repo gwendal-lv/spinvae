@@ -8,18 +8,17 @@ import torch.nn.functional as F
 import torchinfo
 
 import utils.probability
+from model.ladderbase import LadderBase
 from model.convlayer import ConvBlock2D, UpsamplingResBlock
 
 
-class LadderDecoder(nn.Module):
+class LadderDecoder(LadderBase):
 
     def __init__(self, conv_arch, latent_arch,
                  latent_tensors_shapes: List[Sequence[int]], audio_output_shape: Sequence[int],
                  audio_proba_distribution: str):
         # TODO doc
-        super().__init__()
-        self.single_ch_conv_arch = conv_arch
-        self.latent_arch = latent_arch
+        super().__init__(conv_arch, latent_arch)
         self.n_latent_levels = len(latent_tensors_shapes)
         self._latent_tensors_shapes = latent_tensors_shapes
         self._audio_output_shape = audio_output_shape
@@ -38,11 +37,14 @@ class LadderDecoder(nn.Module):
         # a new level of latent values
         conv_args = self.single_ch_conv_arch['args']
         n_blocks = self.single_ch_conv_arch['n_blocks']
+        if conv_args['depsep5x5'] and self.single_ch_conv_arch['n_layers_per_block'] == 1:
+            raise AssertionError("Depth-separable convolutions require at least 2 layers per res-block.")
+
         if self.single_ch_conv_arch['name'].startswith('specladder'):
             if conv_args['adain'] or conv_args['att']:
                 raise NotImplementedError()
             self.single_ch_cells = list()
-            if self.n_latent_levels == 1:
+            if self.n_latent_levels == 1:  # FIXME
                 cells_first_block = [0]
             elif self.n_latent_levels == 2:
                 cells_first_block = [0, 3]
@@ -59,33 +61,45 @@ class LadderDecoder(nn.Module):
                 blk_out_ch = 2**(9 - i_blk)  # number of ch decreases after each strided Tconv (at block's end)
                 if conv_args['big']:
                     blk_in_ch, blk_out_ch = blk_in_ch * 2, blk_out_ch * 2
-                blk_hid_ch = blk_in_ch  # base number of internal (hidden) block channels
                 min_ch = 1 if not conv_args['bigger'] else 128
                 max_ch = 512 if not conv_args['bigger'] else 1024
-                blk_in_ch, blk_hid_ch, blk_out_ch = np.clip([blk_in_ch, blk_hid_ch, blk_out_ch], min_ch, max_ch)
+                blk_in_ch, blk_out_ch = np.clip([blk_in_ch, blk_out_ch], min_ch, max_ch)
+                blk_hid_ch = blk_out_ch  # base number of internal (hidden) block channels
                 is_last_block = (i_blk == (n_blocks - 1))
                 if is_last_block:
                     blk_out_ch = self.audio_proba_distribution.num_parameters
-                    kernel_size = (5, 5)
-                else:
-                    kernel_size = (4, 4)
-                # Output padding: with 4x4 kernels in hidden layers, this ensures same hidden feature maps HxW in the
-                # encoder and this decoder. Output will be a bit too big but can be cropped
-                output_pad = (1, 1) if not is_last_block else (0, 0)
 
                 # First block of cell? Create new cell, store number of input channels
                 if i_blk in cells_first_block:
                     self.single_ch_cells.append(nn.Sequential())
                     self._cells_input_shapes.append([audio_output_shape[0], blk_in_ch, -1, -1])
 
-                n_layers = self.single_ch_conv_arch['n_layers_per_block'] if not is_last_block else 1
-                if n_layers >= 2:
-                    raise NotImplementedError()
-                if n_layers >= 1:
-                    conv = nn.ConvTranspose2d(blk_hid_ch, blk_out_ch, kernel_size, (2, 2), 2, output_pad)
-                    act = nn.LeakyReLU(0.1) if not is_last_block else None
-                    norm = nn.BatchNorm2d(blk_hid_ch) if not is_last_block else None
-                    residuals_path.add_module('stridedT', ConvBlock2D(conv, act, norm, 'nac'))
+                if not is_last_block:  # Hidden res blocks can contain multiple conv blocks
+                    # Output padding (1, 1): with 4x4 kernels in hidden layers, this ensures same hidden feature maps
+                    #  HxW in the encoder and this decoder. Output will be a bit too big but can be cropped.
+                    conv = nn.ConvTranspose2d(blk_in_ch, blk_hid_ch, (4, 4), 2, 2, (1, 1))
+                    residuals_path.add_module('stridedT', ConvBlock2D(
+                        conv, self._get_conv_act(), self._get_conv_norm(blk_in_ch), 'nac'))
+                    # Usual convs are applied after upsampling (less parameters)
+                    for j in range(self.single_ch_conv_arch['n_layers_per_block'] - 1):
+                        if conv_args['depsep5x5']:  # Structure close to NVAE (NeurIPS 2020)
+                            depth_sep_ch = blk_hid_ch * 2  # 3x channels expansion costs a lot of GPU RAM
+                            conv = nn.Conv2d(blk_hid_ch, depth_sep_ch, (1, 1))
+                            residuals_path.add_module('more_ch_' + str(j), ConvBlock2D(
+                                conv, None, self._get_conv_norm(blk_hid_ch), 'nc'))
+                            conv = nn.Conv2d(depth_sep_ch, depth_sep_ch, (5, 5), 1, 2, groups=depth_sep_ch)
+                            residuals_path.add_module('depthsep_' + str(j), ConvBlock2D(
+                                conv, self._get_conv_act(), self._get_conv_norm(depth_sep_ch), 'nac'))
+                            conv = nn.Conv2d(depth_sep_ch, blk_hid_ch, (1, 1))
+                            residuals_path.add_module('less_ch_' + str(j), ConvBlock2D(
+                                conv, self._get_conv_act(), self._get_conv_norm(depth_sep_ch), 'nac'))
+                        else:
+                            conv = nn.Conv2d(blk_hid_ch, blk_hid_ch, (3, 3), 1, 1)
+                            residuals_path.add_module('conv', ConvBlock2D(
+                                conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
+                else:  # last block: conv only, wider 5x5 kernel
+                    residuals_path.add_module('stridedT', ConvBlock2D(
+                        nn.ConvTranspose2d(blk_in_ch, blk_out_ch, (5, 5), 2, 2, 0), None, None, 'c'))
 
                 if conv_args['res'] and not is_last_block:
                     current_block = UpsamplingResBlock(residuals_path)
@@ -121,7 +135,7 @@ class LadderDecoder(nn.Module):
                     n_intermediate_ch = int(round(np.sqrt(n_latent_input_ch * n_latent_output_ch)))
                     self.latent_cells.append(nn.Sequential(
                         nn.Conv2d(n_latent_input_ch, n_intermediate_ch, kernel_size, 1, padding),
-                        nn.LeakyReLU(0.1),
+                        nn.ELU(),
                         nn.Conv2d(n_intermediate_ch, n_latent_output_ch, kernel_size, 1, padding)
                     ))
                 else:
@@ -135,7 +149,6 @@ class LadderDecoder(nn.Module):
         # Finally, Python lists must be converted to nn.ModuleList to be properly recognized by PyTorch
         self.single_ch_cells = nn.ModuleList(self.single_ch_cells)
         self.latent_cells = nn.ModuleList(self.latent_cells)
-
 
     def forward(self, z_sampled: List[torch.Tensor]):
         """ Returns the p(x|z) probability distributions and values sampled from them. """

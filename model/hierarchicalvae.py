@@ -9,38 +9,11 @@ from torch.distributions.normal import Normal
 
 import config
 import model.base
+import model.ladderbase
 import model.ladderencoder
 import model.ladderdecoder
 import utils.probability
 from utils.probability import gaussian_log_probability, standard_gaussian_log_probability, MMD
-
-
-def parse_main_conv_architecture(full_architecture: str):
-    """ Parses an argument used to describe the encoder and decoder conv architectures (e.g. speccnn8l_big_res) """
-    # Decompose architecture to retrieve number of conv layers, options, ...
-    arch_args = full_architecture.split('_')
-    base_arch_name = arch_args[0]  # type: str
-    del arch_args[0]
-    if base_arch_name.startswith('speccnn'):
-        n_blocks = int(base_arch_name.replace('speccnn', '').replace('l', ''))
-        n_layers_per_block = 1
-    elif base_arch_name.startswith('sprescnn'):
-        n_blocks = None
-        n_layers_per_block = None
-    elif base_arch_name.startswith('specladder'):
-        blocks_args = base_arch_name.replace('specladder', '').split('x')
-        n_blocks, n_layers_per_block = int(blocks_args[0]), int(blocks_args[1])
-    else:
-        raise AssertionError("Base architecture not available for given arch '{}'".format(base_arch_name))
-    # Check arch args, transform
-    arch_args_dict = {'adain': False, 'big': False, 'bigger': False, 'res': False, 'att': False}
-    for arch_arg in arch_args:
-        if arch_arg in ['adain', 'big', 'bigger', 'res', 'att']:
-            arch_args_dict[arch_arg] = True  # Authorized arguments
-        else:
-            raise ValueError("Unvalid encoder argument '{}' from architecture '{}'".format(arch_arg, full_architecture))
-    return {'name': base_arch_name, 'n_blocks': n_blocks, 'n_layers_per_block': n_layers_per_block,
-            'args': arch_args_dict}
 
 
 def parse_latent_extract_architecture(full_architecture: str):
@@ -101,7 +74,7 @@ class HierarchicalVAE(model.base.TrainableModel):
         self._input_audio_tensor_size = model_config.input_audio_tensor_size
 
         # Pre-process configuration
-        self.main_conv_arch = parse_main_conv_architecture(model_config.vae_main_conv_architecture)
+        self.main_conv_arch = model.ladderbase.parse_main_conv_architecture(model_config.vae_main_conv_architecture)
         self.latent_arch = parse_latent_extract_architecture(model_config.vae_latent_extract_architecture)
 
         # Configuration checks
@@ -225,9 +198,10 @@ class HierarchicalVAE(model.base.TrainableModel):
 if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
     _train_config.minibatch_size = 16
+    _model_config.vae_main_conv_architecture = 'specladder8x1_res_swish'
     _model_config.vae_latent_extract_architecture = 'convk11_1l'
-    _model_config.vae_latent_levels = 4
-    _model_config.approx_requested_dim_z = 1500
+    _model_config.vae_latent_levels = 3
+    _model_config.approx_requested_dim_z = 400
     config.update_dynamic_config_params(_model_config, _train_config)
 
     hVAE = HierarchicalVAE(_model_config, _train_config)

@@ -6,10 +6,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchinfo
 
+from model.ladderbase import LadderBase
 from model.convlayer import ConvBlock2D, DownsamplingResBlock
 
 
-class LadderEncoder(nn.Module):
+class LadderEncoder(LadderBase):
 
     def __init__(self, conv_arch, latent_arch, latent_levels: int, input_tensor_size: Tuple[int, int, int, int],
                  approx_dim_z=2000):
@@ -19,16 +20,12 @@ class LadderEncoder(nn.Module):
                 Each block contains one or more conv, act and norm layers
          TODO also encode optional preset
 
-        :param conv_arch:
-        :param latent_arch:
         :param latent_levels:
         :param input_tensor_size:
         :param approx_dim_z:
         """
 
-        super().__init__()
-        self.single_ch_conv_arch = conv_arch
-        self.latent_arch = latent_arch
+        super().__init__(conv_arch, latent_arch)
         self._input_tensor_size = input_tensor_size
         self._single_ch_input_size = (1, 1, input_tensor_size[2], input_tensor_size[3])
         self._num_input_ch = input_tensor_size[1]
@@ -63,20 +60,19 @@ class LadderEncoder(nn.Module):
                 max_ch = 512 if not conv_args['bigger'] else 1024
                 blk_in_ch, blk_out_ch = np.clip([blk_in_ch, blk_out_ch], min_ch, max_ch)
                 blk_hid_ch = blk_in_ch  # base number of internal (hidden) block channels
-                if i_blk == 0:
-                    blk_in_ch, blk_hid_ch = 1, 1
-                    kernel_size = (5, 5)
-                else:
-                    kernel_size = (4, 4)
 
-                n_layers = self.single_ch_conv_arch['n_layers_per_block'] if i_blk > 0 else 1
-                if n_layers >= 2:
-                    raise NotImplementedError()
-                if n_layers >= 1:
-                    conv = nn.Conv2d(blk_hid_ch, blk_out_ch, kernel_size, (2, 2), 2)
-                    act = nn.LeakyReLU(0.1) if i_blk > 0 else None
-                    norm = nn.BatchNorm2d(blk_hid_ch) if i_blk > 0 else None
-                    residuals_path.add_module('strided', ConvBlock2D(conv, act, norm, 'nac'))
+                if i_blk == 0:  # First block: single conv channel
+                    strided_conv_block = ConvBlock2D(nn.Conv2d(1, blk_out_ch, (5, 5), 2, 2), None, None, 'c')
+                    residuals_path.add_module('strided', strided_conv_block)
+                else:  # Other block can contain multiple conv block
+                    for j in range(self.single_ch_conv_arch['n_layers_per_block']-1):
+                        # No depth-separable conv in the encoder (see NVAE NeurIPS 2020) - only 3x3 conv
+                        conv = nn.Conv2d(blk_hid_ch, blk_hid_ch, (3, 3), 1, 1)
+                        residuals_path.add_module('conv' + str(j), ConvBlock2D(
+                            conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
+                    strided_conv = nn.Conv2d(blk_hid_ch, blk_out_ch, (4, 4), 2, 2)
+                    residuals_path.add_module('strided', ConvBlock2D(
+                        strided_conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
 
                 # Add a skip-connection if required, then add this new block to the current cell
                 if conv_args['res'] and i_blk > 0:
@@ -117,7 +113,7 @@ class LadderEncoder(nn.Module):
                     n_intermediate_ch = int(round(np.sqrt(n_input_ch * n_latent_ch)))
                     self.latent_cells.append(nn.Sequential(
                         nn.Conv2d(n_input_ch, n_intermediate_ch, kernel_size, 1, padding),
-                        nn.LeakyReLU(0.1),
+                        nn.ELU(),
                         nn.Conv2d(n_intermediate_ch, n_latent_ch, kernel_size, 1, padding)
                     ))
                 else:

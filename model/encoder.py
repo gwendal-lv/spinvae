@@ -6,7 +6,8 @@ import torchinfo
 
 from model import convlayer
 from model.convlayer import ResBlock3Layers, Conv2D
-from model.hierarchicalvae import parse_latent_extract_architecture, parse_main_conv_architecture
+from model.hierarchicalvae import parse_latent_extract_architecture
+from model.ladderbase import parse_main_conv_architecture
 
 
 class SpectrogramEncoder(nn.Module):

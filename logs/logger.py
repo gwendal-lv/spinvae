@@ -434,7 +434,6 @@ class RunLogger:
         # Validation embeddings only (Train embeddings tensor is very large, slow download and analysis)
         #    warning: embeddings are converted to very large .tsv files (don't plot often)
         if large_plots:
-            print("********* LARGE PLOTS - EPOCH {} *********".format(epoch))
             if self.tensorboard is not None:
                 self.tensorboard.add_latent_embedding(super_metrics['LatentMetric/Valid'], 'Valid', epoch)
             if self.comet is not None:
