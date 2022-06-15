@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'debug_swish_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'convlat'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -51,10 +51,10 @@ class ModelConfig:
         #    '_res' residual connections after each hidden strided conv layer (up/down sampling layers)
         #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
         #    '_LN' uses LayerNorm instead of BatchNorm
-        self.vae_main_conv_architecture = 'specladder8x1_res_LN'
+        self.vae_main_conv_architecture = 'specladder8x1_res'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'mlp_1l' means MLP, 1 layer
-        self.vae_latent_extract_architecture = 'convk11_1l'
+        self.vae_latent_extract_architecture = 'conv_1l_k1x1'
         # Number of latent levels increases the size of the shallowest latent feature maps, and increases the
         # minimal dim_z requirement
         #   2 latent levels allows dim_z close to 100
@@ -85,7 +85,7 @@ class ModelConfig:
         self.concat_midi_to_z = None  # See update_dynamic_config_params()
         # Latent space dimension  ********* this dim is automatically set when using a Hierarchical VAE *************
         self.dim_z = -1
-        self.approx_requested_dim_z = 2000  # Hierarchical VAE will try to get close to this, will often be higher
+        self.approx_requested_dim_z = 1000  # Hierarchical VAE will try to get close to this, will often be higher
         # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
         #    - base architectures can be realnvp, maf, ...
         #    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
@@ -183,7 +183,7 @@ class TrainConfig:
         # where Dx is the input dimensionality (257 * 251 = 64 507)
         # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
         #            ELBO loss is obtained by using beta = 1.55 e-5
-        self.beta = 1.6e-4
+        self.beta = 1.6e-5
         # TODO try much smaller beta start value - to try to reduce posterior collapse
         self.beta_start_value = self.beta / 2.0  # Should not be zero (risk of a very unstable training)
         # Epochs of warmup increase from start_value to beta TODO increase to reduce posterior collapse

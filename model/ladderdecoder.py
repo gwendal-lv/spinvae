@@ -116,15 +116,17 @@ class LadderDecoder(LadderBase):
         # Warning: (main convolutional) cells and latent cells ordering is opposite in the decoder
         self.latent_cells = list()
 
-        if self.latent_arch['name'].startswith("conv"):
+        if self.latent_arch['name'] == "conv" or self.latent_arch['name'] == 'lstm':  # FIXME
+            if self.latent_arch['name'] == 'lstm':
+                warnings.warn("DECODER LSTM LATENT not implemented yet - TODOOOOOOOO")
             # Convolutional latent structure: increase number of channels of latent features maps. The new channels
             # will be used as residuals added to the main convolutional path.
-            if self.latent_arch['name'] == 'convk11':
+            if self.latent_arch['args']['k1x1']:
                 kernel_size, padding = (1, 1), (0, 0)
-            elif self.latent_arch['name'] == 'convk33':
+            elif self.latent_arch['args']['k3x3']:
                 kernel_size, padding = (3, 3), (1, 1)
             else:
-                raise NotImplementedError("Cannot build latent arch {}: name not implement".format(latent_arch))
+                raise NotImplementedError("Can't build latent cells: conv kernel arg ('_k1x1' or '_k3x3') not provided")
             for latent_level, latent_tensor_shape in enumerate(self._latent_tensors_shapes):
                 cell_index = self._get_cell_index(latent_level)
                 n_latent_input_ch = self._latent_tensors_shapes[latent_level][1]
@@ -152,6 +154,7 @@ class LadderDecoder(LadderBase):
 
     def forward(self, z_sampled: List[torch.Tensor]):
         """ Returns the p(x|z) probability distributions and values sampled from them. """
+        # TODO refactor: compute the whole hidden for each latent level, before moving to the next latent level
         # apply latent cells and split outputs
         conv_cell_res_inputs = [[] for _ in range(self.n_latent_levels)]  # 1st dim: cell index; 2nd dim: audio channel
         for latent_level, level_z in enumerate(z_sampled): # Higher latent_level corresponds to deeper latent features

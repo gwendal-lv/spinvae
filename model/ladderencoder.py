@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List, Optional
 
 import numpy as np
 import torch
@@ -8,6 +8,7 @@ import torchinfo
 
 from model.ladderbase import LadderBase
 from model.convlayer import ConvBlock2D, DownsamplingResBlock
+from model.convlstm import ConvLSTM
 
 
 class LadderEncoder(LadderBase):
@@ -28,7 +29,7 @@ class LadderEncoder(LadderBase):
         super().__init__(conv_arch, latent_arch)
         self._input_tensor_size = input_tensor_size
         self._single_ch_input_size = (1, 1, input_tensor_size[2], input_tensor_size[3])
-        self._num_input_ch = input_tensor_size[1]
+        self._audio_seq_len = input_tensor_size[1]
 
         # - - - - - 1) Build the single-channel CNN (applied to each input audio channel) - - - - -
         conv_args = self.single_ch_conv_arch['args']
@@ -90,34 +91,28 @@ class LadderEncoder(LadderBase):
         self.latent_cells = list()
         # retrieve output size of each CNN cell and approximate dim_z for each dimension
         self.cells_output_shapes = self._get_cells_output_shapes()
+        # Latent space size: number of channels chosen such that the total num of latent coordinates
+        # is close the approx_dim_z_per_level value (these convolutions keep feature maps' H and W)
+        n_latent_ch_per_level = self._get_conv_latent_ch_per_level(approx_dim_z)
 
         # Conv alone: for a given level, feature maps from all input spectrograms are merged using a conv network only
         # and the output is latent distributions parameters mu and sigma^2. Should be a very simple and fast network
-        if self.latent_arch['name'].startswith("conv"):
-            # Latent space size: number of channels chosen such that the total num of latent coordinates
-            # is close the approx_dim_z_per_level value (these convolutions keep feature maps' H and W)
-            n_latent_ch_per_level = self._get_conv_latent_ch_per_level(approx_dim_z)
-
-            if self.latent_arch['name'] == 'convk11':
+        if self.latent_arch['name'] == "conv" or self.latent_arch['name'] == 'lstm':
+            use_lstm = self.latent_arch['name'] == 'lstm'
+            if self.latent_arch['args']['k1x1']:
                 kernel_size, padding = (1, 1), (0, 0)
-            elif self.latent_arch['name'] == 'convk33':
+            elif self.latent_arch['args']['k3x3']:
                 kernel_size, padding = (3, 3), (1, 1)
             else:
-                raise NotImplementedError("Cannot build latent arch {}: name not implement".format(latent_arch))
+                raise NotImplementedError("Can't build latent cells: conv kernel arg ('_k1x1' or '_k3x3') not provided")
             for i, cell_output_shape in enumerate(self.cells_output_shapes):
                 n_latent_ch = n_latent_ch_per_level[i] * 2  # Output mu and sigma2
-                n_input_ch = input_tensor_size[1] * cell_output_shape[1]
-                if self.latent_arch['n_layers'] == 1:
-                    self.latent_cells.append(nn.Conv2d(n_input_ch, n_latent_ch, kernel_size, 1, padding))
-                elif self.latent_arch['n_layers'] == 2:  # No batch-norm inside the latent conv arch
-                    n_intermediate_ch = int(round(np.sqrt(n_input_ch * n_latent_ch)))
-                    self.latent_cells.append(nn.Sequential(
-                        nn.Conv2d(n_input_ch, n_intermediate_ch, kernel_size, 1, padding),
-                        nn.ELU(),
-                        nn.Conv2d(n_intermediate_ch, n_latent_ch, kernel_size, 1, padding)
-                    ))
+                cell_args = (cell_output_shape[1], self._audio_seq_len, n_latent_ch, self.latent_arch['n_layers'],
+                             kernel_size, padding)
+                if use_lstm:
+                    self.latent_cells.append(ConvLSTMLatentCell(*cell_args))
                 else:
-                    raise ValueError("Convolutional arch. for latent vector computation must contain <= 2 layers.")
+                    self.latent_cells.append(ConvLatentCell(*cell_args))
         else:
             raise NotImplementedError("Cannot build latent arch {}: name not implemented".format(latent_arch))
 
@@ -126,7 +121,9 @@ class LadderEncoder(LadderBase):
         self.latent_cells = nn.ModuleList(self.latent_cells)
 
     def _get_conv_latent_ch_per_level(self, approx_dim_z: int):
-        """ Computes the number of output latent channels for each level, such that TODO DOC """
+        """ Computes the number of output latent channels for each level, such that latent feature maps keep
+         a spatial structure (2D multichannel images, different resolutions) and such that the total number
+         of pixels is very close to approx_dim_z. """
         latent_ch_per_level = list()
         # Build a linearly decreasing number of latent coords for the most hidden layers, even if the
         # feature maps' sizes decreases quadratically - not to favor too much the shallowest feature maps, which
@@ -158,19 +155,20 @@ class LadderEncoder(LadderBase):
     def forward(self, x):
         """ Returns (z_mu, z_var): lists of length latent_levels """
         # 1) Apply single-channel CNN to all input channels
-        latent_cells_input_tensors = [[] for _ in self.latent_cells]  # 1st dim: latent level ; 2nd dim: input ch
+        latent_cells_audio_input_tensors = [[] for _ in self.latent_cells]  # 1st dim: latent level ; 2nd dim: input ch
         for ch in range(self._input_tensor_size[1]):  # Apply all cells to a channel
             cell_x = torch.unsqueeze(x[:, ch, :, :], dim=1)
             for latent_level, cell in enumerate(self.single_ch_cells):
                 cell_x = cell(cell_x)
-                latent_cells_input_tensors[latent_level].append(cell_x)
+                latent_cells_audio_input_tensors[latent_level].append(cell_x)
         # Latent levels are currently independent (no top-down conditional posterior or prior)
-        # We just concat inputs from all input channels
-        latent_cells_input_tensors = [torch.cat(t, dim=1) for t in latent_cells_input_tensors]
+        # We just stack inputs from all input channels to create the sequence dimension
+        latent_cells_audio_input_tensors = [torch.stack(t, dim=1) for t in latent_cells_audio_input_tensors]
         # 2) Compute latent vectors: tuple (mean and variance) of lists (one tensor per latent level)
         z_mu, z_var = list(), list()
         for latent_level, latent_cell in enumerate(self.latent_cells):
-            z_out = latent_cell(latent_cells_input_tensors[latent_level])
+            # FIXME also use preset encodings (when available...)
+            z_out = latent_cell(latent_cells_audio_input_tensors[latent_level])
             n_ch = z_out.shape[1]
             z_mu.append(z_out[:, 0:n_ch//2, :, :])
             z_var.append(F.softplus(z_out[:, n_ch//2:, :, :]))
@@ -197,7 +195,7 @@ class LadderEncoder(LadderBase):
         summaries = dict()
         for i, latent_cell in enumerate(self.latent_cells):
             latent_cell_input_shape = list(self.cells_output_shapes[i])
-            latent_cell_input_shape[1] *= self._input_tensor_size[1]
+            latent_cell_input_shape.insert(1, self._audio_seq_len)
             with torch.no_grad():
                 summaries['latent_cell_{}'.format(i)] = torchinfo.summary(
                     latent_cell, input_size=latent_cell_input_shape,
@@ -214,3 +212,70 @@ class LadderEncoder(LadderBase):
                 x = cell(x)
                 output_sizes.append(x.shape)
         return output_sizes
+
+
+class ConvLatentCell(nn.Module):
+    def __init__(self, num_audio_input_ch: int, audio_sequence_len: int, num_latent_ch: int, num_layers: int,
+                 kernel_size: Tuple[int, int], padding: Tuple[int, int]):
+        """
+        A class purely based on convolutions to mix various image feature maps into a latent feature map with
+        a different number of channels.
+
+        :param num_audio_input_ch: Number of channels in feature map extracted from a single audio element
+            (e.g. a single MIDI Note)
+        :param audio_sequence_len:
+        :param num_latent_ch:
+        :param num_layers:
+        """
+        super().__init__()
+        # FIXME add channels to mix preset values, if required
+        total_num_input_ch = audio_sequence_len * num_audio_input_ch
+        if num_layers == 1:
+            self.conv = nn.Conv2d(total_num_input_ch, num_latent_ch, kernel_size, 1, padding)
+        elif num_layers == 2:  # No batch-norm inside the latent conv arch
+            n_intermediate_ch = int(round(np.sqrt(total_num_input_ch * num_latent_ch)))  # Geometric mean
+            self.conv = nn.Sequential(
+                nn.Conv2d(total_num_input_ch, n_intermediate_ch, kernel_size, 1, padding),
+                nn.ELU(),
+                nn.Conv2d(n_intermediate_ch, num_latent_ch, kernel_size, 1, padding)
+            )
+        else:
+            raise ValueError("Convolutional arch. for latent vector computation must contain <= 2 layers.")
+
+    def forward(self, x_audio: torch.tensor, u_preset: Optional[torch.Tensor] = None):
+        """
+
+        :param x_audio: Tensor with shape N x T x C x W x H where T is the original audio sequence length
+        :param u_preset:
+        :return:
+        """
+        if u_preset is not None:
+            return NotImplementedError()
+        x_audio = torch.flatten(x_audio, start_dim=1, end_dim=2)  # merge sequence and channels dimensions
+        return self.conv(x_audio)
+
+
+class ConvLSTMLatentCell(nn.Module):
+    def __init__(self, num_audio_input_ch: int, audio_sequence_len: int, num_latent_ch: int, num_layers: int,
+                 kernel_size: Tuple[int, int], padding: Tuple[int, int]):
+        """
+        Latent cell based on a Convolutional LSTM (keeps the spatial structure of data)
+
+        See ConvLatentCell to get information about parameters.
+        """
+        super().__init__()
+        n_intermediate_ch = int(round(np.sqrt(num_audio_input_ch * num_latent_ch)))  # Geometric mean
+        self.lstm_net = ConvLSTM(num_audio_input_ch, n_intermediate_ch, kernel_size, num_layers, bidirectional=True)
+        # Final regular conv to extract latent values, because the LSTM hidden state is activated (and these
+        #    final activations might be undesired in the VAE framework). Also required because the bidirectional
+        #    LSTM increases 2x the number of hidden channels.
+        self.final_conv = nn.Conv2d(n_intermediate_ch*2, num_latent_ch, kernel_size, 1, padding)
+
+    def forward(self, x_audio: torch.tensor, u_preset: Optional[torch.Tensor] = None):
+        if u_preset is not None:
+            return NotImplementedError()  # FIXME also use preset feature maps (first hidden features?)
+        output_sequence, last_states_per_layer = self.lstm_net(x_audio)
+        # Warning: the first n_intermediate_ch contains information about the preset itself and the first
+        #    spectrogram only. This provides an "almost direct" path from preset to latent values (which we
+        #    might want to avoid...???)
+        return self.final_conv(output_sequence[:, -1, :, :, :])  # Use the last hidden state

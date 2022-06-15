@@ -20,10 +20,12 @@ def parse_latent_extract_architecture(full_architecture: str):
     arch_args = full_architecture.split('_')
     base_arch_name = arch_args[0].lower()
     num_layers = int(arch_args[1].replace('l', ''))
-    # TODO process other args
-    arch_args_dict = {}
-    if len(arch_args) != 2:
-        raise NotImplementedError("Exactly 2 arch arguments must be provided at the moment")
+    arch_args_dict = {'k1x1': False, 'k3x3': False}
+    for arch_arg in arch_args[2:]:
+        if arch_arg in arch_args_dict.keys():
+            arch_args_dict[arch_arg] = True  # Authorized arguments
+        else:
+            raise ValueError("Unvalid encoder argument '{}' from architecture '{}'".format(arch_arg, full_architecture))
     return {'name': base_arch_name, 'n_layers': num_layers, 'args': arch_args_dict}
 
 
@@ -199,7 +201,7 @@ if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
     _train_config.minibatch_size = 16
     _model_config.vae_main_conv_architecture = 'specladder8x1_res_swish'
-    _model_config.vae_latent_extract_architecture = 'convk11_1l'
+    _model_config.vae_latent_extract_architecture = 'lstm_1l_k3x3'
     _model_config.vae_latent_levels = 3
     _model_config.approx_requested_dim_z = 400
     config.update_dynamic_config_params(_model_config, _train_config)
