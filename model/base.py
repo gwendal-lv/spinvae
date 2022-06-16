@@ -2,17 +2,67 @@
 Contains base classes (abstract or not) for models.
 """
 import warnings
-from typing import Optional
+from abc import abstractmethod
+from typing import Optional, Tuple, List, Dict
 import copy
 
 import numpy as np
 import torch
 import torch.nn as nn
 
+import config
+
+
+def build_optimizer(train_config: config.TrainConfig, lr: float, parameters):
+    if train_config.optimizer.lower() == 'adam':
+        return torch.optim.Adam(
+            parameters, lr=lr, weight_decay=train_config.weight_decay, betas=train_config.adam_betas
+        )
+    else:
+        raise NotImplementedError("Optimizer '{}' not available.".format(train_config.optimizer))
+
+
+def build_scheduler(train_config: config.TrainConfig, optimizer):
+    if train_config.scheduler_name.lower() == 'reducelronplateau':
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            factor=train_config.scheduler_lr_factor,
+            patience=train_config.scheduler_patience,
+            cooldown=train_config.scheduler_cooldown,
+            threshold=train_config.scheduler_threshold,
+            verbose=(train_config.verbosity >= 2)
+        )
+    elif train_config.scheduler_name.lower() == 'steplr':
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=train_config.scheduler_period,
+            gamma=train_config.scheduler_lr_factor
+        )
+    else:
+        raise NotImplementedError("Scheduler '{}' not available.".format(train_config.scheduler_name))
+
+
+def get_optimizer_lr(optimizer):
+    """ Returns the optimizer's learning rate (which should be the same for all param groups). """
+    lrs = list()
+    for param_group in optimizer.param_groups:
+        lrs.append(param_group['lr'])
+    lrs = set(lrs)
+    if len(lrs) > 1:
+        warnings.warn("{} different learning rates were found. The average learning rate will be returned. LRs: {}"
+                      .format(len(lrs), lrs))
+        return np.asarray(list(lrs)).mean()
+    else:
+        return list(lrs)[0]
+
+
+def set_optimizer_lr(optimizer, lr):
+    # https://discuss.pytorch.org/t/change-learning-rate-in-pytorch/14653
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
 
 class TrainableModel(nn.Module):
-    def __init__(self, train_config=None, model_type: Optional[str] = None):
+    def __init__(self, train_config: Optional[config.TrainConfig] = None, model_type: Optional[str] = None):
         """
         A base class for any model that integrates an optimizer (e.g. Adam) and a scheduler (e.g. LR reduction on
         loss plateau).
@@ -36,31 +86,13 @@ class TrainableModel(nn.Module):
         self.train()
         # Optimizer
         if self.model_type is not None:
-            if self.train_config.optimizer.lower() == 'adam':
-                self._optimizer = torch.optim.Adam(self.parameters(),
-                                                   lr=self.train_config.initial_learning_rate[self.model_type],
-                                                   weight_decay=self.train_config.weight_decay,
-                                                   betas=self.train_config.adam_betas)
-            else:
-                raise NotImplementedError("Optimizer '{}' not available.".format(self.train_config.optimizer))
-            # Construction finished
+            self._optimizer = build_optimizer(
+                self.train_config, self.train_config.initial_learning_rate[self.model_type], self.parameters())
         else:
             self._optimizer = torch.optim.SGD(self.parameters(), lr=1e-4)
         # scheduler
         if self.model_type is not None:
-            if self.train_config.scheduler_name.lower() == 'reducelronplateau':
-                self._scheduler = torch.optim.lr_scheduler.\
-                        ReduceLROnPlateau(self.optimizer, factor=self.train_config.scheduler_lr_factor[self.model_type],
-                                          patience=self.train_config.scheduler_patience[self.model_type],
-                                          cooldown=self.train_config.scheduler_cooldown[self.model_type],
-                                          threshold=self.train_config.scheduler_threshold,
-                                          verbose=(self.train_config.verbosity >= 2))
-            elif self.train_config.scheduler_name.lower() == 'steplr':
-                self._scheduler = torch.optim.lr_scheduler.StepLR(
-                    self.optimizer, step_size=self.train_config.scheduler_period,
-                    gamma=self.train_config.scheduler_lr_factor[self.model_type])
-            else:
-                raise NotImplementedError("Scheduler '{}' not available.".format(self.train_config.scheduler_name))
+            self._scheduler = build_scheduler(self.train_config, self._optimizer)
         else:
             self._scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer,
                                                                          patience=10**12, cooldown=10**12)
@@ -72,24 +104,12 @@ class TrainableModel(nn.Module):
 
     @property
     def learning_rate(self):
-        """ The current optimizer's learning rate (which should be the same for all param groups). """
-        lrs = list()
-        for param_group in self.optimizer.param_groups:
-            lrs.append(param_group['lr'])
-        lrs = set(lrs)
-        if len(lrs) > 1:
-            warnings.warn("{} different learning rates were found. The average learning rate will be returned. LRs: {}"
-                          .format(len(lrs), lrs))
-            return np.asarray(list(lrs)).mean()
-        else:
-            return list(lrs)[0]
+        return get_optimizer_lr(self.optimizer)
 
     @learning_rate.setter
     def learning_rate(self, lr):
         """ The learning rate to be assigned to each param group of this model's optimizer. """
-        # https://discuss.pytorch.org/t/change-learning-rate-in-pytorch/14653
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
+        set_optimizer_lr(self.optimizer, lr)
 
     @property
     def scheduler(self):
@@ -131,4 +151,64 @@ class DummyRegModel(DummyModel):
 
     def precompute_u_out_with_symmetries(self, u_out):
         pass
+
+
+# ---------- New base classes for Hierarchical models with combined audio and presets ----------
+
+class TrainableMultiGroupModel(nn.Module):
+    def __init__(self, train_config: config.TrainConfig,
+                 param_group_names: List[str], trained_param_group_names: List[str]):
+        """
+        Base class for a model which contain groups of modules (parameters) which require different optimizers
+        and scheduler.
+        We don't use the named_groups feature from PyTorch optimizers, because some groups (sub-nets)
+        can be different before and after pre-train.
+
+        This class also handles saving and loading checkpoints for each group and associated optimizer and
+        scheduler.
+        """
+        super().__init__()
+        self._train_config = copy.deepcopy(train_config)
+        # Opt and Sched won't be created for non-trained groups
+        self.param_group_names, self.trained_param_group_names = param_group_names, trained_param_group_names
+        self._optimizers = {k: None for k in param_group_names}
+        self._schedulers = {k: None for k in param_group_names}
+
+    @abstractmethod
+    def get_custom_param_group(self, group_name: str):
+        pass
+
+    def _init_optimizers_and_schedulers(self):
+        for k in self.trained_param_group_names:
+            self._optimizers[k] = build_optimizer(
+                self._train_config, self._train_config.initial_learning_rate[k], self.get_custom_param_group(k)
+            )
+        for k in self.trained_param_group_names:
+            self._schedulers[k] = build_scheduler(self._train_config, self._optimizers[k])
+
+    def set_warmup_lr_factor(self, lr_factor: float):
+        """ Enforces LR values for all available optimizers, given lr_factor typically in [0.0, 1.0]. """
+        for k in self.trained_param_group_names:
+            set_optimizer_lr(self._optimizers[k], self._train_config.initial_learning_rate[k] * lr_factor)
+
+    def get_group_lr(self, group_name: str):
+        return get_optimizer_lr(self._optimizers[group_name])
+
+    def optimizers_zero_grad(self):
+        """ Applies only to the actually used opts and scheds (not all of them during pretrain) """
+        for k in self.trained_param_group_names:
+            self._optimizers[k].zero_grad()
+
+    def optimizers_step(self):
+        for k in self.trained_param_group_names:
+            self._optimizers[k].step()
+
+    def schedulers_step(self, loss_values: Dict[str, float]):
+        for k in self.trained_param_group_names:  # TODO CHECK THIS
+            if isinstance(self._schedulers[k], torch.optim.lr_scheduler.ReduceLROnPlateau):
+                self._schedulers[k].step(loss_values[k])
+            else:
+                self._schedulers[k].step()
+
+    # TODO load/save checkpoint
 

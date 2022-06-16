@@ -152,6 +152,16 @@ class LadderEncoder(LadderBase):
             latent_ch_per_level.append(num_ch)
         return latent_ch_per_level
 
+    def get_custom_param_group(self, group_name: str):
+        if group_name == 'audio':
+            return self.single_ch_cells.parameters()
+        elif group_name == 'latent':
+            return self.latent_cells.parameters()
+        elif group_name == 'preset':
+            return list()
+        else:
+            raise ValueError("Unavailable group_name '{}'".format(group_name))
+
     def forward(self, x):
         """ Returns (z_mu, z_var): lists of length latent_levels """
         # 1) Apply single-channel CNN to all input channels

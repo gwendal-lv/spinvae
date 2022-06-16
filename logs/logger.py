@@ -238,7 +238,7 @@ class RunLogger:
         minibatch_end_time = datetime.datetime.now()
         delta_t = (minibatch_end_time - self.last_minibatch_start_datetime).total_seconds()
         self.minibatch_duration_running_avg *= (1.0 - self.minibatch_duration_avg_coeff)
-        self.minibatch_duration_running_avg += self.minibatch_duration_avg_coeff * delta_t
+        self.minibatch_duration_running_avg += self.minibatch_duration_avg_coeff * delta_t  # TODO Log this
         if self.verbosity >= 3:
             print("epoch {} batch {} delta t = {}ms" .format(len(self.epoch_start_datetimes)-1, minibatch_idx,
                                                              int(1000.0 * self.minibatch_duration_running_avg)))
@@ -267,7 +267,7 @@ class RunLogger:
         epoch_duration = self.epoch_start_datetimes[-1] - self.epoch_start_datetimes[-2]
         avg_duration_s = np.asarray([(self.epoch_start_datetimes[i+1] - self.epoch_start_datetimes[i]).total_seconds()
                                      for i in range(len(self.epoch_start_datetimes) - 1)])
-        avg_duration_s = avg_duration_s.mean()
+        avg_duration_s = avg_duration_s.mean()  # TODO log this
         run_total_epochs = self.train_config.n_epochs - self.train_config.start_epoch
         remaining_datetime = avg_duration_s * (run_total_epochs - (epoch-self.train_config.start_epoch) - 1)
         remaining_datetime = datetime.timedelta(seconds=int(remaining_datetime))
@@ -315,7 +315,7 @@ class RunLogger:
     def add_scalars(self, scalars):
         for k, s in scalars.items():
             # don't need to log everything for every train procedure (during pre-train, if no flow, etc...)
-            if (self.train_config.pretrain_ae_only and (k.startswith('Controls') or k.startswith('Sched/Controls'))) \
+            if (self.train_config.pretrain_audio_only and (k.startswith('Controls') or k.startswith('Sched/Controls'))) \
                     or (k.startswith('LatCorr/zK') and self.model_config.latent_flow_arch is None):
                 pass
             else:  # ok, we can log this

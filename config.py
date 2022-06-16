@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'convlat'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'debug_refact_06'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -146,7 +146,7 @@ class ModelConfig:
 # ===================================================================================================================
 class TrainConfig:
     def __init__(self):
-        self.pretrain_ae_only = True  # Should we pre-train the auto-encoder model only?
+        self.pretrain_audio_only = True  # Should we pre-train the audio+latent parts of the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
         # 256 is okay for smaller conv structures - reduce to 64 to fit '_big' models into 24GB GPU RAM
         self.minibatch_size = 64  # TODO increase to 128 ?
@@ -157,7 +157,7 @@ class TrainConfig:
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
         #
-        self.n_epochs = 300 if self.pretrain_ae_only else 275  # See update_dynamic_config_params().
+        self.n_epochs = 300 if self.pretrain_audio_only else 275  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -213,28 +213,27 @@ class TrainConfig:
         # Maximal learning rate (reached after warmup, then reduced on plateaus)
         # LR decreased if non-normalized losses (which are expected to be 9e4 times bigger with a 257x347 spectrogram)
         # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
-        self.initial_learning_rate = {'ae': 2e-4, 'reg': 1e-4}  # FIXME reset to 1e-4
-        self.initial_ae_lr_factor_after_pretrain = 1e-1  # AE LR reduced after pre-train
+        self.initial_learning_rate = {'audio': 2e-4, 'latent': 2e-4, 'preset': 1e-4}
+        self.initial_audio_latent_lr_factor_after_pretrain = 1e-1  # audio-related LR reduced after pre-train
         # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
         # The warmup will be must faster during pre-train  (See update_dynamic_config_params())
         self.lr_warmup_epochs = 20
         self.lr_warmup_start_factor = 0.05  # Reduced for large realnvp flows
         self.scheduler_name = 'StepLR'  # can use ReduceLROnPlateau during pre-train (stable CNN), StepLR for reg model
-        self.enable_ae_scheduler_after_pretrain = False
-        self.scheduler_lr_factor = {'ae': 0.4, 'reg': 0.2}
+        self.scheduler_lr_factor = 0.2
         # - - - StepLR scheduler options - - -
         self.scheduler_period = 50  # Will be increased during pre-train
         # - - - ReduceLROnPlateau scheduler options - - -
-        # Possible values: 'VAELoss' (total), 'ReconsLoss', 'Controls/BackpropLoss', ... Losses will be summed
-        self.scheduler_losses = {'ae': ('ReconsLoss/Backprop', ), 'reg': ('Controls/BackpropLoss', )}
+        self.scheduler_losses = {
+            'audio': 'VAELoss/Backprop', 'latent': 'VAELoss/Backprop', 'preset': 'Controls/BackpropLoss' }
         # Set a longer patience with smaller datasets and quite unstable trains
         # See update_dynamic_config_params(). 16k samples dataset:  set to 10
-        self.scheduler_patience = {'ae': 25, 'reg': 15}
-        self.scheduler_cooldown = {'ae': 25, 'reg': 15}
+        self.scheduler_patience = 20
+        self.scheduler_cooldown = 20
         self.scheduler_threshold = 1e-4
         # Training considered "dead" when dynamic LR reaches this ratio of a the initial LR
         # Early stop is currently used for the regression loss only, for the 'ReduceLROnPlateau' scheduler only.
-        self.early_stop_lr_ratio = {'ae': 1e-10, 'reg': 1e-4}  # early stop not implemented for the ae model
+        self.early_stop_lr_ratio = 1e-4
         self.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 
         # -------------------------------------------- Regularization -----------------------------------------------
@@ -277,14 +276,15 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
 
     # TODO perform config coherence checks in this function
 
-    if train_config.pretrain_ae_only:
+    if train_config.pretrain_audio_only:
         model_config.comet_tags.append('pretrain')
         model_config.params_regression_architecture = 'None'
         train_config.lr_warmup_epochs = train_config.lr_warmup_epochs // 2
         train_config.lr_warmup_start_factor *= 2
         train_config.scheduler_period += train_config.scheduler_period // 2
     else:
-        train_config.initial_learning_rate['ae'] *= train_config.initial_ae_lr_factor_after_pretrain
+        train_config.initial_learning_rate['audio'] *= train_config.initial_audio_latent_lr_factor_after_pretrain
+        train_config.initial_learning_rate['latent'] *= train_config.initial_audio_latent_lr_factor_after_pretrain
         train_config.beta_warmup_epochs = 0
         train_config.attention_gamma_warmup_period = 0
 
@@ -299,8 +299,8 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
          model_config.spectrogram_size[0], model_config.spectrogram_size[1])
 
     # Dynamic train hyper-params
-    train_config.early_stop_lr_threshold = {k: train_config.initial_learning_rate[k] * ratio
-                                            for k, ratio in train_config.early_stop_lr_ratio.items()}
+    train_config.early_stop_lr_threshold = {k: lr * train_config.early_stop_lr_ratio
+                                            for k, lr in train_config.initial_learning_rate.items()}
     train_config.logged_samples_count = max(train_config.logged_samples_count, len(model_config.midi_notes))
     # Train hyper-params (epochs counts) that should be increased when using a subset of the dataset
     if model_config.dataset_synth_args[0] is not None:  # Limited Dexed algorithms?  TODO handle non-dexed synth

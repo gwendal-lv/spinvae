@@ -7,6 +7,7 @@ with small modifications to the config (enqueued train runs).
 
 See train_queue.py for enqueued training runs
 """
+import copy
 
 import comet_ml  # Required first for auto-logging
 
@@ -60,8 +61,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
 
 
     # ========== Datasets and DataLoaders ==========
-    pretrain_vae = train_config.pretrain_ae_only  # type: bool
-    if pretrain_vae:
+    pretrain_audio = train_config.pretrain_audio_only  # type: bool
+    if pretrain_audio:
         train_audio_dataset, validation_audio_dataset = data.build.get_pretrain_datasets(model_config, train_config)
         # dataloader is a dict of 2 dataloaders ('train' and 'validation')
         dataloader, dataloaders_nb_items = data.build.get_pretrain_dataloaders(
@@ -79,25 +80,15 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         dataloader, dataloaders_nb_items = data.build.get_split_dataloaders(train_config, dataset)
 
 
-    # ========== Model definition (requires the full_dataset to be built) + Losses included in models ==========
-    # The extended_ae_model has all sub-models as attributes (even if some sub-models, e.g. synth controls regression,
-    # are set to None during pre-training). Useful to change device or train/eval status of all models.
-    if pretrain_vae:
-        ae_model = model.hierarchicalvae.HierarchicalVAE(model_config, train_config)
-        reg_model = model.base.DummyRegModel()
-        extended_ae_model = model.extendedAE.ExtendedAE(ae_model, reg_model)
-    else:
-        raise NotImplementedError("TODO implement presets decoding in the new hierarchical VAE")
-        _, _, ae_model, reg_model, extended_ae_model = model.build.build_extended_ae_model(model_config, train_config,
-                                                                                           preset_indexes_helper)
-    extended_ae_model.eval()
+    # ================== Model definition - includes Losses, Optimizers, Schedulers ===================
+    #                       (requires the full_dataset to be built)
+    # HierarchicalVAE won't be the same during pre-train (empty parts without optimizer and scheduler)
+    ae_model = model.hierarchicalvae.HierarchicalVAE(model_config, train_config)
     # will torchinfo txt summary. model must not be parallel (graph not written anymore: too complicated, unreadable)
     logger.init_with_model(ae_model, model_config.input_audio_tensor_size, write_graph=False)  # main model: autoencoder
-    if not isinstance(reg_model, model.base.DummyModel):  # FIXME deprecated
-        logger.write_model_summary(reg_model, (train_config.minibatch_size, model_config.dim_z), "reg")  # Other model
 
 
-    # ========== Training devices (GPU(s) only) ==========
+    # ============================= Training devices (GPU(s) only) =========================
     if train_config.verbosity >= 1:
         print("Intel MKL num threads = {}. PyTorch num threads = {}. CUDA devices count: {} GPU(s)."
               .format(mkl.get_max_threads(), torch.get_num_threads(), torch.cuda.device_count()))
@@ -111,18 +102,11 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # We use all available GPUs - the main one must be first in list
         parallel_device_ids = [i for i in range(torch.cuda.device_count()) if i != train_config.main_cuda_device_idx]
         parallel_device_ids.insert(0, train_config.main_cuda_device_idx)
-    extended_ae_model = extended_ae_model.to(device)
     ae_model_parallel = nn.DataParallel(ae_model, device_ids=parallel_device_ids, output_device=device)
-    reg_model_parallel = nn.DataParallel(reg_model, device_ids=parallel_device_ids, output_device=device)
-
-
-    # ========== Optimizer and Scheduler ==========
-    ae_model.init_optimizer_and_scheduler()
-    reg_model.init_optimizer_and_scheduler()
 
 
     # ========== Restart from checkpoint, load weights from pre-trained models? ==========
-    if pretrain_vae:
+    if pretrain_audio:
         if logger.restart_from_checkpoint:
             raise AssertionError("This code must be checked for the new hierarchical VAE")
             start_checkpoint = logs.logger.get_model_checkpoint(root_path, model_config, train_config.start_epoch - 1)
@@ -157,7 +141,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                'Latent/MaxAbsVal/Train': SimpleMetric(), 'Latent/MaxAbsVal/Valid': SimpleMetric(),
                'VAELoss/Total/Train': EpochMetric(), 'VAELoss/Total/Valid': EpochMetric(),
                'VAELoss/Backprop/Train': EpochMetric(), 'VAELoss/Backprop/Valid': EpochMetric(),
-               # Controls losses used for backprop + monitoring metrics (quantized numerical loss, categorical accuracy)
+               # Controls (presets) losses used for backprop
+               #        + monitoring metrics (quantized numerical loss, categorical accuracy)
                'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),  # FIXME logprob
                'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
                'Controls/QLoss/Train': EpochMetric(), 'Controls/QLoss/Valid': EpochMetric(),  # FIXME rename QError
@@ -168,12 +153,12 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                    end_epoch=train_config.lr_warmup_epochs, current_epoch=train_config.start_epoch),
                'Sched/AttGamma': LinearDynamicParam(
                    0.0, model_config.attention_gamma,
-                   end_epoch=(train_config.attention_gamma_warmup_period if pretrain_vae else 0)),
-               'Sched/Controls/LR': SimpleMetric(train_config.initial_learning_rate['reg']),
-               'Sched/VAE/LR': SimpleMetric(train_config.initial_learning_rate['ae']),
+                   end_epoch=(train_config.attention_gamma_warmup_period if pretrain_audio else 0)),
                'Sched/VAE/beta': LinearDynamicParam(train_config.beta_start_value, train_config.beta,
                                                     end_epoch=train_config.beta_warmup_epochs,
                                                     current_epoch=train_config.start_epoch) }
+    for k in ae_model.trained_param_group_names:
+        scalars['Sched/{}/LR'.format(k)] = SimpleMetric(train_config.initial_learning_rate[k])
     # All hparams are supposed to be set (e.g. automatic dim_z) at this point, and can be logged
     logger.log_hyper_parameters()
 
@@ -187,28 +172,25 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # = = = = = Re-init of epoch metrics and useful scalars (warmup ramps, ...) = = = = =
         logger.on_epoch_starts(epoch, scalars, super_metrics)
 
-        # = = = = = LR warmup (bypasses the scheduler during first epochs) = = = = =
+        # = = = = = Warmups (bypass the scheduler during first epochs) = = = = =
         if epoch <= train_config.lr_warmup_epochs:
-            ae_model.learning_rate = scalars['Sched/LRwarmup'].get(epoch) * train_config.initial_learning_rate['ae']
-            reg_model.learning_rate = scalars['Sched/LRwarmup'].get(epoch) * train_config.initial_learning_rate['reg']
+            ae_model.set_warmup_lr_factor(scalars['Sched/LRwarmup'].get(epoch))
         # ae_model.set_attention_gamma(scalars['Sched/AttGamma'].get(epoch))  # FIXME re-activate after implemented
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =
         # when profiling is disabled: true no-op context manager, and prof is None
         with optional_profiler.get_prof(epoch) as prof:  # TODO use comet context if available
             ae_model_parallel.train()
-            reg_model_parallel.train()
             dataloader_iter = iter(dataloader['train'])
             for i in range(len(dataloader['train'])):
                 minibatch = next(dataloader_iter)
                 x_in, v_in, sample_info, label = [m.to(device) for m in minibatch]
-                reg_model.precompute_u_in_permutations(v_in)
-                ae_model.optimizer.zero_grad()
-                reg_model.optimizer.zero_grad()
+                # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
+                ae_model.optimizers_zero_grad()
                 ae_out = ae_model_parallel(x_in, None, sample_info)  # TODO auto-encode presets
                 ae_out = ae_model.parse_outputs(ae_out)
-                v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
-                reg_model.precompute_u_out_with_symmetries(v_out)
+                # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
+                # reg_model.precompute_u_out_with_symmetries(v_out)   # FIXME pre-compute permutations
                 super_metrics['LatentMetric/Train'].append_hierarchical_latent(ae_out, label)
                 # Losses (computed on 1 GPU using the non-parallel original model instance)
                 audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
@@ -216,9 +198,9 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
                 scalars['Latent/Loss/Train'].append(lat_loss)
                 scalars['Latent/BackpropLoss/Train'].append(lat_backprop_loss)  # Includes beta
-                extra_lat_reg_loss = 0.0  # Can be used for extra regularisation, contrastive training...
+                extra_lat_reg_loss = 0.0  # Can be used for extra regularisation, contrastive loss...
                 extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
-                if not pretrain_vae:
+                if not pretrain_audio:
                     cont_loss = reg_model.backprop_loss_value  # FIXME
                     cont_loss *= train_config.params_loss_compensation_factor
                     scalars['Controls/BackpropLoss/Train'].append(cont_loss)
@@ -229,7 +211,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 with torch.no_grad():  # Monitoring-only losses
                     scalars['Audio/MSE/Train'].append(F.mse_loss(ae_out.x_sampled, x_in))
                     scalars['Latent/MMD/Train'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
-                    if not pretrain_vae:
+                    if not pretrain_audio:
                         accuracy, numerical_error = reg_model.eval_criterion_values
                         scalars['Controls/QLoss/Train'].append(numerical_error)
                         scalars['Controls/Accuracy/Train'].append(accuracy)
@@ -241,7 +223,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                     epoch, audio_log_prob_loss, lat_backprop_loss, extra_lat_reg_loss, cont_loss, cont_reg_loss)
                 # Backprop and optimizers' step (before schedulers' step)
                 (audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss + cont_loss + cont_reg_loss).backward()
-                ae_model.optimizer.step(), reg_model.optimizer.step()
+                ae_model.optimizers_step()
                 # End of mini-batch (step)
                 logger.on_train_minibatch_finished(i)
                 if prof is not None:
@@ -251,17 +233,16 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
         with torch.no_grad():  # TODO use comet context if available
             ae_model_parallel.eval()  # BN stops running estimates
-            reg_model_parallel.eval()
             v_out_backup = torch.Tensor().to(device=lat_loss.device)  # Params inference error (Comet/Tensorboard plot)
             v_in_backup = torch.Tensor().to(device=lat_loss.device)
             i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
             for i, minibatch in enumerate(dataloader['validation']):
                 x_in, v_in, sample_info, label = [m.to(device) for m in minibatch]
-                reg_model.precompute_u_in_permutations(v_in)
+                # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
                 ae_out = ae_model_parallel(x_in, None, sample_info)  # TODO auto-encode presets
                 ae_out = ae_model.parse_outputs(ae_out)
-                v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
-                reg_model.precompute_u_out_with_symmetries(v_out)
+                # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
+                # reg_model.precompute_u_out_with_symmetries(v_out)  # FIXME pre-compute permutations
                 super_metrics['LatentMetric/Valid'].append_hierarchical_latent(ae_out, label)
                 audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
                 scalars['Audio/LogProbLoss/Valid'].append(audio_log_prob_loss)
@@ -270,7 +251,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 scalars['Latent/BackpropLoss/Valid'].append(lat_backprop_loss)
                 scalars['Audio/MSE/Valid'].append(F.mse_loss(ae_out.x_sampled, x_in))
                 scalars['Latent/MMD/Valid'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
-                if not pretrain_vae:
+                if not pretrain_audio:  # FIXME everything reg_model-related
                     accuracy, numerical_error = reg_model.eval_criterion_values
                     scalars['Controls/QLoss/Valid'].append(numerical_error)
                     scalars['Controls/Accuracy/Valid'].append(accuracy)
@@ -284,7 +265,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 scalars['VAELoss/Backprop/Valid'].append(audio_log_prob_loss + lat_backprop_loss)
                 # Validation plots
                 if logger.should_plot:
-                    v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
+                    # FIXME
+                    # v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
                     v_in_backup = torch.cat([v_in_backup, v_in])
                     if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
                         logger.plot_spectrograms(x_in, ae_out.x_sampled, sample_info, validation_audio_dataset)
@@ -293,30 +275,20 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                         #    ae_model, ae_out.z_sampled, sample_info, validation_audio_dataset)
         scalars['Latent/MaxAbsVal/Valid'].set(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
 
-        # Dynamic LR scheduling depends on validation performance
-        # Summed losses for plateau-detection are chosen in config.py
-        if pretrain_vae or (not pretrain_vae and train_config.enable_ae_scheduler_after_pretrain):
-            if train_config.scheduler_name == 'ReduceLROnPlateau':
-                ae_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
-                                             for loss_name in train_config.scheduler_losses['ae']]))
-            else:  # deterministic scheduler
-                ae_model.scheduler.step()
-        scalars['Sched/VAE/LR'].set(ae_model.learning_rate)
-        if not pretrain_vae:
-            if train_config.scheduler_name == 'ReduceLROnPlateau':
-                reg_model.scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get()
-                                              for loss_name in train_config.scheduler_losses['reg']]))
-            else:  # deterministic scheduler
-                reg_model.scheduler.step()
-            scalars['Sched/Controls/LR'].set(reg_model.learning_rate)
+        # Dynamic LR scheduling depends on validation performance. Losses for plateau-detection are chosen in config.py
+        ae_model.schedulers_step(
+            {k: scalars[train_config.scheduler_losses[k] + '/Valid'].get() for k in ae_model.trained_param_group_names})
+        for k in ae_model.trained_param_group_names:
+            scalars['Sched/' + k + '/LR'].set(ae_model.get_group_lr(k))
         # Possible early stop if reg model is not learning anything anymore
-        early_stop = (reg_model.learning_rate < train_config.early_stop_lr_threshold['reg'])
+        # early_stop = (reg_model.learning_rate < train_config.early_stop_lr_threshold['reg'])
+        early_stop = False  # FIXME re-implement early stop
 
         # = = = = = Epoch logs (scalars/sounds/images + updated metrics) = = = = =
         logger.add_scalars(scalars)  # Some scalars might not be added (e.g. during pretrain)
         if logger.should_plot or early_stop:
             logger.plot_stats__threaded(super_metrics, ae_model, validation_audio_dataset)  # non-blocking
-            if v_in_backup.shape[0] > 0 and not pretrain_vae:  # u_error might be empty on early_stop
+            if v_in_backup.shape[0] > 0 and not pretrain_audio:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_vst_error(
                     v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_indexes_helper)
                 logger.add_figure('SynthControlsError', fig)
@@ -324,7 +296,9 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # = = = = = Model+optimizer(+scheduler) save - ready for next epoch = = = = =
         if (epoch > 0 and epoch % train_config.save_period == 0)\
                 or (epoch == train_config.n_epochs-1) or early_stop:
-            logger.save_checkpoint(ae_model, (None if pretrain_vae else reg_model))
+            # FIXME the model should save its checkpoint by itself
+            raise NotImplementedError()
+            logger.save_checkpoint(ae_model, (None if pretrain_audio else reg_model))
         logger.on_epoch_finished(epoch)
         if early_stop:
             print("[train.py] Training stopped early (final loss plateau)")
@@ -336,15 +310,15 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
 
 
     # ========== "Manual GC" (to try to prevent random CUDA out-of-memory between enqueued runs) ==========
-    del reg_model_parallel, ae_model_parallel
-    del extended_ae_model, ae_model
-    del reg_model
-    del x_in, v_in, sample_info, label
-    del ae_out, v_out, v_in_backup, v_out_backup
-    del audio_log_prob_loss, cont_loss, cont_reg_loss, extra_lat_reg_loss, lat_backprop_loss, lat_loss
-    del scalars, super_metrics
-    del logger
-    del dataloader
+    # This should not have any effect by Python is supposed to store objects as reference-counted, but this
+    # seems to be effective... maybe because pytorch keeps some internal references, and some CUDA tensors stay alive?
+    del ae_model_parallel, ae_model, ae_out
+    locals_names = copy.deepcopy(list(locals().keys()))
+    for k in locals_names:  # get all local variables, delete any tensor variable
+        if not k.startswith('_') and isinstance(locals()[k], torch.Tensor):
+            del locals()[k]
+    del scalars, super_metrics, logger
+    del dataloader, dataloader_iter
     del train_audio_dataset, validation_audio_dataset
     try:
         del dataset  # May not exist

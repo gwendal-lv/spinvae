@@ -58,7 +58,7 @@ class HierarchicalVAEOutputs:
         return t.clone().detach().cpu().numpy()
 
 
-class HierarchicalVAE(model.base.TrainableModel):
+class HierarchicalVAE(model.base.TrainableMultiGroupModel):
     def __init__(self, model_config: config.ModelConfig, train_config: Optional[config.TrainConfig] = None):
         """
         Builds a Hierarchical VAE which encodes and decodes multi-channel spectrograms or waveforms.
@@ -72,7 +72,12 @@ class HierarchicalVAE(model.base.TrainableModel):
         :param model_config:
         :param train_config:
         """
-        super().__init__(train_config=train_config, model_type='ae')
+        trainable_param_group_names = ['audio', 'latent'] + ([] if train_config.pretrain_audio_only else ['preset'])
+        super().__init__(train_config, ['audio', 'latent', 'preset'], trainable_param_group_names)
+
+        if not train_config.pretrain_audio_only:
+            raise NotImplementedError()  # TODO
+
         self._input_audio_tensor_size = model_config.input_audio_tensor_size
 
         # Pre-process configuration
@@ -105,6 +110,13 @@ class HierarchicalVAE(model.base.TrainableModel):
 
         # Losses and metrics
         self.mmd = MMD()
+
+        # Optimizers and schedulers (all sub-nets, param groups must have been created at this point)
+        self._init_optimizers_and_schedulers()
+
+    def get_custom_param_group(self, group_name: str):
+        # Convert pytorch's parameters iterator into a list for each model, then sum these lists
+        return sum([list(m.get_custom_param_group(group_name)) for m in [self.encoder, self.decoder]], [])
 
     # FIXME load_checkpoint: should be able to load pre-trained parts only
 

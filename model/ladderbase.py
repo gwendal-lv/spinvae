@@ -1,6 +1,7 @@
 """
 Base classes and methods for a ladder encoder or decoder.
 """
+from abc import abstractmethod
 from typing import Tuple
 
 import torch
@@ -55,4 +56,9 @@ class LadderBase(nn.Module):
 
     def _get_conv_norm(self, n_ch: int):
         return nn.BatchNorm2d(n_ch)  # Others (e.g. layer norm) are not considered yet for the main CNN
+
+    @abstractmethod
+    def get_custom_param_group(self, group_name: str):
+        pass
+
 

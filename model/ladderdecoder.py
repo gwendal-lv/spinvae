@@ -152,17 +152,27 @@ class LadderDecoder(LadderBase):
         self.single_ch_cells = nn.ModuleList(self.single_ch_cells)
         self.latent_cells = nn.ModuleList(self.latent_cells)
 
+    def get_custom_param_group(self, group_name: str):
+        if group_name == 'audio':
+            return self.single_ch_cells.parameters()
+        elif group_name == 'latent':
+            return self.latent_cells.parameters()
+        elif group_name == 'preset':
+            return list()
+        else:
+            raise ValueError("Unavailable group_name '{}'".format(group_name))
+
     def forward(self, z_sampled: List[torch.Tensor]):
         """ Returns the p(x|z) probability distributions and values sampled from them. """
-        # TODO refactor: compute the whole hidden for each latent level, before moving to the next latent level
-        # apply latent cells and split outputs
+
+        # Audio decoder: apply latent cells and split outputs to get residuals
         conv_cell_res_inputs = [[] for _ in range(self.n_latent_levels)]  # 1st dim: cell index; 2nd dim: audio channel
         for latent_level, level_z in enumerate(z_sampled): # Higher latent_level corresponds to deeper latent features
             cell_index = self._get_cell_index(latent_level)
             multi_ch_conv_input = self.latent_cells[latent_level](level_z)
+            # TODO FIXME maybe don't chunk
             conv_cell_res_inputs[cell_index] = torch.chunk(multi_ch_conv_input, self.num_audio_output_ch, 1)
-
-        # Sequential CNN decoder - apply cell-by-cell
+        # Sequential CNN audio decoder - apply cell-by-cell
         audio_prob_parameters = list()  # One probability distribution tensor / audio channel
         for audio_ch in range(self.num_audio_output_ch):
             x = torch.zeros_like(conv_cell_res_inputs[0][audio_ch])

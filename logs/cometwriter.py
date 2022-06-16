@@ -54,8 +54,8 @@ class CometWriter:
         if train_config.optimizer.lower() == 'adam':
             self.experiment.log_parameter("opt_adam_beta1", train_config.adam_betas[0])
             self.experiment.log_parameter("opt_adam_beta2", train_config.adam_betas[1])
-        self.experiment.log_parameter("LR_ae_initial", train_config.initial_learning_rate['ae'])
-        self.experiment.log_parameter("LR_reg_initial", train_config.initial_learning_rate['reg'])
+        for k, lr in train_config.initial_learning_rate.items():
+            self.experiment.log_parameter("LR_" + k + "_initial", lr)
         self.experiment.log_parameter("LR_sched", train_config.scheduler_name)
         self.experiment.log_parameter("LR_sched_period", train_config.scheduler_period)
         self.experiment.log_parameter("weight_decay", train_config.weight_decay)
