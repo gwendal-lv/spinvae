@@ -13,6 +13,8 @@ import torch.nn.functional as F
 
 
 # ================= Conv, act and norm blocks (including res blocks) supporting the w_style input arg =============
+import warnings
+
 
 class AdaIN(nn.Module):
     def __init__(self, num_style_features, num_conv_ch):
@@ -85,17 +87,36 @@ class ActAndNorm(nn.Module):
 
 
 class SelfAttentionConv2D(nn.Module):
-    def __init__(self, n_ch, internal_n_ch: Optional[int] = None):
-        """ Based on Self-Attention GAN (SAGAN, ICML19) """
+    def __init__(self, n_ch, internal_n_ch: Optional[int] = None,
+                 position_encoding=True, input_H_W: Optional[Tuple[int, int]] = None):
+        """ Based on Self-Attention GAN (SAGAN, ICML19) and the original transformer sinusoidal position encoding. """
         super().__init__()
-        self._gamma = 0.1  # FIXME
+        self._gamma = 1.0
+        self._use_position_encoding = position_encoding
+        self._precomputed_pos_enc = None
+        if self._use_position_encoding:
+            if input_H_W is not None:
+                # precompute positional embeddings - otherwise it will cost a lot of small operations (unoptimized)
+                dummy_x = torch.empty((1, n_ch, input_H_W[0], input_H_W[1]))
+                self._precomputed_pos_enc = self.get_sinusoidal_position_encoding_2d(dummy_x)
         self.C = n_ch
         self.Cint = ((self.C // 8) if internal_n_ch is None else internal_n_ch)
         # Key, Query and Value matrices implemented using 1x1 1D convolutions (flattened input) without bias
         self.Wq = nn.Conv1d(self.C, self.Cint, kernel_size=(1,), bias=False)
         self.Wk = nn.Conv1d(self.C, self.Cint, kernel_size=(1,), bias=False)
         self.Wv = nn.Conv1d(self.C, self.Cint, kernel_size=(1,), bias=False)
-        self.W_out_v = nn.Conv1d(self.Cint, self.C, kernel_size=(1,), bias=False)
+        if n_ch != internal_n_ch:
+            self.W_out_v = nn.Conv1d(self.Cint, self.C, kernel_size=(1,), bias=False)
+        else:
+            self.W_out_v = nn.Identity()
+
+    @property
+    def in_channels(self):
+        return self.C
+
+    @property
+    def out_channels(self):
+        return self.C
 
     @property
     def gamma(self):
@@ -105,24 +126,59 @@ class SelfAttentionConv2D(nn.Module):
     def gamma(self, v):
         self._gamma = v
 
-    def forward(self, x):
-        # TODO fixed or learned 2D positional embeddings
+    @staticmethod
+    def get_sinusoidal_position_encoding_2d(x):
+        """
+        First C//2 channels encode position along the first spatial dim (H), last C//2 channels encode W position.
+        Formulae for each axis are those of the Transformer.
+        Un-optimized implementation, try precomputing encodings.
 
+        :param x: N x C x H x W tensor (because of positional encodings, better results are expected when
+            C is a multiple of 4)
+        :returns: Encodings with shape N x C x H x W (identical to input)
+        """
+        # Build orthogonal "sequence indexes" for H and W axes
+        N, C, H, W = x.shape
+        # We perform all these small operations on CPU
+        # We can use expand (which does not copy data) because these leaf tensors won't be modified
+        h_pos = torch.unsqueeze(torch.arange(0, H), dim=1)
+        h_pos = h_pos.expand(-1, W)
+        w_pos = torch.unsqueeze(torch.arange(0, W), dim=0)
+        w_pos = w_pos.expand(H, -1)
+        # Compute a different sin or cos for each channel - for a single minibatch item
+        e = torch.empty(x.shape[1:])  # FIXME use empty instead
+        max_wavelength = 100.0  # actual max wavelength is 2pi times this value - so approx. 628 pixels / dim
+        h_pos_channels, w_pos_channels = np.split(np.arange(C), 2)  # We might get a different number of channels...
+        for pos, channels in [(h_pos, h_pos_channels), (w_pos, w_pos_channels)]:
+            for i, ch in enumerate(channels):
+                if i % 2 == 0:
+                    e[ch, :, :] = torch.sin(pos / (max_wavelength ** (i / len(h_pos_channels))))
+                else:
+                    e[ch, :, :] = torch.cos(pos / (max_wavelength ** ((i-1) / len(h_pos_channels))))
+        # Finally expand to all minibatch items and send to original device
+        return torch.unsqueeze(e, dim=0).expand(N, -1, -1, -1).to(x.device)
+
+    def forward(self, x):
+        if self._use_position_encoding:  # Recompute if necessary
+            if self._precomputed_pos_enc is None \
+               or (self._precomputed_pos_enc is not None and self._precomputed_pos_enc.shape[2:] != x.shape[2:]):
+                self._precomputed_pos_enc = self.get_sinusoidal_position_encoding_2d(x)
+            x += self._precomputed_pos_enc.to(x.device).expand(x.shape[0], -1, -1, -1)
         # SAGAN paper: Feature maps are represented as 2D (with C input channels) in Fig.2,
         # but input features are described as flattened to CxN (1D, not CxWxH 2D data) in the paper itself
-        N = x.shape[2] * x.shape[3]
-        x_flat = x.view(x.shape[0], x.shape[1], N)  # compatible strides, shared memory
+        L = x.shape[2] * x.shape[3]  # Corresponds to the sequence length (if this was an NLP model)
+        x_flat = x.view(x.shape[0], x.shape[1], L)  # compatible strides, shared memory
         # If we consider batch item 0 only:
         # Query, key and value are matrices with shape Cint x N     where N = W*H
         query, key, value = self.Wq(x_flat), self.Wk(x_flat), self.Wv(x_flat)
         # Attention matrix output size: N x N
         # Scaling is based on the be number of Channels (d_k in the Transformer paper)
         # Differences compared to the transformer:
-        #     - QT.K to compute similarity between pixels (instead of Q.KT) because channels/pixel pos axes instead
-        #        of word position / embedding coordinates
-        #     - Compute a softmax on each column (such that sum of row (dim=1) values is 1.0), not on each row
-        # FIXME triple-check dimension over which softmax is computed (1 softmax per query vector)
-        att = F.softmax(torch.bmm(query.transpose(1, 2), key) / np.sqrt(self.Cint), dim=1)  # FIXME is dim OK ?
+        #     - QT.K to compute similarity between pixels (instead of Q.KT) because channels/pixel pos axes
+        #          instead of word position / embedding coordinates
+        #     - Apply softmax along the rows axis, such that each column sums to 1
+        att = torch.bmm(query.transpose(1, 2), key) / np.sqrt(self.Cint)
+        att = F.softmax(att, dim=1)
         att_output = torch.bmm(value, att)
         # Increase number of channels before adding to the input
         return x + self.W_out_v(att_output).view(x.shape) * self.gamma  # TODO use contiguous after final reshape ?
@@ -407,6 +463,9 @@ class ResBlockBase(nn.Module):
     def out_channels(self):
         return self.conv_blocks[-1].out_channels
 
+    def forward(self, x):
+        return x + self.conv_blocks(x)
+
 
 class DownsamplingResBlock(ResBlockBase):
     def __init__(self, conv_blocks: nn.Sequential):
@@ -463,3 +522,8 @@ class UpsamplingResBlock(ResBlockBase):
         x = F.interpolate(x, res.shape[2:], mode=self.interpolate_mode)   # align_corners=False
         return x + res
 
+
+# FIXME remove temp tests
+if __name__ == "__main__":
+    self_att = SelfAttentionConv2D(32)
+    y = self_att(torch.rand((1, 32, 7, 7)))

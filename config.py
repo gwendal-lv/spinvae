@@ -26,7 +26,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'debug_refact_06'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'interp_plot_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -51,10 +51,15 @@ class ModelConfig:
         #    '_res' residual connections after each hidden strided conv layer (up/down sampling layers)
         #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
         #    '_LN' uses LayerNorm instead of BatchNorm
+        #    '_swish' uses Swish activations (SiLU) instead of LeakyReLU
         self.vae_main_conv_architecture = 'specladder8x1_res'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
-        # E.g.: 'mlp_1l' means MLP, 1 layer
-        self.vae_latent_extract_architecture = 'conv_1l_k1x1'
+        # E.g.: 'conv_1l_1x1' means regular convolution, 1 layer, 1x1 conv kernels
+        #       'lstm_2l_3x3' mean ConvLSTM, 2 layers, 3x3 conv kernels
+        # other args: '_gated' (for regular convolutions) seems very effective to improve the overall ELBO
+        #             '_att' adds self-attention conv residuals at the beginning of shallow latent cells
+        #             '_posenc' adds input positional information to LSTMs and to self-attention conv layers
+        self.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
         # Number of latent levels increases the size of the shallowest latent feature maps, and increases the
         # minimal dim_z requirement
         #   2 latent levels allows dim_z close to 100
@@ -67,7 +72,7 @@ class ModelConfig:
         self.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
         # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
         # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
-        # e.g. 8l1024: 8 layers, 1024 units per layer
+        # e.g. 8l1024: 8 layers, 1024 units per layer  FIXME DEPRECATED
         self.style_architecture = 'mlp_2l128_outputbn'  # DEPRECATED batch norm layers are always added inside the mlp
         # Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
         # TODO random permutations when building flows

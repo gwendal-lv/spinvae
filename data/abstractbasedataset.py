@@ -134,7 +134,8 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
     def __getitem__(self, i):
         """ Returns a tuple containing :
                 - a 2D scaled dB spectrograms tensor (1st dim: MIDI note, 2nd dim: freq; 2rd dim: time),
-                - a 1d tensor with remaining int info (preset UID, midi note, vel).
+                - a 1d singleton tensor containing the preset UID
+                - a 2d tensor of MIDI notes (1st dim: MIDI note index, 2nd dim: pitch, velocity
                 - a 1d tensor of labels (0, 1 values)
         """
         # If several notes available but single-spectrogram output: we have to convert i into a UID and a note index
@@ -156,18 +157,13 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
         for midi_note_idx in midi_note_indexes:
             midi_pitch, midi_vel = self.midi_notes[midi_note_idx]
             # Spectrogram, or Mel-Spectrogram if requested (see ctor arguments)
-            spectrograms.append(torch.load(self.get_spec_file_path(preset_UID, midi_pitch, midi_vel,
-                                                                   self._last_variation)))
+            spectrograms.append(torch.load(self.get_spec_file_path(
+                preset_UID, midi_pitch, midi_vel, self._last_variation)))
 
         # Tuple output. Warning: torch.from_numpy does not copy values (torch.tensor(...) ctor does)
-        if len(midi_note_indexes) == 1:
-            ref_midi_pitch, ref_midi_velocity = self.midi_notes[midi_note_indexes[0]]
-        else:
-            # FIXME the MIDI pitch and velocity should be a separate tensor, for multi-layer spectrogram
-            #   but this will break compatibility with much code and many notebooks
-            ref_midi_pitch, ref_midi_velocity = self.midi_notes[0]
         return torch.stack(spectrograms), \
-            torch.tensor([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=torch.int32), \
+            torch.tensor(preset_UID, dtype=torch.int32), \
+            torch.tensor([self.midi_notes[i] for i in midi_note_indexes], dtype=torch.int32), \
             self.get_labels_tensor(preset_UID)
 
     @property
@@ -598,13 +594,13 @@ class PresetDataset(AudioDataset):
                     self._nb_audio_delay_variations_per_note, self._nb_preset_variations_per_note)
 
     def __getitem__(self, i):
-        spectrograms, notes_and_UID, labels = super().__getitem__(i)
-        preset_UID = notes_and_UID[0].item()
+        spectrograms, uid_tensor, notes, labels = super().__getitem__(i)
+        preset_UID = uid_tensor.item()
         preset_variation, audio_delay = self._get_variation_args(self._last_variation)
 
         # pre-computed learnable representations (otherwise: +300% __getitem__ time vs. spectrogram only)
         preset_params = torch.load(self._get_learnable_preset_file_path(preset_UID, preset_variation))
-        return spectrograms, preset_params, notes_and_UID, labels
+        return spectrograms, preset_params, uid_tensor, notes, labels
 
     @abstractmethod
     def get_full_preset_params(self, preset_UID, preset_variation=0) -> PresetsParams:

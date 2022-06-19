@@ -105,8 +105,8 @@ class MergedDataset(AudioDataset):
         if not self.dummy_synth_params_tensor:
             return super().__getitem__(i)
         else:
-            spec, info, labels = super().__getitem__(i)
-            return spec, torch.zeros((1, )), info, labels
+            spec, uid, notes, labels = super().__getitem__(i)
+            return spec, torch.zeros((1, )), uid, notes, labels
 
     def _global_to_local_UID_and_ds(self, global_UID: int) -> Tuple[int, AudioDataset]:
         """ Converts a global UID (e.g. can be > 500 000) into a (local_UID, local_dataset) tuple. """

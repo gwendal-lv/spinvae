@@ -204,11 +204,11 @@ class TrainableMultiGroupModel(nn.Module):
             self._optimizers[k].step()
 
     def schedulers_step(self, loss_values: Dict[str, float]):
-        for k in self.trained_param_group_names:  # TODO CHECK THIS
+        for k in self.trained_param_group_names:
             if isinstance(self._schedulers[k], torch.optim.lr_scheduler.ReduceLROnPlateau):
                 self._schedulers[k].step(loss_values[k])
             else:
                 self._schedulers[k].step()
 
-    # TODO load/save checkpoint
+    # TODO load/save checkpointS
 

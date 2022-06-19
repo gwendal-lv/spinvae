@@ -5,9 +5,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchinfo
+import warnings
 
 from model.ladderbase import LadderBase
-from model.convlayer import ConvBlock2D, DownsamplingResBlock
+from model.convlayer import ConvBlock2D, DownsamplingResBlock, SelfAttentionConv2D
 from model.convlstm import ConvLSTM
 
 
@@ -36,8 +37,10 @@ class LadderEncoder(LadderBase):
         n_blocks = self.single_ch_conv_arch['n_blocks']
         if self.single_ch_conv_arch['name'].startswith('specladder'):
             assert n_blocks == 8  # 9 layers would allow to set dim_z exactly but is not implemented yet
-            if conv_args['adain'] or conv_args['att']:
+            if conv_args['adain']:
                 raise NotImplementedError()
+            if conv_args['att'] and self.single_ch_conv_arch['n_layers_per_block'] < 2:
+                raise ValueError("'_att' conv arg will add a residual self-attention layer and requires >= 2 layers")
             self.single_ch_cells = list()
             if latent_levels == 1:
                 cells_last_block = [n_blocks - 1]  # Unique cell ends with the very last block
@@ -67,10 +70,16 @@ class LadderEncoder(LadderBase):
                     residuals_path.add_module('strided', strided_conv_block)
                 else:  # Other block can contain multiple conv block
                     for j in range(self.single_ch_conv_arch['n_layers_per_block']-1):
-                        # No depth-separable conv in the encoder (see NVAE NeurIPS 2020) - only 3x3 conv
-                        conv = nn.Conv2d(blk_hid_ch, blk_hid_ch, (3, 3), 1, 1)
-                        residuals_path.add_module('conv' + str(j), ConvBlock2D(
-                            conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
+                        # first layer can be self-attention w/ 2D positional encodings
+                        if j == 0 and conv_args['att'] and (3 <= i_blk <= 5):
+                            self_att = SelfAttentionConv2D(blk_hid_ch, position_encoding=True)
+                            residuals_path.add_module('self_att', ConvBlock2D(
+                                self_att, None, self._get_conv_norm(blk_hid_ch), 'nc'))
+                        else:
+                            # No depth-separable conv in the encoder (see NVAE NeurIPS 2020) - only 3x3 conv
+                            conv = nn.Conv2d(blk_hid_ch, blk_hid_ch, (3, 3), 1, 1)
+                            residuals_path.add_module('conv' + str(j), ConvBlock2D(
+                                conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
                     strided_conv = nn.Conv2d(blk_hid_ch, blk_out_ch, (4, 4), 2, 2)
                     residuals_path.add_module('strided', ConvBlock2D(
                         strided_conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
@@ -107,8 +116,10 @@ class LadderEncoder(LadderBase):
                 raise NotImplementedError("Can't build latent cells: conv kernel arg ('_k1x1' or '_k3x3') not provided")
             for i, cell_output_shape in enumerate(self.cells_output_shapes):
                 n_latent_ch = n_latent_ch_per_level[i] * 2  # Output mu and sigma2
-                cell_args = (cell_output_shape[1], self._audio_seq_len, n_latent_ch, self.latent_arch['n_layers'],
-                             kernel_size, padding)
+                cell_args = (
+                    cell_output_shape[1], cell_output_shape[2:], self._audio_seq_len,
+                    n_latent_ch, self.latent_arch['n_layers'], kernel_size, padding, self.latent_arch['args']
+                )
                 if use_lstm:
                     self.latent_cells.append(ConvLSTMLatentCell(*cell_args))
                 else:
@@ -162,7 +173,7 @@ class LadderEncoder(LadderBase):
         else:
             raise ValueError("Unavailable group_name '{}'".format(group_name))
 
-    def forward(self, x):
+    def forward(self, x, u=None, midi_notes=None):
         """ Returns (z_mu, z_var): lists of length latent_levels """
         # 1) Apply single-channel CNN to all input channels
         latent_cells_audio_input_tensors = [[] for _ in self.latent_cells]  # 1st dim: latent level ; 2nd dim: input ch
@@ -177,8 +188,7 @@ class LadderEncoder(LadderBase):
         # 2) Compute latent vectors: tuple (mean and variance) of lists (one tensor per latent level)
         z_mu, z_var = list(), list()
         for latent_level, latent_cell in enumerate(self.latent_cells):
-            # FIXME also use preset encodings (when available...)
-            z_out = latent_cell(latent_cells_audio_input_tensors[latent_level])
+            z_out = latent_cell(latent_cells_audio_input_tensors[latent_level], u, midi_notes)
             n_ch = z_out.shape[1]
             z_mu.append(z_out[:, 0:n_ch//2, :, :])
             z_var.append(F.softplus(z_out[:, n_ch//2:, :, :]))
@@ -206,9 +216,11 @@ class LadderEncoder(LadderBase):
         for i, latent_cell in enumerate(self.latent_cells):
             latent_cell_input_shape = list(self.cells_output_shapes[i])
             latent_cell_input_shape.insert(1, self._audio_seq_len)
+            input_data = {'x_audio': torch.zeros(latent_cell_input_shape),  # FIXME 'u_preset': None,
+                          'midi_notes': torch.zeros((latent_cell_input_shape[0], self._audio_seq_len, 2))}
             with torch.no_grad():
                 summaries['latent_cell_{}'.format(i)] = torchinfo.summary(
-                    latent_cell, input_size=latent_cell_input_shape,
+                    latent_cell, input_data=input_data,
                     depth=5, verbose=0, device=torch.device('cpu'),
                     col_names=self._summary_col_names, row_settings=("depth", "var_names")
                 )
@@ -225,38 +237,54 @@ class LadderEncoder(LadderBase):
 
 
 class ConvLatentCell(nn.Module):
-    def __init__(self, num_audio_input_ch: int, audio_sequence_len: int, num_latent_ch: int, num_layers: int,
-                 kernel_size: Tuple[int, int], padding: Tuple[int, int]):
+    def __init__(self, num_audio_input_ch: int, audio_input_H_W, audio_sequence_len: int,
+                 num_latent_ch: int, num_layers: int,
+                 kernel_size: Tuple[int, int], padding: Tuple[int, int], arch_args: Dict[str, bool]):
         """
         A class purely based on convolutions to mix various image feature maps into a latent feature map with
         a different number of channels.
 
         :param num_audio_input_ch: Number of channels in feature map extracted from a single audio element
             (e.g. a single MIDI Note)
+        :param audio_input_H_W: Height and Width of audio feature maps that will be provided to this module
         :param audio_sequence_len:
         :param num_latent_ch:
         :param num_layers:
         """
         super().__init__()
-        # FIXME add channels to mix preset values, if required
+        # FIXME ALWAYS add channels to mix preset values (use zeros if not used)
         total_num_input_ch = audio_sequence_len * num_audio_input_ch
+        self.conv = nn.Sequential()
+        # Self-attention for "not-that-small" feature maps only, i.e., feature maps which are larger
+        #    than the 4x4 conv kernels from the main convolutional path
+        if arch_args['att']:
+            if np.prod(audio_input_H_W) > 16:
+                self.conv.add_module('resatt', SelfAttentionConv2D(
+                    total_num_input_ch, position_encoding=arch_args['posenc'], input_H_W=audio_input_H_W))
+        else:
+            if arch_args['posenc']:
+                warnings.warn("'posenc' arch arg works with 'att' only (which is False), thus will be ignored.")
+        num_out_ch = num_latent_ch if not arch_args['gated'] else 2 * num_latent_ch
         if num_layers == 1:
-            self.conv = nn.Conv2d(total_num_input_ch, num_latent_ch, kernel_size, 1, padding)
+            self.conv.add_module('c', nn.Conv2d(total_num_input_ch, num_out_ch, kernel_size, 1, padding))
         elif num_layers == 2:  # No batch-norm inside the latent conv arch
-            n_intermediate_ch = int(round(np.sqrt(total_num_input_ch * num_latent_ch)))  # Geometric mean
-            self.conv = nn.Sequential(
-                nn.Conv2d(total_num_input_ch, n_intermediate_ch, kernel_size, 1, padding),
-                nn.ELU(),
-                nn.Conv2d(n_intermediate_ch, num_latent_ch, kernel_size, 1, padding)
-            )
+            n_intermediate_ch = int(round(np.sqrt(total_num_input_ch * num_out_ch)))  # Geometric mean
+            self.conv.add_module('c1', nn.Conv2d(total_num_input_ch, n_intermediate_ch, kernel_size, 1, padding))
+            self.conv.add_module('act', nn.ELU())
+            self.conv.add_module('c2', nn.Conv2d(n_intermediate_ch, num_out_ch, kernel_size, 1, padding))
         else:
             raise ValueError("Convolutional arch. for latent vector computation must contain <= 2 layers.")
+        if arch_args['gated']:
+            self.conv.add_module('gated', nn.GLU(dim=1))
 
-    def forward(self, x_audio: torch.tensor, u_preset: Optional[torch.Tensor] = None):
+    def forward(self, x_audio: torch.tensor,
+                u_preset: Optional[torch.Tensor] = None, midi_notes: Optional[torch.Tensor] = None):
         """
 
         :param x_audio: Tensor with shape N x T x C x W x H where T is the original audio sequence length
         :param u_preset:
+        :param midi_notes: May be used (or not, depends on the exact configuration) to add some "positional
+            encoding" information to each sequence item in x_audio
         :return:
         """
         if u_preset is not None:
@@ -266,26 +294,52 @@ class ConvLatentCell(nn.Module):
 
 
 class ConvLSTMLatentCell(nn.Module):
-    def __init__(self, num_audio_input_ch: int, audio_sequence_len: int, num_latent_ch: int, num_layers: int,
-                 kernel_size: Tuple[int, int], padding: Tuple[int, int]):
+    def __init__(self, num_audio_input_ch: int, audio_input_H_W, audio_sequence_len: int,
+                 num_latent_ch: int, num_layers: int,
+                 kernel_size: Tuple[int, int], padding: Tuple[int, int], arch_args: Dict[str, bool]):
         """
         Latent cell based on a Convolutional LSTM (keeps the spatial structure of data)
 
         See ConvLatentCell to get information about parameters.
         """
         super().__init__()
+        if arch_args['att']:
+            warnings.warn("Self-attention arch arg 'att' is not valid and will be ignored.")
+        # Main LSTM
         n_intermediate_ch = int(round(np.sqrt(num_audio_input_ch * num_latent_ch)))  # Geometric mean
         self.lstm_net = ConvLSTM(num_audio_input_ch, n_intermediate_ch, kernel_size, num_layers, bidirectional=True)
+        # Positional encodings are added as residuals to help the LSTM to know which MIDI note is being processed.
+        if arch_args['posenc']:
+            self.note_encoder = nn.Sequential(
+                nn.Linear(2, 4), nn.ReLU(),
+                nn.Linear(4, np.prod(audio_input_H_W) * num_audio_input_ch), nn.Tanh()
+            )
+        else:
+            self.note_encoder = None
         # Final regular conv to extract latent values, because the LSTM hidden state is activated (and these
         #    final activations might be undesired in the VAE framework). Also required because the bidirectional
         #    LSTM increases 2x the number of hidden channels.
         self.final_conv = nn.Conv2d(n_intermediate_ch*2, num_latent_ch, kernel_size, 1, padding)
 
-    def forward(self, x_audio: torch.tensor, u_preset: Optional[torch.Tensor] = None):
+    def forward(self, x_audio: torch.tensor,
+                u_preset: Optional[torch.Tensor] = None, midi_notes: Optional[torch.Tensor] = None):
         if u_preset is not None:
             return NotImplementedError()  # FIXME also use preset feature maps (first hidden features?)
-        output_sequence, last_states_per_layer = self.lstm_net(x_audio)
+        # Learned residual positional encoding (per-pixel bias on the full feature maps)
+        if midi_notes is not None and self.note_encoder is not None:
+            for seq_idx in range(midi_notes.shape[1]):
+                pos_enc = self.note_encoder(-0.5 + midi_notes[:, seq_idx, :] / 64.0)
+                pos_enc = pos_enc.view(-1, *x_audio.shape[2:])
+                if len(x_audio.shape) == 4:  # 4d tensor: raw audio input
+                    x_audio[:, seq_idx, :, :] += pos_enc
+                elif len(x_audio.shape) == 5:  # 5d tensor: spectrogram input
+                    x_audio[:, seq_idx, :, :, :] += pos_enc
+                else:
+                    raise AssertionError()
         # Warning: the first n_intermediate_ch contains information about the preset itself and the first
         #    spectrogram only. This provides an "almost direct" path from preset to latent values (which we
         #    might want to avoid...???)
+        # OTHER WARNING: h is a product of a sigmoid-activated and a tanh-activated value
+        #    this implies a form a regularization before computing latent distributions' parameters
+        output_sequence, last_states_per_layer = self.lstm_net(x_audio)
         return self.final_conv(output_sequence[:, -1, :, :, :])  # Use the last hidden state

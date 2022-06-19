@@ -9,7 +9,7 @@ import torchinfo
 
 import utils.probability
 from model.ladderbase import LadderBase
-from model.convlayer import ConvBlock2D, UpsamplingResBlock
+from model.convlayer import ConvBlock2D, UpsamplingResBlock, SelfAttentionConv2D, ResBlockBase
 
 
 class LadderDecoder(LadderBase):
@@ -41,8 +41,12 @@ class LadderDecoder(LadderBase):
             raise AssertionError("Depth-separable convolutions require at least 2 layers per res-block.")
 
         if self.single_ch_conv_arch['name'].startswith('specladder'):
-            if conv_args['adain'] or conv_args['att']:
+            if conv_args['adain']:
                 raise NotImplementedError()
+            if conv_args['att'] and self.single_ch_conv_arch['n_layers_per_block'] < 2:
+                raise ValueError("'_att' conv arg will add a residual self-attention layer and requires >= 2 layers")
+            if conv_args['att'] and conv_args['depsep5x5'] and self.single_ch_conv_arch['n_layers_per_block'] < 3:
+                raise ValueError("'_att' and '_depsep5x5' conv args (both provided) require >= 3 layers")
             self.single_ch_cells = list()
             if self.n_latent_levels == 1:  # FIXME
                 cells_first_block = [0]
@@ -82,17 +86,24 @@ class LadderDecoder(LadderBase):
                         conv, self._get_conv_act(), self._get_conv_norm(blk_in_ch), 'nac'))
                     # Usual convs are applied after upsampling (less parameters)
                     for j in range(self.single_ch_conv_arch['n_layers_per_block'] - 1):
-                        if conv_args['depsep5x5']:  # Structure close to NVAE (NeurIPS 2020)
+                        if j == 0 and conv_args['att'] and (2 <= i_blk <= 4):
+                            self_att = SelfAttentionConv2D(blk_hid_ch, position_encoding=True)
+                            residuals_path.add_module('self_att', ConvBlock2D(
+                                self_att, None, self._get_conv_norm(blk_hid_ch), 'nc'))
+                        elif conv_args['depsep5x5']:  # Structure close to NVAE (NeurIPS 2020)
                             depth_sep_ch = blk_hid_ch * 2  # 3x channels expansion costs a lot of GPU RAM
+                            sub_conv_block = nn.Sequential()
                             conv = nn.Conv2d(blk_hid_ch, depth_sep_ch, (1, 1))
-                            residuals_path.add_module('more_ch_' + str(j), ConvBlock2D(
+                            sub_conv_block.add_module('more_ch_' + str(j), ConvBlock2D(
                                 conv, None, self._get_conv_norm(blk_hid_ch), 'nc'))
                             conv = nn.Conv2d(depth_sep_ch, depth_sep_ch, (5, 5), 1, 2, groups=depth_sep_ch)
-                            residuals_path.add_module('depthsep_' + str(j), ConvBlock2D(
+                            sub_conv_block.add_module('depthsep_' + str(j), ConvBlock2D(
                                 conv, self._get_conv_act(), self._get_conv_norm(depth_sep_ch), 'nac'))
                             conv = nn.Conv2d(depth_sep_ch, blk_hid_ch, (1, 1))
-                            residuals_path.add_module('less_ch_' + str(j), ConvBlock2D(
+                            sub_conv_block.add_module('less_ch_' + str(j), ConvBlock2D(
                                 conv, self._get_conv_act(), self._get_conv_norm(depth_sep_ch), 'nac'))
+                            # As this module contains 3 convs, we use it as residuals not to impair gradient backprop
+                            residuals_path.add_module('depsep5x5_' + str(j), ResBlockBase(sub_conv_block))
                         else:
                             conv = nn.Conv2d(blk_hid_ch, blk_hid_ch, (3, 3), 1, 1)
                             residuals_path.add_module('conv', ConvBlock2D(
@@ -116,9 +127,12 @@ class LadderDecoder(LadderBase):
         # Warning: (main convolutional) cells and latent cells ordering is opposite in the decoder
         self.latent_cells = list()
 
+        # The decoder ctor is different from the encoder, because the only latent architecture it provides
+        # is the feedforward convolutions (in latent cells). So, those cells are built directly inside this
+        # ctor instead of being built in a separate class. (might be refactored in the future)
         if self.latent_arch['name'] == "conv" or self.latent_arch['name'] == 'lstm':  # FIXME
             if self.latent_arch['name'] == 'lstm':
-                warnings.warn("DECODER LSTM LATENT not implemented yet - TODOOOOOOOO")
+                warnings.warn("Decoder: LSTM latent structure not implemented (the usual conv will be used instead)")
             # Convolutional latent structure: increase number of channels of latent features maps. The new channels
             # will be used as residuals added to the main convolutional path.
             if self.latent_arch['args']['k1x1']:
@@ -129,21 +143,34 @@ class LadderDecoder(LadderBase):
                 raise NotImplementedError("Can't build latent cells: conv kernel arg ('_k1x1' or '_k3x3') not provided")
             for latent_level, latent_tensor_shape in enumerate(self._latent_tensors_shapes):
                 cell_index = self._get_cell_index(latent_level)
+                self._cells_input_shapes[cell_index][2:] = latent_tensors_shapes[latent_level][2:]
                 n_latent_input_ch = self._latent_tensors_shapes[latent_level][1]
                 n_latent_output_ch = self._cells_input_shapes[cell_index][1] * self.num_audio_output_ch
+                cell = nn.Sequential()
+                if self.latent_arch['args']['att'] and n_latent_input_ch >= 8:  # Useless with a small num. of channels
+                    input_H_W = tuple(self._cells_input_shapes[cell_index][2:])
+                    if np.prod(input_H_W) > 16:
+                        cell.add_module('resatt', SelfAttentionConv2D(
+                            n_latent_input_ch, n_latent_input_ch,
+                            position_encoding=self.latent_arch['args']['posenc'], input_H_W=input_H_W)
+                        )
+                else:
+                    if self.latent_arch['args']['posenc']:
+                        warnings.warn("'posenc' arch arg works with 'att' only (which is False), thus will be ignored.")
+                if self.latent_arch['args']['gated']:
+                    n_latent_output_ch *= 2  # GLU will half the number of outputs
                 if self.latent_arch['n_layers'] == 1:
-                    self.latent_cells.append(nn.Conv2d(n_latent_input_ch, n_latent_output_ch, kernel_size, 1, padding))
+                    cell.add_module('c', nn.Conv2d(n_latent_input_ch, n_latent_output_ch, kernel_size, 1, padding))
                 elif self.latent_arch['n_layers'] == 2:  # No batch-norm inside the latent conv arch
                     n_intermediate_ch = int(round(np.sqrt(n_latent_input_ch * n_latent_output_ch)))
-                    self.latent_cells.append(nn.Sequential(
-                        nn.Conv2d(n_latent_input_ch, n_intermediate_ch, kernel_size, 1, padding),
-                        nn.ELU(),
-                        nn.Conv2d(n_intermediate_ch, n_latent_output_ch, kernel_size, 1, padding)
-                    ))
+                    cell.add_module('c1', nn.Conv2d(n_latent_input_ch, n_intermediate_ch, kernel_size, 1, padding))
+                    cell.add_module('act', nn.ELU())
+                    cell.add_module('c2', nn.Conv2d(n_intermediate_ch, n_latent_output_ch, kernel_size, 1, padding))
                 else:
                     raise ValueError("Convolutional arch. for latent vector computation must contain <= 2 layers.")
-                # We can finish to set the (conv) cell input shape
-                self._cells_input_shapes[cell_index][2:] = latent_tensors_shapes[latent_level][2:]
+                if self.latent_arch['args']['gated']:
+                    cell.add_module('gated', nn.GLU(dim=1))
+                self.latent_cells.append(cell)
 
         else:
             raise NotImplementedError("Cannot build latent arch {}: name not implemented".format(latent_arch))
@@ -216,7 +243,7 @@ class LadderDecoder(LadderBase):
         with torch.no_grad():
             return torchinfo.summary(
                 single_ch_cnn_without_latent, input_size=input_shape,
-                depth=5, verbose=0, device=torch.device('cpu'),
+                depth=7, verbose=0, device=torch.device('cpu'),
                 col_names=self._summary_col_names, row_settings=("depth", "var_names")
             )
 

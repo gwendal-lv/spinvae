@@ -20,7 +20,12 @@ def parse_latent_extract_architecture(full_architecture: str):
     arch_args = full_architecture.split('_')
     base_arch_name = arch_args[0].lower()
     num_layers = int(arch_args[1].replace('l', ''))
-    arch_args_dict = {'k1x1': False, 'k3x3': False}
+    arch_args_dict = {
+        'k1x1': False, 'k3x3': False,  # Only these 2 kernel sizes are available
+        'posenc': False,  # Positional encodings can be added inside some architectures
+        'gated': False,  # (Self-)gating ("light attention") mechanisms can be added to some architectures
+        'att': False,  # SAGAN-like self-attention
+    }
     for arch_arg in arch_args[2:]:
         if arch_arg in arch_args_dict.keys():
             arch_args_dict[arch_arg] = True  # Authorized arguments
@@ -118,14 +123,12 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # Convert pytorch's parameters iterator into a list for each model, then sum these lists
         return sum([list(m.get_custom_param_group(group_name)) for m in [self.encoder, self.decoder]], [])
 
-    # FIXME load_checkpoint: should be able to load pre-trained parts only
-
-    def forward(self, x, v=None, sample_info=None):
+    def forward(self, x, v=None, preset_uids=None, midi_notes=None):
         if v is not None:
             raise NotImplementedError("Presets can not be auto-encoded at the moment (audio input only).")
 
         # 1) Encode
-        z_mu, z_var = self.encoder(x)
+        z_mu, z_var = self.encoder(x, None, midi_notes)
 
         # 2) Latent values
         # For each latent level, sample z_l from q_phi(z_l|x) using reparametrization trick (no conditional posterior)
@@ -137,6 +140,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                 z_sampled.append(z_mu[latent_level] + torch.sqrt(z_var[latent_level]) * eps)
             else:  # eval mode: no random sampling
                 z_sampled.append(z_mu[latent_level])
+        # FIXME compute Dkl for each latent level, to ensure that the encode approx. the same amount of information
+        #    (shallower latents seem to collapse more easily than deeper latents)
         # We can already compute the per-element latent loss (not batch-averaged/normalized, no beta factor yet)
         # Only the vanilla-VAE Dkl loss is available at the moment
         z_mu_flat = torch.cat([torch.flatten(z, start_dim=1) for z in z_mu], dim=1)
@@ -212,8 +217,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
 if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
     _train_config.minibatch_size = 16
-    _model_config.vae_main_conv_architecture = 'specladder8x1_res_swish'
-    _model_config.vae_latent_extract_architecture = 'lstm_1l_k3x3'
+    _model_config.vae_main_conv_architecture = 'specladder8x2_res_depsep5x5'
+    _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 3
     _model_config.approx_requested_dim_z = 400
     config.update_dynamic_config_params(_model_config, _train_config)

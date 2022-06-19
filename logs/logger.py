@@ -9,7 +9,7 @@ import json
 import datetime
 import pathlib
 import warnings
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import numpy as np
 
@@ -182,7 +182,7 @@ class RunLogger:
         # Use multiprocessing if required by args, and if PyCharm debugger not detected
         self.use_multiprocessing = use_multiprocessing and (not (sys.gettrace() is not None))
         # Processes will be started and joined from those threads
-        self.figures_threads = [None, None]  # type: List[Optional[threading.Thread]]
+        self.figures_threads = {'stats': None, 'audio_samples': None}  # type: Dict[str, Optional[threading.Thread]]
 
     @staticmethod
     def _make_dirs_if_dont_exist(dir_path):
@@ -267,7 +267,7 @@ class RunLogger:
         epoch_duration = self.epoch_start_datetimes[-1] - self.epoch_start_datetimes[-2]
         avg_duration_s = np.asarray([(self.epoch_start_datetimes[i+1] - self.epoch_start_datetimes[i]).total_seconds()
                                      for i in range(len(self.epoch_start_datetimes) - 1)])
-        avg_duration_s = avg_duration_s.mean()  # TODO log this
+        avg_duration_s = avg_duration_s.mean()
         run_total_epochs = self.train_config.n_epochs - self.train_config.start_epoch
         remaining_datetime = avg_duration_s * (run_total_epochs - (epoch-self.train_config.start_epoch) - 1)
         remaining_datetime = datetime.timedelta(seconds=int(remaining_datetime))
@@ -277,6 +277,7 @@ class RunLogger:
                           epoch_duration.total_seconds(), avg_duration_s,
                           remaining_datetime, humanize.naturaldelta(remaining_datetime)))
         if self.comet is not None:
+            self.comet.experiment.log_metric('epoch_duration_avg', avg_duration_s, include_context=False)
             self.comet.experiment.log_epoch_end(epoch_cnt=self.train_config.n_epochs)
 
     def save_checkpoint(self, ae_model: model.base.TrainableModel,
@@ -299,7 +300,7 @@ class RunLogger:
     def on_training_finished(self):
         # wait for all plotting threads to join
         print("[logger.py] Waiting for comet/tensorboard plotting threads to join...")
-        for t in self.figures_threads:
+        for _, t in self.figures_threads.items():
             if t is not None:
                 t.join()
         if self.tensorboard is not None:
@@ -330,46 +331,43 @@ class RunLogger:
 
     # - - - - - - - - - - Non-threaded plots to comet/tensorbard - - - - - - - - - -
 
-    def add_figure(self, name: str, fig):
-        if self.tensorboard is not None:
-            self.tensorboard.add_figure(name, fig, self.current_epoch)
-        if self.comet is not None:
-            self.comet.log_figure_with_context(name, fig)
-
-    def plot_spectrograms(self, x_in, x_out, sample_info, dataset: AudioDataset, name='Spectrogram/Valid'):
+    def plot_spectrograms(self, x_in, x_out, uid, notes, dataset: AudioDataset, name='Spectrogram/Valid'):
         fig, _ = utils.figures.plot_train_spectrograms(
-            x_in, x_out, sample_info, dataset, self.model_config, self.train_config)
-        if self.tensorboard is not None:
-            self.tensorboard.add_figure(name, fig, self.current_epoch)
-        if self.comet is not None:
-            self.comet.log_figure_with_context(name, fig)
+            x_in, x_out, uid, notes, dataset, self.model_config, self.train_config)
+        self.add_figure(name, fig)
 
     def plot_decoder_interpolation(self, generative_model, z_minibatch, sample_info, dataset: AudioDataset,
-                                   output_channel_to_plot=0, name='DecoderInterp/Valid'):
+                                   audio_channel=0, name='DecoderInterp/Valid'):
         # "CUDA illegal memory access (stacktrace might be incorrect)" - seems to be fixed by torch 1.10, CUDA 11.3
         from evaluation.interp import LatentInterpolation  # local import to prevent circular import
         interpolator = LatentInterpolation(generator=generative_model, device=z_minibatch.device)
         # z start/end tensors must be be provided as 1 x D vectors
         u, z, x = interpolator.interpolate_spectrograms_from_latent(z_minibatch[0:1, :], z_minibatch[1:2, :])
         if x.shape[1] > 1:
-            x = x[:, output_channel_to_plot:output_channel_to_plot+1, :, :]
+            x = x[:, audio_channel:audio_channel + 1, :, :]
         preset_UIDs = [sample_info[i, 0].item() for i in range(2)]
         preset_names = [dataset.get_name_from_preset_UID(UID) for UID in preset_UIDs]
         title = "{} '{}' ----> {} '{}'".format(preset_UIDs[0], preset_names[0], preset_UIDs[1], preset_names[1])
         fig, _ = utils.figures.plot_spectrograms_interp(u, x, z=z, title=title, plot_delta_spectrograms=True)
-        if self.tensorboard is not None:
-            self.tensorboard.add_figure(name, fig, self.current_epoch)
-        if self.comet is not None:
-            self.comet.log_figure_with_context(name, fig)
+        self.add_figure(name, fig)
 
     # - - - - - Multi threaded + multiprocessing plots to comet/tensorboard - - - - -
+
+    def add_figure(self, name: str, fig):
+        if self.tensorboard is not None:
+            self.tensorboard.add_figure(name, fig, self.current_epoch)
+        # We'll call this method from different threads.... let's hope this is OK
+        # Comet.ml slack channel does not give much info about this (only "keep a single Experiment object per process")
+        if self.comet is not None:  # Will check for a context suffix (e.g. /Valid) and activate this context if found
+            self.comet.log_figure_with_context(name, fig)
+
     def plot_stats__threaded(self, super_metrics, ae_model, validation_dataset: AudioDataset):
 
-        if self.figures_threads[0] is not None:
-            if self.figures_threads[0].is_alive():
+        if self.figures_threads['stats'] is not None:
+            if self.figures_threads['stats'].is_alive():
                 warnings.warn("A new threaded plot request has been issued but the previous has not finished yet. "
                               "Please ignore this message if the training run is about to end. (Joining thread...)")
-            self.figures_threads[0].join()
+            self.figures_threads['stats'].join()
         # Data must absolutely be copied - this is multithread, not multiproc (shared data with GIL, no auto pickling)
         networks_layers_params = dict()  # If remains empty: no plot
         # Don't plot ae_model weights histograms during first epochs (will get much tinier during training)
@@ -377,13 +375,13 @@ class RunLogger:
             # FIXME re-activate, get conv weights also - returns clones of layers' parameters
             pass  # networks_layers_params['Decoder'] = ae_model.decoder.get_fc_layers_parameters()
         # Launch thread using copied data
-        self.figures_threads[0] = threading.Thread(
+        self.figures_threads['stats'] = threading.Thread(
             target=self._plot_stats_thread,
             args=(self.current_epoch, self.current_step, copy.deepcopy(super_metrics), networks_layers_params,
                   copy.deepcopy(validation_dataset))
         )
-        self.figures_threads[0].name = "LoggerPlottingThread"
-        self.figures_threads[0].start()
+        self.figures_threads['stats'].name = "LoggerStatsPlottingThread"
+        self.figures_threads['stats'].start()
 
     def _plot_stats_thread(self, epoch: int, step: int, super_metrics, networks_layers_params,
                            validation_dataset: AudioDataset):

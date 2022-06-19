@@ -82,23 +82,20 @@ def plot_dataset_item(dataset: Optional[AudioDataset], item_index: int,
     return fig, ax, audio, Fs
 
 
-def plot_train_spectrograms(x_in, x_out, sample_info, dataset: AudioDataset,
+def plot_train_spectrograms(x_in, x_out, uid, notes, dataset: AudioDataset,
                             model_config, train_config):
     """ Wrapper for plot_spectrograms, which is made to be easily used during training/validation. """
     if dataset.multichannel_stacked_spectrograms:  # Plot only 1 preset ID, multiple midi notes
-        midi_notes = model_config.midi_notes
-        presets_UIDs = torch.ones((sample_info.shape[0],), dtype=sample_info.dtype, device=sample_info.device)
-        presets_UIDs *= sample_info[0, 0]
-        presets_names = [dataset.get_name_from_preset_UID(presets_UIDs[0].item())]  # we send a single name
-        max_nb_specs = len(midi_notes)
-    else:  # Plot multiple preset IDs, TODO possibly also different midi notes for different 1-ch spectrograms
-        midi_notes = [(sample_info[i, 1].item(), sample_info[i, 2].item()) for i in range(sample_info.shape[0])]
-        presets_UIDs = sample_info[:, 0]
+        midi_notes = notes[0, :, :]
+        presets_names = [dataset.get_name_from_preset_UID(uid[0].item())]  # we send a single name
+        max_nb_specs = midi_notes.shape[0]
+    else:  # Plot multiple preset IDs
+        midi_notes = notes[:, 0, :]  # FIXME which midi note to plot (default first, lowest pitch)
         presets_names = list()
-        for i in range(np.minimum(train_config.logged_samples_count, presets_UIDs.shape[0])):
-            presets_names.append(dataset.get_name_from_preset_UID(presets_UIDs[i].item()))
+        for i in range(np.minimum(train_config.logged_samples_count, uid.shape[0])):
+            presets_names.append(dataset.get_name_from_preset_UID(uid[i].item()))
         max_nb_specs = len(presets_names)
-    return plot_spectrograms(x_in, x_out, presets_UIDs=presets_UIDs,
+    return plot_spectrograms(x_in, x_out, presets_UIDs=uid,
                              midi_notes=midi_notes,
                              multichannel_spectrograms=dataset.multichannel_stacked_spectrograms,
                              plot_error=(x_out is not None), max_nb_specs=max_nb_specs,

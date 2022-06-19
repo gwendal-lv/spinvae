@@ -184,10 +184,10 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
             dataloader_iter = iter(dataloader['train'])
             for i in range(len(dataloader['train'])):
                 minibatch = next(dataloader_iter)
-                x_in, v_in, sample_info, label = [m.to(device) for m in minibatch]
+                x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
                 # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
                 ae_model.optimizers_zero_grad()
-                ae_out = ae_model_parallel(x_in, None, sample_info)  # TODO auto-encode presets
+                ae_out = ae_model_parallel(x_in, None, uid, notes)  # TODO auto-encode presets
                 ae_out = ae_model.parse_outputs(ae_out)
                 # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
                 # reg_model.precompute_u_out_with_symmetries(v_out)   # FIXME pre-compute permutations
@@ -237,9 +237,9 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
             v_in_backup = torch.Tensor().to(device=lat_loss.device)
             i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
             for i, minibatch in enumerate(dataloader['validation']):
-                x_in, v_in, sample_info, label = [m.to(device) for m in minibatch]
+                x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
                 # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
-                ae_out = ae_model_parallel(x_in, None, sample_info)  # TODO auto-encode presets
+                ae_out = ae_model_parallel(x_in, None, uid, notes)  # TODO auto-encode presets
                 ae_out = ae_model.parse_outputs(ae_out)
                 # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
                 # reg_model.precompute_u_out_with_symmetries(v_out)  # FIXME pre-compute permutations
@@ -269,7 +269,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                     # v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
                     v_in_backup = torch.cat([v_in_backup, v_in])
                     if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
-                        logger.plot_spectrograms(x_in, ae_out.x_sampled, sample_info, validation_audio_dataset)
+                        # TODO use a thread
+                        logger.plot_spectrograms(x_in, ae_out.x_sampled, uid, notes, validation_audio_dataset)
                         # TODO re-activate this
                         #logger.plot_decoder_interpolation(
                         #    ae_model, ae_out.z_sampled, sample_info, validation_audio_dataset)
