@@ -1,8 +1,9 @@
 """
 Allows easy modification of all configuration parameters required to define,
 train or evaluate a model.
-This script is not intended to be run, it only describes parameters.
-However, some dynamic hyper-parameters are properly set when this module is imported.
+This script is not intended to be run, it only describes parameters (see classes constructors).
+After building the config instances, the update_dynamic_config_params(...) method
+must be called to update some "dynamic" hyper-parameters which depend on some others.
 
 This configuration is used when running train.py as main.
 When running train_queue.py, configuration changes are relative to this config.py file.

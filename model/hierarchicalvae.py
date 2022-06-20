@@ -102,8 +102,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         with torch.no_grad():  # retrieve encoder output shapes (list of shapes for each latent level)
             dummy_z_mu, _ = self.encoder(torch.zeros(model_config.input_audio_tensor_size))
         self.z_shapes = [z.shape for z in dummy_z_mu]
-        # Compute dim_z
-        model_config.dim_z = int(np.sum([np.prod(s) // s[0] for s in self.z_shapes]))  # cast to int for JSON serializ.
+        model_config.dim_z = self.dim_z  # Compute dim_z and update model_config (.dim_z property uses self.z_shapes)
         if train_config.verbosity >= 1:
             print("[HierarchicalVAE] model_config.dim_z has been automatically set to {} (requested approximate dim_z "
                   "was {})".format(model_config.dim_z, model_config.approx_requested_dim_z))
@@ -119,6 +118,14 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # Optimizers and schedulers (all sub-nets, param groups must have been created at this point)
         self._init_optimizers_and_schedulers()
 
+    @property
+    def dim_z_per_level(self):
+        return [int(np.prod(z_shape[1:])) for z_shape in self.z_shapes]  # cast to int for JSON serialization
+
+    @property
+    def dim_z(self):
+        return sum(self.dim_z_per_level)
+
     def get_custom_param_group(self, group_name: str):
         # Convert pytorch's parameters iterator into a list for each model, then sum these lists
         return sum([list(m.get_custom_param_group(group_name)) for m in [self.encoder, self.decoder]], [])
@@ -133,22 +140,30 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # 2) Latent values
         # For each latent level, sample z_l from q_phi(z_l|x) using reparametrization trick (no conditional posterior)
         z_sampled = list()
-        for latent_level in range(len(z_mu)):
+        for lat_lvl in range(len(z_mu)):
             if self.training:  # Sampling in training mode only
-                eps = Normal(torch.zeros_like(z_mu[latent_level], device=z_mu[latent_level].device),
-                             torch.ones_like(z_mu[latent_level], device=z_mu[latent_level].device)).sample()
-                z_sampled.append(z_mu[latent_level] + torch.sqrt(z_var[latent_level]) * eps)
+                eps = Normal(torch.zeros_like(z_mu[lat_lvl], device=z_mu[lat_lvl].device),
+                             torch.ones_like(z_mu[lat_lvl], device=z_mu[lat_lvl].device)).sample()
+                z_sampled.append(z_mu[lat_lvl] + torch.sqrt(z_var[lat_lvl]) * eps)
             else:  # eval mode: no random sampling
-                z_sampled.append(z_mu[latent_level])
-        # FIXME compute Dkl for each latent level, to ensure that the encode approx. the same amount of information
-        #    (shallower latents seem to collapse more easily than deeper latents)
+                z_sampled.append(z_mu[lat_lvl])
         # We can already compute the per-element latent loss (not batch-averaged/normalized, no beta factor yet)
         # Only the vanilla-VAE Dkl loss is available at the moment
-        z_mu_flat = torch.cat([torch.flatten(z, start_dim=1) for z in z_mu], dim=1)
-        z_var_flat = torch.cat([torch.flatten(z, start_dim=1) for z in z_var], dim=1)
-        # Dkl for a batch item is the sum of per-coordinates Dkls
-        # We don't normalize (divide by the latent size) to stay closer to the ELBO when the latent size is changed.
-        z_loss = utils.probability.standard_gaussian_dkl(z_mu_flat, z_var_flat, reduction='none')
+        # FIXME compute Dkl for each latent level, to ensure that the encode approx. the same amount of information
+        #    (shallower latents seem to collapse more easily than deeper latents)
+        #    HOW TO compute self._dkl_gamma
+        z_losses_per_lvl = list()
+        for lat_lvl in range(len(z_mu)):
+            # Dkl for a batch item is the sum of per-coordinates Dkls
+            # We don't normalize (divide by the latent size) to stay closer to the ELBO when the latent size is changed.
+            z_losses_per_lvl.append(utils.probability.standard_gaussian_dkl(
+                z_mu[lat_lvl].flatten(start_dim=1), z_var[lat_lvl].flatten(start_dim=1), reduction='none'))
+        # TODO gamma_l factors applied to KLDs during warmup
+        z_loss = sum(z_losses_per_lvl)  # N-dimensional loss (not minibatch-averaged)
+        # TODO calculer gamma sur le mini-batch uniquement ?
+
+        # FIXME test
+        truc = self.flatten_latent_values(z_sampled)
 
         # 3) Decode
         x_decoded_proba, x_sampled = self.decoder(z_sampled)
@@ -156,11 +171,11 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # 4) return all available values using Tensor only, for this method to remain usable
         # with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
         # This tuple output can be parsed later into a proper HierarchicalVAEOutputs instance.
-        outputs = list()
-        for latent_level in range(len(z_mu)):
-            outputs += [z_mu[latent_level], z_var[latent_level], z_sampled[latent_level]]
-        outputs += [z_loss, x_decoded_proba, x_sampled]
-        return tuple(outputs)
+        out_list = list()
+        for lat_lvl in range(len(z_mu)):
+            out_list += [z_mu[lat_lvl], z_var[lat_lvl], z_sampled[lat_lvl]]
+        out_list += [z_loss, x_decoded_proba, x_sampled]
+        return tuple(out_list)
 
     def parse_outputs(self, forward_outputs):
         """ Parses tuple output from a self.forward(...) call into a HierarchicalVAEOutputs instance. """
@@ -174,6 +189,25 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         return HierarchicalVAEOutputs(
             z_mu, z_var, z_sampled, forward_outputs[i], forward_outputs[i + 1], forward_outputs[i + 2]
         )
+
+    @staticmethod
+    def flatten_latent_values(z_multi_level: List[torch.Tensor]):
+        """ Flattens all dimensions but the batch dimension. """
+        return torch.cat([z.flatten(start_dim=1) for z in z_multi_level], dim=1)
+
+    def unflatten_latent_values(self, z_flat: torch.Tensor):
+        """
+        Transforms a N x dimZ flatten latent vector into a List of N x Ci x Hi x Wi tensors, where
+            Ci, Hi, Wi is the shape a latent feature map for latent level i.
+        """
+        # Split the flat tensor into 1 group / latent level (known shapes)
+        z_flat_per_level = torch.split(z_flat, self.dim_z_per_level, dim=1)
+        # Actual unflatten here - unittested to ensure that this operation perfectly reverses flatten_latent_values
+        z_unflattened_per_level = list()
+        for lat_lvl, z_lvl_flat in enumerate(z_flat_per_level):
+            # + operator: concatenates torch Sizes
+            z_unflattened_per_level.append(z_lvl_flat.view(*(z_flat.shape[0:1] + self.z_shapes[lat_lvl][1:])))
+        return z_unflattened_per_level
 
     def latent_loss(self, ae_out: HierarchicalVAEOutputs, beta):
         """ Returns the non-normalized latent loss, and the same value multiplied by beta (for backprop) """
