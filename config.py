@@ -27,7 +27,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'interp_plot_01'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'interp_plot_02'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -119,6 +119,7 @@ class ModelConfig:
         # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
         # self.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
         self.midi_notes = self.required_dataset_midi_notes
+        self.main_midi_note_index = 2  # 56, 75
         self.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
         # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
         self.stack_specs_features_mix_level = -2  # FIXME allow 0 for RNN "features mixer"

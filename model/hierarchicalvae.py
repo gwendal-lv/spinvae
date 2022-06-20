@@ -247,6 +247,25 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         return summary
 
 
+class AudioDecoder:
+    def __init__(self, hierachical_vae: HierarchicalVAE):
+        """ A simple wrapper class for a HierarchicalVAE instance to be used by an
+         evaluation.interp.LatentInterpolation instance. """
+        self._hierarchical_vae = hierachical_vae
+
+    @property
+    def dim_z(self):
+        return self._hierarchical_vae.dim_z
+
+    def generate_from_latent_vector(self, z):
+        # input z is expected to be a flattened tensor
+        z_multi_level = self._hierarchical_vae.unflatten_latent_values(z)
+        x_decoded_proba, x_sampled = self._hierarchical_vae.decoder(z_multi_level)
+        return x_sampled
+
+
+
+
 
 if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()

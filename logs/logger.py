@@ -25,6 +25,7 @@ import model.VAE
 import utils
 import utils.figures
 import utils.stat
+import model.hierarchicalvae
 from .tbwriter import TensorboardSummaryWriter  # Custom modified summary writer
 from .cometwriter import CometWriter
 import logs.logger_mp
@@ -336,17 +337,18 @@ class RunLogger:
             x_in, x_out, uid, notes, dataset, self.model_config, self.train_config)
         self.add_figure(name, fig)
 
-    def plot_decoder_interpolation(self, generative_model, z_minibatch, sample_info, dataset: AudioDataset,
-                                   audio_channel=0, name='DecoderInterp/Valid'):
+    def plot_decoder_interpolation(self, h_vae: model.hierarchicalvae.HierarchicalVAE,
+                                   z_minibatch, preset_UIDs, dataset: AudioDataset,
+                                   audio_channel=0, name='AudioDecoderInterp/Valid'):
         # "CUDA illegal memory access (stacktrace might be incorrect)" - seems to be fixed by torch 1.10, CUDA 11.3
         from evaluation.interp import LatentInterpolation  # local import to prevent circular import
+        generative_model = model.hierarchicalvae.AudioDecoder(h_vae)
         interpolator = LatentInterpolation(generator=generative_model, device=z_minibatch.device)
         # z start/end tensors must be be provided as 1 x D vectors
         u, z, x = interpolator.interpolate_spectrograms_from_latent(z_minibatch[0:1, :], z_minibatch[1:2, :])
         if x.shape[1] > 1:
             x = x[:, audio_channel:audio_channel + 1, :, :]
-        preset_UIDs = [sample_info[i, 0].item() for i in range(2)]
-        preset_names = [dataset.get_name_from_preset_UID(UID) for UID in preset_UIDs]
+        preset_names = [dataset.get_name_from_preset_UID(UID.item()) for UID in preset_UIDs[0:2]]  # FIXME
         title = "{} '{}' ----> {} '{}'".format(preset_UIDs[0], preset_names[0], preset_UIDs[1], preset_names[1])
         fig, _ = utils.figures.plot_spectrograms_interp(u, x, z=z, title=title, plot_delta_spectrograms=True)
         self.add_figure(name, fig)

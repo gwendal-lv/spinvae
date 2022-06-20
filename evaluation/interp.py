@@ -65,6 +65,7 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
     def dim_z(self):
         return self._gen.dim_z
 
+    # FIXME prototype not compatible anymore with the new datasets (midi notes given as a separate tensor)
     def compute_latent_vector(self, x, sample_info, v_target) -> Tuple[torch.Tensor, float, float]:
         raise NotImplementedError()
 
