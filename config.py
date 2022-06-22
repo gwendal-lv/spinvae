@@ -27,7 +27,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
         self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'interp_plot_02'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'Dz100_2lvls_BIG'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -53,7 +53,7 @@ class ModelConfig:
         #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
         #    '_LN' uses LayerNorm instead of BatchNorm
         #    '_swish' uses Swish activations (SiLU) instead of LeakyReLU
-        self.vae_main_conv_architecture = 'specladder8x1_res'
+        self.vae_main_conv_architecture = 'specladder8x1_res_big'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'conv_1l_1x1' means regular convolution, 1 layer, 1x1 conv kernels
         #       'lstm_2l_3x3' mean ConvLSTM, 2 layers, 3x3 conv kernels
@@ -66,7 +66,7 @@ class ModelConfig:
         #   2 latent levels allows dim_z close to 100
         #   3 latent levels allows dim_z close to 350
         #   4 latent levels allows dim_z close to 1500
-        self.vae_latent_levels = 3
+        self.vae_latent_levels = 2
         # Sets the family of decoder output probability distribution p_theta(x|z), e.g. :
         #    - 'gaussian_unitvariance' corresponds to the usual MSE reconstruction loss (up to a constant and factor)
         self.audio_decoder_distribution = 'gaussian_unitvariance'
@@ -91,7 +91,7 @@ class ModelConfig:
         self.concat_midi_to_z = None  # See update_dynamic_config_params()
         # Latent space dimension  ********* this dim is automatically set when using a Hierarchical VAE *************
         self.dim_z = -1
-        self.approx_requested_dim_z = 1000  # Hierarchical VAE will try to get close to this, will often be higher
+        self.approx_requested_dim_z = 100  # Hierarchical VAE will try to get close to this, will often be higher
         # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
         #    - base architectures can be realnvp, maf, ...
         #    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
@@ -137,8 +137,8 @@ class ModelConfig:
         self.learnable_params_tensor_length = -1  # Will be auto-set - see data.build.get_full_and_split_datasets
         # Modeling of synth controls probability distributions
         # Possible values: None, 'vst_cat', 'all<=xx' where xx is numerical params threshold cardinal, or 'all'
-        self.synth_vst_params_learned_as_categorical = 'all'
-        self.continuous_params_max_resolution = 50  # resolution of continuous synth params will be reduced to this
+        self.synth_vst_params_learned_as_categorical = 'vst_cat'  # FIXME this is a dataset argument
+        self.continuous_params_max_resolution = -1  # resolution of continuous synth params will be reduced to this
         # flags/values to describe the dataset to be used
         self.dataset_labels = None  # tuple of labels (e.g. ('harmonic', 'percussive')), or None to use all labels
         # Dexed: Preset Algorithms, and activated Operators (Lists of ints, None to use all)
@@ -164,7 +164,7 @@ class TrainConfig:
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
         #
-        self.n_epochs = 300 if self.pretrain_audio_only else 275  # See update_dynamic_config_params().
+        self.n_epochs = 200 if self.pretrain_audio_only else 275  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -172,7 +172,7 @@ class TrainConfig:
 
         # ------------------------------------------------ Losses -------------------------------------------------
         # Reconstruction loss: 'MSE' corresponds to free-mean, fixed-variance per-pixel Gaussian prob distributions.
-        # TODO 'WeightedMSE' allows to give a higher loss to some parts of spectrograms (e.g. attach, low freqs, ??)
+        # TODO 'WeightedMSE' allows to give a higher loss to some parts of spectrograms (e.g. attack, low freqs, ??)
         self.reconstruction_loss = 'MSE'
         # Latent regularization loss: 'Dkl' or 'MMD' for Basic VAE, 'logprob' or 'MMD' loss with flow-VAE
         # 'MMD_determ_enc' also available: use a deterministic encoder
@@ -192,9 +192,13 @@ class TrainConfig:
         #            ELBO loss is obtained by using beta = 1.55 e-5
         self.beta = 1.6e-5
         # TODO try much smaller beta start value - to try to reduce posterior collapse
-        self.beta_start_value = self.beta / 2.0  # Should not be zero (risk of a very unstable training)
+        self.beta_start_value = self.beta * 0.0  # Should not be zero with Flows (risk of a very unstable training)
         # Epochs of warmup increase from start_value to beta TODO increase to reduce posterior collapse
-        self.beta_warmup_epochs = 25  # See update_dynamic_config_params(). Used during pre-train only
+        self.beta_warmup_epochs = 50  # See update_dynamic_config_params(). Used during pre-train only
+        # VAE Kullback-Leibler divergence weighting during warmup, to try to prevent posterior collapse of some
+        # latent levels (see NVAE, NeurIPS 2020). Leads to higher latent losses during warmup.
+        self.dkl_auto_gamma = False  # If True, latent groups with small minibatch-KLDs will be assigned a smaller loss
+
         # - - - Synth parameters losses - - -
         # - General options
         self.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
@@ -229,7 +233,7 @@ class TrainConfig:
         self.scheduler_name = 'StepLR'  # can use ReduceLROnPlateau during pre-train (stable CNN), StepLR for reg model
         self.scheduler_lr_factor = 0.2
         # - - - StepLR scheduler options - - -
-        self.scheduler_period = 50  # Will be increased during pre-train
+        self.scheduler_period = 50  # resnets train quite fast
         # - - - ReduceLROnPlateau scheduler options - - -
         self.scheduler_losses = {
             'audio': 'VAELoss/Backprop', 'latent': 'VAELoss/Backprop', 'preset': 'Controls/BackpropLoss' }
@@ -288,7 +292,6 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
         model_config.params_regression_architecture = 'None'
         train_config.lr_warmup_epochs = train_config.lr_warmup_epochs // 2
         train_config.lr_warmup_start_factor *= 2
-        train_config.scheduler_period += train_config.scheduler_period // 2
     else:
         train_config.initial_learning_rate['audio'] *= train_config.initial_audio_latent_lr_factor_after_pretrain
         train_config.initial_learning_rate['latent'] *= train_config.initial_audio_latent_lr_factor_after_pretrain

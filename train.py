@@ -172,10 +172,11 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # = = = = = Re-init of epoch metrics and useful scalars (warmup ramps, ...) = = = = =
         logger.on_epoch_starts(epoch, scalars, super_metrics)
 
-        # = = = = = Warmups (bypass the scheduler during first epochs) = = = = =
-        if epoch <= train_config.lr_warmup_epochs:
+        # = = = = = Warmups = = = = =
+        if epoch <= train_config.lr_warmup_epochs:  # LR warmups bypass the schedulers during first epochs
             ae_model.set_warmup_lr_factor(scalars['Sched/LRwarmup'].get(epoch))
         # ae_model.set_attention_gamma(scalars['Sched/AttGamma'].get(epoch))  # FIXME re-activate after implemented
+        ae_model.beta_warmup_ongoing = not scalars['Sched/VAE/beta'].has_reached_final_value
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =
         # when profiling is disabled: true no-op context manager, and prof is None

@@ -83,7 +83,10 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         if not train_config.pretrain_audio_only:
             raise NotImplementedError()  # TODO
 
+        # Save some important values from configurations
         self._input_audio_tensor_size = model_config.input_audio_tensor_size
+        self._dkl_auto_gamma = train_config.dkl_auto_gamma
+        self.beta_warmup_ongoing = train_config.beta_warmup_epochs > 0  # Will be modified when warmup has ended
 
         # Pre-process configuration
         self.main_conv_arch = model.ladderbase.parse_main_conv_architecture(model_config.vae_main_conv_architecture)
@@ -149,8 +152,6 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                 z_sampled.append(z_mu[lat_lvl])
         # We can already compute the per-element latent loss (not batch-averaged/normalized, no beta factor yet)
         # Only the vanilla-VAE Dkl loss is available at the moment
-        # FIXME compute Dkl for each latent level, to ensure that the encode approx. the same amount of information
-        #    (shallower latents seem to collapse more easily than deeper latents)
         #    HOW TO compute self._dkl_gamma
         z_losses_per_lvl = list()
         for lat_lvl in range(len(z_mu)):
@@ -158,12 +159,17 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             # We don't normalize (divide by the latent size) to stay closer to the ELBO when the latent size is changed.
             z_losses_per_lvl.append(utils.probability.standard_gaussian_dkl(
                 z_mu[lat_lvl].flatten(start_dim=1), z_var[lat_lvl].flatten(start_dim=1), reduction='none'))
-        # TODO gamma_l factors applied to KLDs during warmup
-        z_loss = sum(z_losses_per_lvl)  # N-dimensional loss (not minibatch-averaged)
-        # TODO calculer gamma sur le mini-batch uniquement ?
-
-        # FIXME test
-        truc = self.flatten_latent_values(z_sampled)
+        # Compute a Dkl factor for each latent level, to ensure that the encode approx. the same amount
+        #    of information (shallower latents seem to collapse more easily than deeper latents)?
+        #    These gamma_l factors can be applied to KLDs during warmup (and if activated).
+        if self._dkl_auto_gamma and self.beta_warmup_ongoing:
+            with torch.no_grad():  # 0.5 arbitrary factor - TODO try to find a better solution
+                dkl_per_level = 0.5 * np.asarray([_z_loss.mean().item() for _z_loss in z_losses_per_lvl])
+            dkl_gamma_per_level = dkl_per_level / dkl_per_level.mean()
+        else:
+            dkl_gamma_per_level = [1.0 for _ in range(len(z_mu))]
+        # N-dimensional loss (not minibatch-averaged) - sum of N-dim vectors
+        z_loss = sum([_z_loss * dkl_gamma_per_level[lvl] for lvl, _z_loss in enumerate(z_losses_per_lvl)])
 
         # 3) Decode
         x_decoded_proba, x_sampled = self.decoder(z_sampled)

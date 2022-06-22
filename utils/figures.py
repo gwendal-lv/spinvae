@@ -346,19 +346,18 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     x_label = None  # Might include the number of not-displayed latent items
     for i, k in enumerate(metrics_names):
         latent_data = latent_metric.get_z(k)  # Not limited yet, but will be limited at the end of this iteration
+        dim_z = latent_data.shape[1]
         data_flat[k] = latent_data.flatten()
         # Increased outliers display (IQR factor default value was 1.5) to be able to observe posterior collapse
-        outlier_limits[k] = utils.stat.get_outliers_bounds(data_flat[k], IQR_factor=10.0)
+        IQR_factor = max(1.5, 2.0 * np.log(dim_z) - 5.0)
+        outlier_limits[k] = utils.stat.get_outliers_bounds(data_flat[k], IQR_factor=IQR_factor)
         outlier_limits[k] = (outlier_limits[k][0] - eps, outlier_limits[k][1] + eps)
         # get a subset if too large - otherwise the figured is rendered to 160MB (!!!) SVG files for dim_z = 2000
         data_flat[k] = utils.stat.get_random_subset_keep_minmax(data_flat[k], latent_data.shape[0] * 10)
 
         # FIXME build 2 tables of data_limited
         if i == 0:  # Build indices when processing the very first metric
-            dim_z = latent_data.shape[1]
-            if dim_z < n_latent_coords_per_column:
-                raise ValueError("This function can't be used for small (dim < {}) latent spaces"
-                                 .format(n_latent_coords_per_column))
+            n_latent_coords_per_column = min(n_latent_coords_per_column, dim_z)  # Small dim_z: identical subplots...
             data_limited_indices = [range(0, n_latent_coords_per_column),
                                     range(dim_z-n_latent_coords_per_column, dim_z)]
             x_labels = ['First z coords ({} to {})'.format(data_limited_indices[0].start, data_limited_indices[0].stop-1),
@@ -681,10 +680,10 @@ def plot_synth_preset_vst_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_hel
 if __name__ == "__main__":
 
     # Latent Metric plot tests - filled with artificial values
-    dim_z = 200
-    latent_metrics = logs.metrics.LatentMetric(dim_z, 3000)  # dim_z is the 2nd dim in the hidden data member
+    dim_z = 10
+    latent_metrics = logs.metrics.LatentMetric(dim_z, 1000)  # dim_z is the 2nd dim in the hidden data member
     for k in ['mu', 'sigma', 'zK']:
-        latent_metrics._z[k] = np.random.normal(0.0, 1.0, (3000, dim_z))
+        latent_metrics._z[k] = np.random.normal(0.0, 1.0, (1000, dim_z))
     latent_metrics.next_dataset_index = latent_metrics.dataset_len  # Force values, for testing only
     fig, ax = plot_latent_distributions_stats(latent_metrics)
     from pathlib import Path

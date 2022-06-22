@@ -41,9 +41,13 @@ model_config_mods, train_config_mods = list(), list()
 
 #for label_smoothing in [0.0, 0.1, 0.5]:
 #for beta in np.flip(np.logspace(-4.0, -2.0, num=5, endpoint=False)):  # Powers of 10.0
-for beta in [1.55e-5]:
-    model_config_mods.append({'run_name': 'beta{:.1e}'.format(beta)})
-    train_config_mods.append({'beta': beta})
+for dim_z in [20, 100]:
+    available_num_levels = [2, 1] if dim_z >= 100 else [1]
+    for num_levels in available_num_levels:
+        model_config_mods.append(
+            {'run_name': 'dimz_{}__lvls_{}'.format(dim_z, num_levels),
+             'vae_latent_levels': num_levels, 'approx_requested_dim_z': dim_z})
+        train_config_mods.append({})
 
 
 
