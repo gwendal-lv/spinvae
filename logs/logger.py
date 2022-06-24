@@ -1,5 +1,6 @@
 import copy
 import multiprocessing
+import pickle
 import threading
 import os
 import sys
@@ -9,7 +10,7 @@ import json
 import datetime
 import pathlib
 import warnings
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 import numpy as np
 
@@ -33,59 +34,20 @@ import logs.logger_mp
 _erase_security_time_s = 5.0
 
 
-def get_model_run_directory(root_path, model_config):
+def get_model_run_directory(root_path, model_config: config.ModelConfig):
     """ Returns the directory where saved models and config.json are stored, for a particular run.
     Does not check whether the directory exists or not (it must have been created by the RunLogger) """
     return root_path.joinpath(model_config.logs_root_dir)\
         .joinpath(model_config.name).joinpath(model_config.run_name)
 
 
-def get_model_checkpoints_dir(root_path: pathlib.Path, model_config):
-    return root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)\
-        .joinpath(model_config.run_name).joinpath('checkpoints')
-
-
-def get_model_checkpoint_from_dir(checkpoints_dir: pathlib.Path, epoch, device=None):
-    checkpoint_path = checkpoints_dir.joinpath('{:05d}.tar'.format(epoch))
-    try:
-        if device is None:
-            checkpoint = torch.load(checkpoint_path)  # Load on original device
-        else:
-            checkpoint = torch.load(checkpoint_path, map_location=device)  # e.g. train on GPU, load on CPU
-    except (OSError, IOError) as e:
-        available_checkpoints = "Available checkpoints: {}".format([f.name for f in checkpoints_dir.glob('*.tar')])
-        print(available_checkpoints)
-        raise ValueError("Cannot load checkpoint for epoch {}: {}".format(epoch, e))
-    return checkpoint
-
-
-def get_model_checkpoint(root_path: pathlib.Path, model_config, epoch, device=None):
-    """ Returns the path to a .tar saved checkpoint, or prints all available checkpoints and raises an exception
-    if the required epoch has no saved .tar checkpoint. """
-    checkpoints_dir = get_model_checkpoints_dir(root_path, model_config)
-    return get_model_checkpoint_from_dir(checkpoints_dir, epoch, device)
-
-
-def get_model_last_checkpoint(root_path: pathlib.Path, model_config, verbose=True, device=None):
-    checkpoints_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)\
-        .joinpath(model_config.run_name).joinpath('checkpoints')
-    available_epochs = [int(f.stem) for f in checkpoints_dir.glob('*.tar')]
-    assert len(available_epochs) > 0  # At least 1 checkpoint should be available
-    if verbose:
-        print("Loading epoch {} from {}".format(max(available_epochs), checkpoints_dir))
-    return get_model_checkpoint(root_path, model_config, max(available_epochs), device)
-
-
-
-
-
-def get_tensorboard_run_directory(root_path, model_config):
+def get_tensorboard_run_directory(root_path, model_config: config.ModelConfig):
     """ Returns the directory where Tensorboard model metrics are stored, for a particular run. """
     return root_path.joinpath(model_config.logs_root_dir).joinpath('runs')\
         .joinpath(model_config.name).joinpath(model_config.run_name)
 
 
-def erase_run_data(root_path, model_config):
+def erase_run_data(root_path, model_config: config.ModelConfig):
     """ Erases all previous data (Tensorboard, config, saved models) for a particular run of the model. """
     if _erase_security_time_s > 0.1:
         print("[RunLogger] *** WARNING *** '{}' run for model '{}' will be erased in {} seconds. "
@@ -96,6 +58,7 @@ def erase_run_data(root_path, model_config):
         print("[RunLogger] '{}' run for model '{}' will be erased.".format(model_config.run_name, model_config.name))
     shutil.rmtree(get_model_run_directory(root_path, model_config))  # config and saved models
     shutil.rmtree(get_tensorboard_run_directory(root_path, model_config))  # tensorboard
+
 
 
 class RunLogger:
@@ -131,7 +94,7 @@ class RunLogger:
             raise NotImplementedError("Cannot compute the current step after restarting from checkpoint")
         else:
             self.current_step = 0
-        self.current_step = 0  # FIXME if restart
+        self.current_step = 0
         # - - - - - Directories creation (if not exists) for model - - - - -
         self.log_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)
         self._make_dirs_if_dont_exist(self.log_dir)
@@ -143,7 +106,6 @@ class RunLogger:
         if self.train_config.verbosity >= 1:
             print("[RunLogger] Starting logging into '{}'".format(self.log_dir))
         self.run_dir = self.log_dir.joinpath(model_config.run_name)  # This is the run's reference folder
-        self.checkpoints_dir = self.run_dir.joinpath('checkpoints')
         self.tensorboard_run_dir = self.tensorboard_model_dir.joinpath(model_config.run_name)  # Required for profiler
         # Check: does the run folder already exist?
         if not os.path.exists(self.run_dir):
@@ -152,13 +114,8 @@ class RunLogger:
             self._make_model_run_dirs()
             if self.train_config.verbosity >= 1:
                 print("[RunLogger] Created '{}' directory to store config and models.".format(self.run_dir))
-        # If run folder already exists
-        else:
-            if self.restart_from_checkpoint:
-                if self.verbosity >= 1:
-                    print("[RunLogger] Will load saved checkpoint (previous epoch: {})"
-                          .format(self.train_config.start_epoch - 1))
-            else:  # Start a new fresh training
+        else:  # If run folder already exists
+            if not self.restart_from_checkpoint:  # Start a new fresh training
                 if not model_config.allow_erase_run:
                     raise RuntimeError("Config does not allow to erase the '{}' run for model '{}'"
                                        .format(model_config.run_name, model_config.name))
@@ -193,7 +150,6 @@ class RunLogger:
     def _make_model_run_dirs(self):
         """ Creates (no check) the directories for storing config and saved models. """
         os.makedirs(self.run_dir)
-        os.makedirs(self.checkpoints_dir)
         os.makedirs(self.tensorboard_run_dir)  # Always required for profiling data
 
     def init_with_model(self, main_model, input_tensor_size, write_graph=True):
@@ -203,11 +159,13 @@ class RunLogger:
         # New/Saved configs compatibility must have been checked before calling this function
         if self.comet is not None:  # Log the entire config.py file to comet
             self.comet.experiment.log_code(file_name=pathlib.Path(__file__).parent.parent.joinpath('config.py'))
-        # TODO check this after config refactoring
-        config_dict = {'model': self.model_config.__dict__, 'train': self.train_config.__dict__}
+        # Write configs to a JSON file, also pickle them to reload them easily
         with open(self.run_dir.joinpath('config.json'), 'w') as f:
-            json.dump(config_dict, f)
-        if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
+            json.dump({'model': self.model_config.__dict__, 'train': self.train_config.__dict__}, f)
+        with open(self.run_dir.joinpath('config.pickle'), 'wb') as f:
+            pickle.dump({'model': self.model_config, 'train': self.train_config}, f)
+        # Graphs written at epoch 0 only
+        if not self.restart_from_checkpoint:
             self.write_model_summary(main_model, input_tensor_size, 'VAE')
             if write_graph and self.tensorboard is not None:
                 self.tensorboard.add_graph(main_model, torch.zeros(input_tensor_size))
@@ -227,10 +185,16 @@ class RunLogger:
             with open(self.run_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
                 f.write(description)
 
-    def get_previous_config_from_json(self):
+    @property
+    def config_from_json_file(self):
         with open(self.run_dir.joinpath('config.json'), 'r') as f:
-            full_config = json.load(f)
-        return full_config
+            return json.load(f)
+
+    @property
+    def configs_from_pickle_file(self) -> Tuple[config.ModelConfig, config.TrainConfig]:
+        with open(self.run_dir.joinpath('config.pickle'), 'r') as f:
+            configs = pickle.load(f)
+        return configs['model'], configs['train']
 
     def on_train_minibatch_finished(self, minibatch_idx):
         self.current_step += 1
@@ -280,23 +244,6 @@ class RunLogger:
         if self.comet is not None:
             self.comet.experiment.log_metric('epoch_duration_avg', avg_duration_s, include_context=False)
             self.comet.experiment.log_epoch_end(epoch_cnt=self.train_config.n_epochs)
-
-    def save_checkpoint(self, ae_model: model.base.TrainableModel,
-                        reg_model: Optional[model.base.TrainableModel] = None):
-        # These keys will be re-used by model/base.py, TrainableModel::load_checkpoint(...)
-        checkpoint_dict = {'epoch': self.current_epoch,
-                           'ae': {'model_state_dict': ae_model.state_dict(),
-                                  'optimizer_state_dict': ae_model.optimizer.state_dict(),
-                                  'scheduler_state_dict': ae_model.scheduler.state_dict()}}
-        if reg_model is not None:
-            checkpoint_dict['reg'] = {'model_state_dict': reg_model.state_dict(),
-                                      'optimizer_state_dict': reg_model.optimizer.state_dict(),
-                                      'scheduler_state_dict': reg_model.scheduler.state_dict()}
-        checkpoint_path = self.checkpoints_dir.joinpath('{:05d}.tar'.format(self.current_epoch))
-        torch.save(checkpoint_dict, checkpoint_path)
-        if self.verbosity >= 1:
-            print("[RunLogger] Saved epoch {} checkpoint (models, optimizers, schedulers) to {}"
-                  .format(self.current_epoch, checkpoint_path))
 
     def on_training_finished(self):
         # wait for all plotting threads to join

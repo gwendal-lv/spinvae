@@ -26,8 +26,8 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = "saved"  # Path from this directory
-        self.name = "hierarch_vae"  # experiment base name
-        self.run_name = 'Dz100_2lvls_BIG'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.name = "hvae"  # experiment base name
+        self.run_name = 'chkpt_test_05'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         # TODO anonymous automatic relative path
         self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
                                           "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
@@ -53,7 +53,7 @@ class ModelConfig:
         #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
         #    '_LN' uses LayerNorm instead of BatchNorm
         #    '_swish' uses Swish activations (SiLU) instead of LeakyReLU
-        self.vae_main_conv_architecture = 'specladder8x1_res_big'
+        self.vae_main_conv_architecture = 'specladder8x1_res'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'conv_1l_1x1' means regular convolution, 1 layer, 1x1 conv kernels
         #       'lstm_2l_3x3' mean ConvLSTM, 2 layers, 3x3 conv kernels
@@ -66,15 +66,12 @@ class ModelConfig:
         #   2 latent levels allows dim_z close to 100
         #   3 latent levels allows dim_z close to 350
         #   4 latent levels allows dim_z close to 1500
-        self.vae_latent_levels = 2
+        self.vae_latent_levels = 1
         # Sets the family of decoder output probability distribution p_theta(x|z), e.g. :
         #    - 'gaussian_unitvariance' corresponds to the usual MSE reconstruction loss (up to a constant and factor)
         self.audio_decoder_distribution = 'gaussian_unitvariance'
         self.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
-        # Style network architecture: to get a style vector w from a sampled latent vector z0 (inspired by StyleGAN)
-        # must be an mlp, but the number of layers and output normalization (_outputbn) can be configured
-        # e.g. 8l1024: 8 layers, 1024 units per layer  FIXME DEPRECATED
-        self.style_architecture = 'mlp_2l128_outputbn'  # DEPRECATED batch norm layers are always added inside the mlp
+        # FIXME "regression" does not exist anymore
         # Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
         # TODO random permutations when building flows
         # 3l600 is associated to bad MMD values and "dirac-like" posteriors.
@@ -161,9 +158,8 @@ class TrainConfig:
         self.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
         self.k_folds = 9  # 10% for validation set, 80% for training
         self.current_k_fold = 0
-        self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
+        self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load the last saved checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
-        #
         self.n_epochs = 200 if self.pretrain_audio_only else 275  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
@@ -191,8 +187,9 @@ class TrainConfig:
         # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
         #            ELBO loss is obtained by using beta = 1.55 e-5
         self.beta = 1.6e-5
-        # TODO try much smaller beta start value - to try to reduce posterior collapse
-        self.beta_start_value = self.beta * 0.0  # Should not be zero with Flows (risk of a very unstable training)
+        # Should not be zero with Normalizing Flows or with a multi-layer structure for extracting latent values
+        # (risk of a very unstable training)
+        self.beta_start_value = self.beta * 1e-3
         # Epochs of warmup increase from start_value to beta TODO increase to reduce posterior collapse
         self.beta_warmup_epochs = 50  # See update_dynamic_config_params(). Used during pre-train only
         # VAE Kullback-Leibler divergence weighting during warmup, to try to prevent posterior collapse of some
@@ -261,10 +258,9 @@ class TrainConfig:
         self.latent_flow_input_regul_weight = 0.1  # Used for 'Dkl' only
 
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
-        self.save_period = 500  # Period for checkpoint saves (large disk size)
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
         self.large_plots_min_period = 100  # Min num of epochs between plots (e.g. embeddings, approx. 80MB .tsv files)
-        self.plot_epoch_0 = True
+        self.plot_epoch_0 = False
         self.verbosity = 1  # 0: no console output --> 3: fully-detailed per-batch console output
         self.init_security_pause = 0.0  # Short pause before erasing an existing run
         # Number of logged audio and spectrograms for a given epoch

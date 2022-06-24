@@ -48,14 +48,8 @@ class LadderDecoder(LadderBase):
             if conv_args['att'] and conv_args['depsep5x5'] and self.single_ch_conv_arch['n_layers_per_block'] < 3:
                 raise ValueError("'_att' and '_depsep5x5' conv args (both provided) require >= 3 layers")
             self.single_ch_cells = list()
-            if self.n_latent_levels == 1:  # FIXME
-                cells_first_block = [0]
-            elif self.n_latent_levels == 2:
-                cells_first_block = [0, 3]
-            elif self.n_latent_levels == 3:
-                cells_first_block = [0, 2, 4]
-            elif self.n_latent_levels == 4:
-                cells_first_block = [0, 2, 4, 5]
+            if 1 <= self.n_latent_levels <= (n_blocks - 2):
+                cells_first_block = list(range(0, self.n_latent_levels))
             else:
                 raise NotImplementedError("Cannot build encoder with {} latent levels".format(self.n_latent_levels))
 
@@ -179,13 +173,14 @@ class LadderDecoder(LadderBase):
         self.single_ch_cells = nn.ModuleList(self.single_ch_cells)
         self.latent_cells = nn.ModuleList(self.latent_cells)
 
-    def get_custom_param_group(self, group_name: str):
+    def get_custom_group_module(self, group_name: str):
+        """ Returns a module """
         if group_name == 'audio':
-            return self.single_ch_cells.parameters()
+            return self.single_ch_cells
         elif group_name == 'latent':
-            return self.latent_cells.parameters()
+            return self.latent_cells
         elif group_name == 'preset':
-            return list()
+            return None  # FIXME
         else:
             raise ValueError("Unavailable group_name '{}'".format(group_name))
 
@@ -194,7 +189,7 @@ class LadderDecoder(LadderBase):
 
         # Audio decoder: apply latent cells and split outputs to get residuals
         conv_cell_res_inputs = [[] for _ in range(self.n_latent_levels)]  # 1st dim: cell index; 2nd dim: audio channel
-        for latent_level, level_z in enumerate(z_sampled): # Higher latent_level corresponds to deeper latent features
+        for latent_level, level_z in enumerate(z_sampled):  # Higher latent_level corresponds to deeper latent features
             cell_index = self._get_cell_index(latent_level)
             multi_ch_conv_input = self.latent_cells[latent_level](level_z)
             # TODO FIXME maybe don't chunk

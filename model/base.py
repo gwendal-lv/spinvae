@@ -1,6 +1,7 @@
 """
 Contains base classes (abstract or not) for models.
 """
+import pathlib
 import warnings
 from abc import abstractmethod
 from typing import Optional, Tuple, List, Dict
@@ -175,13 +176,14 @@ class TrainableMultiGroupModel(nn.Module):
         self._schedulers = {k: None for k in param_group_names}
 
     @abstractmethod
-    def get_custom_param_group(self, group_name: str):
+    def get_custom_group_module(self, group_name: str) -> nn.Module:
         pass
 
     def _init_optimizers_and_schedulers(self):
         for k in self.trained_param_group_names:
             self._optimizers[k] = build_optimizer(
-                self._train_config, self._train_config.initial_learning_rate[k], self.get_custom_param_group(k)
+                self._train_config, self._train_config.initial_learning_rate[k],
+                self.get_custom_group_module(k).parameters()
             )
         for k in self.trained_param_group_names:
             self._schedulers[k] = build_scheduler(self._train_config, self._optimizers[k])
@@ -210,5 +212,25 @@ class TrainableMultiGroupModel(nn.Module):
             else:
                 self._schedulers[k].step()
 
-    # TODO load/save checkpointS
+    def save_checkpoints(self, model_dir: pathlib.Path):
+        checkpoint_dict = dict()
+        for k in self.param_group_names:
+            checkpoint_dict[k] = dict()
+            if k in self.trained_param_group_names:  # Save trained groups only
+                checkpoint_dict[k] = {
+                    'model_state_dict': self.get_custom_group_module(k).state_dict(),
+                    'optimizer_state_dict': self._optimizers[k].state_dict(),
+                    'scheduler_state_dict': self._schedulers[k].state_dict()
+                }
+            else:  # Save non-trained parameters as None
+                checkpoint_dict[k] = {
+                    'model_state_dict': None, 'optimizer_state_dict': None, 'scheduler_state_dict': None
+                }
+        torch.save(checkpoint_dict, model_dir.joinpath("checkpoint.tar"))
+        if self._train_config.verbosity >= 1:
+            print("[RunLogger] Saved checkpoint (models, optimizers, schedulers) to {}"
+                  .format(model_dir.joinpath("checkpoint.tar")))
 
+    def load_checkpoints(self, checkpoints_dir: pathlib.Path):
+        raise NotImplementedError()
+        # TODO load only available

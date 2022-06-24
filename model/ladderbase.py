@@ -58,7 +58,10 @@ class LadderBase(nn.Module):
         return nn.BatchNorm2d(n_ch)  # Others (e.g. layer norm) are not considered yet for the main CNN
 
     @abstractmethod
-    def get_custom_param_group(self, group_name: str):
+    def get_custom_group_module(self, group_name: str) -> nn.Module:
+        """
+        Returns a module of parameters corresponding to a given group (e.g. 'audio', 'latent', ...).
+        That means that even if a group is split into different Modules, they have to be stored in,
+        e.g., a single ModuleList.
+        """
         pass
-
-

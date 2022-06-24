@@ -42,14 +42,10 @@ class LadderEncoder(LadderBase):
             if conv_args['att'] and self.single_ch_conv_arch['n_layers_per_block'] < 2:
                 raise ValueError("'_att' conv arg will add a residual self-attention layer and requires >= 2 layers")
             self.single_ch_cells = list()
-            if latent_levels == 1:
-                cells_last_block = [n_blocks - 1]  # Unique cell ends with the very last block
-            elif latent_levels == 2:
-                cells_last_block = [4, n_blocks - 1]
-            elif latent_levels == 3:
-                cells_last_block = [3, 5, n_blocks - 1]
-            elif latent_levels == 4:
-                cells_last_block = [2, 3, 5, n_blocks - 1]
+            # Only the deepest latent levels are used - early experiments seem to show that shallow latent levels
+            # collapse very quickly. This is quite unexplained at the moment.
+            if 1 <= latent_levels <= (n_blocks - 2):
+                cells_last_block = list(range(n_blocks - latent_levels, n_blocks))
             else:
                 raise NotImplementedError("Cannot build encoder with {} latent levels".format(latent_levels))
             self.single_ch_cells.append(nn.Sequential())
@@ -136,10 +132,10 @@ class LadderEncoder(LadderBase):
          a spatial structure (2D multichannel images, different resolutions) and such that the total number
          of pixels is very close to approx_dim_z. """
         latent_ch_per_level = list()
-        # Build a linearly decreasing number of latent coords for the most hidden layers, even if the
-        # feature maps' sizes decreases quadratically - not to favor too much the shallowest feature maps, which
-        # could (seems to) lead to overfitting
-        dim_z_ratios = np.arange(len(self.single_ch_cells), 0, -1)
+        # Build a constant number of latent coords through the layers, even if the
+        # feature maps' sizes decreases quadratically - not to favor too much the shallowest feature maps,
+        # which suffer from posterior collapse and could (seems to) lead to overfitting and
+        dim_z_ratios = np.ones((len(self.single_ch_cells), ))
         dim_z_ratios = dim_z_ratios / dim_z_ratios.sum()
         remaining_z_dims = approx_dim_z  # Number of latent dims yet to be assigned to a latent level
         # Assign the exact number of channels, level-by-level, to get as close as possible to the requested dim_z
@@ -163,13 +159,14 @@ class LadderEncoder(LadderBase):
             latent_ch_per_level.append(num_ch)
         return latent_ch_per_level
 
-    def get_custom_param_group(self, group_name: str):
+    def get_custom_group_module(self, group_name: str):
+        """ Returns a module """
         if group_name == 'audio':
-            return self.single_ch_cells.parameters()
+            return self.single_ch_cells
         elif group_name == 'latent':
-            return self.latent_cells.parameters()
+            return self.latent_cells
         elif group_name == 'preset':
-            return list()
+            return None  # FIXME
         else:
             raise ValueError("Unavailable group_name '{}'".format(group_name))
 

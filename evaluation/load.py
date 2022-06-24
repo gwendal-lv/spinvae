@@ -30,6 +30,7 @@ class ModelLoader:
         if device == 'cpu':
             self.train_config.main_cuda_device_idx = -1
 
+        # FIXME the model will load its checkpoint itself
         checkpoint = logs.logger.get_model_last_checkpoint(self._root_path, self.model_config, device=self.device)
         if self.train_config.pretrain_audio_only:
             # TODO load dataset + dataloader

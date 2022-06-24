@@ -5,6 +5,7 @@ import warnings
 import numpy as np
 import torch
 import torchinfo
+from torch import nn
 from torch.distributions.normal import Normal
 
 import config
@@ -109,11 +110,20 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         if train_config.verbosity >= 1:
             print("[HierarchicalVAE] model_config.dim_z has been automatically set to {} (requested approximate dim_z "
                   "was {})".format(model_config.dim_z, model_config.approx_requested_dim_z))
+            print("[HierarchicalVAE] latent feature maps shapes: {}".format([s[1:] for s in self.z_shapes]))
+            print("[HierarchicalVAE] dim_z for each latent level: {}".format([np.prod(s[1:]) for s in self.z_shapes]))
         self.decoder = model.ladderdecoder.LadderDecoder(
             self.main_conv_arch, self.latent_arch,
             self.z_shapes, model_config.input_audio_tensor_size,
             model_config.audio_decoder_distribution
         )
+
+        # Build a ModuleList for each group of parameters (e.g. audio/latent/preset, ...)
+        # Their only use is to aggregate parameters into a single nn.Module
+        self._aggregated_modules_lists = {
+            k : nn.ModuleList([m.get_custom_group_module(k) for m in [self.encoder, self.decoder]])
+            for k in self.param_group_names
+        }
 
         # Losses and metrics
         self.mmd = MMD()
@@ -129,9 +139,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
     def dim_z(self):
         return sum(self.dim_z_per_level)
 
-    def get_custom_param_group(self, group_name: str):
-        # Convert pytorch's parameters iterator into a list for each model, then sum these lists
-        return sum([list(m.get_custom_param_group(group_name)) for m in [self.encoder, self.decoder]], [])
+    def get_custom_group_module(self, group_name: str) -> nn.Module:
+        return self._aggregated_modules_lists[group_name]
 
     def forward(self, x, v=None, preset_uids=None, midi_notes=None):
         if v is not None:
@@ -276,16 +285,17 @@ class AudioDecoder:
 if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
     _train_config.minibatch_size = 16
-    _model_config.vae_main_conv_architecture = 'specladder8x2_res_depsep5x5'
+    _model_config.vae_main_conv_architecture = 'specladder8x1_res'
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 3
-    _model_config.approx_requested_dim_z = 400
+    _model_config.approx_requested_dim_z = 288
     config.update_dynamic_config_params(_model_config, _train_config)
 
     hVAE = HierarchicalVAE(_model_config, _train_config)
 
     print(hVAE.encoder.get_single_ch_conv_summary())
     print(hVAE.encoder.get_latent_cells_summaries())
+    print(hVAE.z_shapes)
 
     print(hVAE.decoder.get_single_ch_conv_summary())
     print(hVAE.decoder.get_latent_cells_summaries())

@@ -37,6 +37,7 @@ import logs.metrics
 from logs.metrics import SimpleMetric, EpochMetric, VectorMetric, LatentMetric, LatentCorrMetric
 import data.dataset
 import data.build
+import utils.configutils
 import utils.profile
 from utils.hparams import LinearDynamicParam
 import utils.figures
@@ -55,9 +56,6 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     # ========== Logger init (required for comet.ml console logs, load from checkpoint, ...) and Config check ==========
     root_path = Path(__file__).resolve().parent
     logger = logs.logger.RunLogger(root_path, model_config, train_config)
-    if logger.restart_from_checkpoint:
-        model.build.check_configs_on_resume_from_checkpoint(model_config, train_config,
-                                                            logger.get_previous_config_from_json())
 
 
     # ========== Datasets and DataLoaders ==========
@@ -85,7 +83,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     # HierarchicalVAE won't be the same during pre-train (empty parts without optimizer and scheduler)
     ae_model = model.hierarchicalvae.HierarchicalVAE(model_config, train_config)
     # will torchinfo txt summary. model must not be parallel (graph not written anymore: too complicated, unreadable)
-    logger.init_with_model(ae_model, model_config.input_audio_tensor_size, write_graph=False)  # main model: autoencoder
+    logger.init_with_model(ae_model, model_config.input_audio_tensor_size, write_graph=False)
 
 
     # ============================= Training devices (GPU(s) only) =========================
@@ -105,16 +103,9 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     ae_model_parallel = nn.DataParallel(ae_model, device_ids=parallel_device_ids, output_device=device)
 
 
-    # ========== Restart from checkpoint, load weights from pre-trained models? ==========
-    if pretrain_audio:
-        if logger.restart_from_checkpoint:
-            raise AssertionError("This code must be checked for the new hierarchical VAE")
-            start_checkpoint = logs.logger.get_model_checkpoint(root_path, model_config, train_config.start_epoch - 1)
-            ae_model.load_checkpoint(start_checkpoint)
-    else:
-        if logger.restart_from_checkpoint:  # TODO  load ae+reg weights
-            raise NotImplementedError()
-        else:  # load VAE from a different path (must be given)
+    # ========== Load weights from pre-trained models? ==========
+    if not pretrain_audio:
+        if model_config.pretrained_VAE_checkpoint is not None:
             raise AssertionError("This code must be checked for the new hierarchical VAE")
             pretrained_checkpoint = torch.load(model_config.pretrained_VAE_checkpoint, map_location=device)
             ae_model.load_checkpoint(pretrained_checkpoint)
@@ -294,19 +285,15 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                     v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_indexes_helper)
                 logger.add_figure('SynthControlsError', fig)
 
-        # = = = = = Model+optimizer(+scheduler) save - ready for next epoch = = = = =
-        if (epoch > 0 and epoch % train_config.save_period == 0)\
-                or (epoch == train_config.n_epochs-1) or early_stop:
-            # FIXME the model should save its checkpoint by itself
-            raise NotImplementedError()
-            logger.save_checkpoint(ae_model, (None if pretrain_audio else reg_model))
+        # = = = = = End of epoch = = = = =
         logger.on_epoch_finished(epoch)
         if early_stop:
             print("[train.py] Training stopped early (final loss plateau)")
             break
 
 
-    # ========== Logger final stats ==========
+    # ========== Logger final stats + save Model/Optimizers/Scheduler checkpoints ==========
+    ae_model.save_checkpoints(logger.run_dir)
     logger.on_training_finished()  # Might have to wait for threads
 
 

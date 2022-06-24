@@ -2,6 +2,8 @@
 import json
 import collections
 
+import config
+
 
 # Could (should) be improved...
 class _Config(object):

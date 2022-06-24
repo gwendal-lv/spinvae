@@ -94,6 +94,7 @@ def build_extended_ae_model(model_config: ModelConfig, train_config: TrainConfig
 
 def _is_attr_equal(attr1, attr2):
     """ Compares two config attributes - lists auto converted to tuples. """
+    raise DeprecationWarning()  # FIXME DEPRECATED, REMOVE
     _attr1 = tuple(attr1) if isinstance(attr1, list) else attr1
     _attr2 = tuple(attr2) if isinstance(attr2, list) else attr2
     return _attr1 == _attr2
@@ -113,6 +114,7 @@ def check_configs_on_resume_from_checkpoint(new_model_config: ModelConfig, new_t
     :return:
     """
     # Model config check TODO add/update attributes to check
+    raise DeprecationWarning()  # FIXME DEPRECATED, REMOVE
     prev_config = config_json_checkpoint['model']
     attributes_to_check = ['name', 'run_name', 'encoder_architecture',
                            'dim_z', 'concat_midi_to_z', 'latent_flow_arch',
