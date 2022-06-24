@@ -23,7 +23,7 @@ if __name__ == "__main__":
         model_config = config.model
     else:
         model_config = _Config
-        model_config.logs_root_dir = "saved"
+        # model_config.logs_root_dir = "saved"  # FIXME requires an absolute path
         # = = = = = Insert here model and run to be erased = = = = =
         model_config.name = 'FlowReg_dimz5020'
         model_config.run_name = 'dev_test__dense_dequant_loss'

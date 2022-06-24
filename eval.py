@@ -84,7 +84,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     # Reload model and train config
     model_config, train_config = utils.config.get_config_from_file(path_to_model_dir.joinpath('config.json'))
     if eval_config.load_from_archives:
-        model_config.logs_root_dir = "saved_archives"
+        model_config.logs_root_dir = "saved_archives"  # FIXME
     # Eval file to be created
     eval_pickle_file_path = get_eval_pickle_file_path(path_to_model_dir, eval_config.dataset,
                                                       force_multi_note=(forced_midi_notes is not None))

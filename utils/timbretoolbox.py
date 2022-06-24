@@ -73,6 +73,7 @@ class TimbreToolboxProcess:
         self._log_and_print(log_str)
 
         # Poll process.stdout to show stdout live
+        # FIXME this seems quite useless.... subprocess.run seems to do exactly this
         proc = subprocess.Popen(proc_args, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # Retrieve std::cout and std::cerr from Threads (to raise an exception is any Matlab error happens)

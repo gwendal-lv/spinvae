@@ -37,13 +37,13 @@ _erase_security_time_s = 5.0
 def get_model_run_directory(root_path, model_config: config.ModelConfig):
     """ Returns the directory where saved models and config.json are stored, for a particular run.
     Does not check whether the directory exists or not (it must have been created by the RunLogger) """
-    return root_path.joinpath(model_config.logs_root_dir)\
+    return pathlib.Path(model_config.logs_root_dir)\
         .joinpath(model_config.name).joinpath(model_config.run_name)
 
 
 def get_tensorboard_run_directory(root_path, model_config: config.ModelConfig):
     """ Returns the directory where Tensorboard model metrics are stored, for a particular run. """
-    return root_path.joinpath(model_config.logs_root_dir).joinpath('runs')\
+    return pathlib.Path(model_config.logs_root_dir).joinpath('runs')\
         .joinpath(model_config.name).joinpath(model_config.run_name)
 
 
@@ -96,10 +96,10 @@ class RunLogger:
             self.current_step = 0
         self.current_step = 0
         # - - - - - Directories creation (if not exists) for model - - - - -
-        self.log_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)
+        self.log_dir = pathlib.Path(model_config.logs_root_dir).joinpath(model_config.name)
         self._make_dirs_if_dont_exist(self.log_dir)
         # Tensorboard directory is always required for the PyTorch Profiler to write its results
-        self.tensorboard_model_dir = root_path.joinpath(model_config.logs_root_dir)\
+        self.tensorboard_model_dir = pathlib.Path(model_config.logs_root_dir)\
             .joinpath('runs').joinpath(model_config.name)
         self._make_dirs_if_dont_exist(self.tensorboard_model_dir)
         # - - - - - Run directories and data management - - - - -

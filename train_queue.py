@@ -4,6 +4,7 @@ Must be run as main
 
 See the actual training function in train.py
 """
+import pathlib
 
 import comet_ml  # Required first for auto-logging
 
@@ -22,7 +23,12 @@ import utils.exception
 
 # TODO intercept Ctrl-C sigint and ask for confirmation
 
-
+"""
+This folder and sub-folders can be entirely duplicated before running this (duplicated) train_queue.py file.
+This allows to work on the original python code while the training queue (which may last for days)
+runs using isolated duplicated python code.
+"""
+duplicate_code = True
 
 """ Global config modifications (applied to all runs) """
 train_all_k_folds = False  # automatically train all cross-validation folds?
@@ -38,18 +44,16 @@ Please write two lists of dicts, such that:
 """
 model_config_mods, train_config_mods = list(), list()
 
+
+
+
 for dim_z in [100]:
-    for conv_layers in ['8x1', '8x2']:
+    for conv_layers in ['8x2']:  # '8x1' already done
         for big in ['', '_big']:
             for latent_arch in ['conv_1l_k1x1_gated', 'conv_2l_k3x3_gated']:
                 for num_levels in [1, 2, 3]:
                     for dkl_auto_gamma in [False, True]:
                         conv_arch = 'specladder' + conv_layers + '_res' + big
-
-                        # Configs déjà entraînées (queue avait crashé sur kernels 3x3, NaNs)
-                        if conv_layers == '8x1' and big == '' and latent_arch == 'conv_1l_k1x1_gated':
-                            continue
-
                         model_config_mods.append(
                             {'comet_tags': ['conv_hpar_sweep'],
                              'run_name': '{}_dimz{}_lvls{}{}_lat{}__dklgamma{}'
@@ -65,10 +69,31 @@ for dim_z in [100]:
 
 
 
+
 if __name__ == "__main__":
-    assert len(model_config_mods) == len(train_config_mods)
+    if duplicate_code:
+        import sys
+        import subprocess
+        import utils.code
+        argv = sys.argv
+        # Check if we're the original train_queue.py, or if we're the duplicated code run from a fork
+        if '--DUPLICATED-CODE' not in argv:
+            code_dir = pathlib.Path(__file__).parent
+            duplicated_code_dir = code_dir.joinpath("DUPLICATED_CODE")
+            print("[[ORIGINAL train_queue.py]] All contents from this directory (including hidden files, ...) "
+                  "will be copied to {}".format(duplicated_code_dir))
+            utils.code.duplicate_code(code_dir, duplicated_code_dir, ['saved', 'exports', 'figures'])
+            print("[[ORIGINAL train_queue.py]] File copy finished. Running the duplicated code now...")
+            # Use the current python executable
+            subprocess.run([sys.executable, str(duplicated_code_dir.joinpath('train_queue.py')), '--DUPLICATED-CODE'])
+            print("[[ORIGINAL train_queue.py]] Duplicated code finished - exiting now...")
+            sys.exit(0)
+        else:
+            print("[[DUPLICATED FORKED train_queue.py]] Training queue is about to start...")
 
     base_model_config, base_train_config = config.ModelConfig(), config.TrainConfig()
+
+    assert len(model_config_mods) == len(train_config_mods)
 
     # If performing k-fold cross validation trains, duplicate run mods to train all folds
     if train_all_k_folds:
@@ -97,7 +122,7 @@ if __name__ == "__main__":
               .format(run_index+1, len(model_config_mods)))
 
         # Modifications applied to all runs
-        train_config.plot_epoch_0 = False
+        train_config.plot_epoch_0 = plot_epoch_0
         train_config.plot_period = plot_period
         # Per-run config modifications
         for k, v in model_config_mods[run_index].items():
@@ -141,3 +166,4 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    print("[train_queue.py] Finished training.")

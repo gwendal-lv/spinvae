@@ -14,7 +14,10 @@ parameters, please only use simple types such as string, ints, floats, tuples (n
 
 
 import datetime
-# The config_confidential.py must be created by the user - required global attributes are described later in this file
+import pathlib
+
+# The config_confidential.py file must be created by the user in the ./utils folder. It must contain
+# a few global attributes which are described later in this file (see ModelConfig ctor)
 from utils import config_confidential
 
 
@@ -25,12 +28,11 @@ class ModelConfig:
     def __init__(self):
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
-        self.logs_root_dir = "saved"  # Path from this directory
+        self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "hvae"  # experiment base name
-        self.run_name = 'chkpt_test_05'  # experiment run: different hyperparams, optimizer, etc... for a given exp
-        # TODO anonymous automatic relative path
-        self.pretrained_VAE_checkpoint = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
-                                          "VAE_MMD_5020/presets_x4__enc_big_dec3resblk__batch64/checkpoints/00399.tar"
+        self.run_name = 'dummy_test_05_OK'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.pretrained_VAE_checkpoint \
+            = self.logs_root_dir + "/TODO_MY_MODEL_CHECKPOINT.tar"
         self.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
         # Comet.ml logger (replaces Tensorboard)
         self.comet_api_key = config_confidential.comet_api_key
