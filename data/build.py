@@ -25,10 +25,6 @@ def get_dataset(model_config, train_config):
         full_dataset = dataset.DexedDataset(** dataset.model_config_to_dataset_kwargs(model_config),
                                             algos=model_config.dataset_synth_args[0],
                                             operators=model_config.dataset_synth_args[1],
-                                            vst_params_learned_as_categorical=
-                                            model_config.synth_vst_params_learned_as_categorical,
-                                            continuous_params_max_resolution=
-                                            model_config.continuous_params_max_resolution,
                                             restrict_to_labels=model_config.dataset_labels)
     else:
         raise NotImplementedError("No dataset available for '{}': unrecognized synth.".format(model_config.synth))
@@ -38,12 +34,6 @@ def get_dataset(model_config, train_config):
         print(full_dataset.preset_indexes_helper.short_description)
     # config.py direct dirty modifications - number of learnable params depends on the synth and dataset arguments
     model_config.synth_params_count = full_dataset.learnable_params_count
-    model_config.learnable_params_tensor_length = full_dataset.learnable_params_tensor_length
-    if model_config.params_regression_architecture.startswith("flow_"):
-        if model_config.dim_z != model_config.learnable_params_tensor_length:
-            warnings.warn("FlowControlsRegression model: dim_z must be changed from {} to {}"
-                          .format(model_config.dim_z, model_config.learnable_params_tensor_length))
-        model_config.dim_z = model_config.learnable_params_tensor_length
     return full_dataset
 
 

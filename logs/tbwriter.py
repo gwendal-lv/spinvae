@@ -59,7 +59,6 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         self.hyper_params['syntargs'] = self.model_config.synth_args_str
         self.hyper_params['nmidi'] = '{}{}'.format(len(self.model_config.midi_notes),
                                                    ("stack" if model_config.stack_spectrograms else "inde"))
-        self.hyper_params['catcontmodel'] = self.model_config.synth_vst_params_learned_as_categorical
         self.hyper_params['cont_max_reso'] = self.model_config.continuous_params_max_resolution
         self.hyper_params['normalizeloss'] = self.train_config.normalize_losses
         # Latent space hparams

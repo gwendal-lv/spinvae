@@ -19,7 +19,9 @@ import numpy as np
 
 from synth import dexed
 from data import abstractbasedataset  # 'from .' raises ImportError when run from PyCharm as __main__
-from data.preset import DexedPresetsParams, PresetIndexesHelper
+# from data.preset import DexedPresetsParams, PresetIndexesHelper  # Deprecated now
+from data.preset2d import Preset2dHelper, Preset2d
+
 
 # Global lock... Should be the same for all forked Unix processes
 #dexed_vst_lock = Lock()  # Unused - pre-rendered audio (at the moment)
@@ -36,8 +38,6 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                  random_seed=0, data_augmentation=True,
                  algos: Optional[List[int]] = None,
                  operators: Optional[List[int]] = None,
-                 vst_params_learned_as_categorical: Optional[str] = None,
-                 continuous_params_max_resolution: Optional[int] = 100,
                  restrict_to_labels=None, constant_filter_and_tune_params=True,
                  constant_middle_C=True,
                  prevent_SH_LFO=False,  # TODO re-implement
@@ -55,9 +55,6 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         :param algos: List. Can be used to limit the DX7 algorithms included in this dataset. Set to None
             to use all available algorithms
         :param operators: List of ints, or None. Enables the specified operators only, or all of them if None.
-        :param vst_params_learned_as_categorical: None to learn all vst params as numerical, 'vst_cat'
-            to learn vst cat params as categorical, or 'all<=x' to learn all vst params (including numerical) with
-            cardinality <= xxx (e.g. 8 or 32) as categorical
         :param restrict_to_labels: List of strings. If not None, presets of this dataset will be selected such
             that they are tagged with at least one of the given labels.
         :param constant_filter_and_tune_params: if True, the main filter and the detune settings are set to default.
@@ -82,7 +79,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         # Pandas Dataframe db, always kept in memory (very fast loading and access)
         self._dexed_db = dexed.PresetDfDatabase()
         # - - - Constraints on parameters, learnable VST parameters - - -
-        self.learnable_params_idx = list(range(0, self.total_nb_params))
+        self.learnable_params_idx = list(range(0, self.total_nb_vst_params))
         if self.constant_filter_and_tune_params:  # (see dexed_db_explore.ipynb)
             for vst_idx in [0, 1, 2, 3]:
                 self.learnable_params_idx.remove(vst_idx)
@@ -119,11 +116,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                                       if any([self.is_label_included(l) for l in self.get_labels_name(uid)])]
         # - - - Parameters constraints, cardinality, indexes management, ... - - -
         # Param cardinalities are stored - Dexed cardinality involves a short search which can be avoided
-        # This cardinality is the LEARNING REPRESENTATION cardinality - will be used for categorical representations
         self._params_cardinality = np.asarray([dexed.Dexed.get_param_cardinality(idx)
-                                               for idx in range(self.total_nb_params)])
-        self.continuous_params_max_resolution = continuous_params_max_resolution
-        self._params_cardinality = np.minimum(self._params_cardinality, self.continuous_params_max_resolution)
+                                               for idx in range(self.total_nb_vst_params)])
         self._params_default_values = dict()
         # Algo cardinality is manually set. We consider an algo-limited DX7 to be a new synth
         if len(self.algos) > 0:  # len 0 means all algorithms are used
@@ -149,41 +143,17 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             for vst_param_idx in mod_vst_params_indexes:
                 self._params_default_values[vst_param_idx] = 0.0  # Default: no modulation when MIDI mod wheel changes
         # - - - None / Numerical / Categorical learnable status array - - -
-        self._vst_params_learned_as_categorical = vst_params_learned_as_categorical
         self._vst_param_learnable_model = list()
-        num_vst_learned_as_cat_cardinal_threshold = None
-        if vst_params_learned_as_categorical is not None:
-            if vst_params_learned_as_categorical.startswith('all<='):
-                num_vst_learned_as_cat_cardinal_threshold = int(vst_params_learned_as_categorical.replace('all<=', ''))
-            elif vst_params_learned_as_categorical == 'all':
-                num_vst_learned_as_cat_cardinal_threshold = -1  # All params are learned
-            else:
-                assert vst_params_learned_as_categorical == 'vst_cat'
-        # We go through all VST params indexes
-        for vst_idx in range(self.total_nb_params):
+        for vst_idx in range(self.total_nb_vst_params):  # We go through all VST params indexes
             if vst_idx not in self.learnable_params_idx:
                 self._vst_param_learnable_model.append(None)
             else:
-                if vst_params_learned_as_categorical is None:  # Default: forced numerical only
+                if vst_idx in dexed.Dexed.get_numerical_params_indexes():
                     self._vst_param_learnable_model.append('num')
-                elif vst_params_learned_as_categorical == 'all':  # Everything learned as cat
+                else:
                     self._vst_param_learnable_model.append('cat')
-                else:  # Mixed representations: is the VST param numerical?
-                    if vst_idx in dexed.Dexed.get_numerical_params_indexes():
-                        if num_vst_learned_as_cat_cardinal_threshold is None:  # If no threshold: learned as numerical
-                            self._vst_param_learnable_model.append('num')
-                        # If a non-continuous param has a small enough cardinality: might be learned as categorical
-                        elif 1 < self._params_cardinality[vst_idx] <= num_vst_learned_as_cat_cardinal_threshold:
-                            self._vst_param_learnable_model.append('cat')
-                        else:
-                            self._vst_param_learnable_model.append('num')
-                    # If categorical VST param: must be learned as cat (at this point)
-                    elif vst_idx in dexed.Dexed.get_categorical_params_indexes():
-                        self._vst_param_learnable_model.append('cat')
-                    else:
-                        raise ValueError("VST param idx={} is neither numerical nor categorical".format(vst_idx))
         # - - - Final initializations - - -
-        self._preset_idx_helper = PresetIndexesHelper(self)
+        self._preset_idx_helper = Preset2dHelper(self)
         # Don't need to load spectrograms stats here anymore: will be loaded on demand
         if check_constrains_consistency:  # check consistency of pre-rendered audio files
             self.check_audio_render_constraints_file()
@@ -215,25 +185,6 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     # ============================== Presets and parameters (PresetDataset only) =============================
 
     @property
-    def learnable_representation_name(self):
-        if self._vst_params_learned_as_categorical is None:
-            representation_name = "all_numerical"
-        elif self._vst_params_learned_as_categorical == 'vst_cat':
-            representation_name = "vst_cat_as_cat"
-        elif self._vst_params_learned_as_categorical == 'all':
-            representation_name = 'all_categorical'
-            representation_name += '__reso{}'.format(self.continuous_params_max_resolution)
-        elif self._vst_params_learned_as_categorical.startswith('all<='):
-            cardinal_threshold = int(self._vst_params_learned_as_categorical.replace('all<=', ''))
-            representation_name = "vst_num_lt{}_as_cat".format(cardinal_threshold)
-            if cardinal_threshold >= self.continuous_params_max_resolution:
-                representation_name += '__reso{}'.format(self.continuous_params_max_resolution)
-        else:
-            raise ValueError("Invalid 'vst_params_learned_as_categorical' value: {}"
-                             .format(self._vst_params_learned_as_categorical))
-        return representation_name
-
-    @property
     def vst_param_learnable_model(self):
         return self._vst_param_learnable_model
 
@@ -250,7 +201,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         return self._params_default_values
 
     @property
-    def total_nb_params(self):
+    def total_nb_vst_params(self):
         return self._dexed_db.nb_params_per_preset
 
     @property
@@ -260,6 +211,10 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     @property
     def preset_param_names(self):
         return self._dexed_db.param_names
+
+    @property
+    def preset_param_types(self) -> List[str]:
+        return dexed.Dexed.get_param_types(operator_index=False)  # All operators will have the same param types
 
     def get_preset_param_cardinality(self, idx, learnable_representation=True):
         if idx == 4 and learnable_representation is False:
@@ -272,8 +227,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             # send VST indexes which are learned (data augmentation on these ones only)
             raw_full_preset = dexed.Dexed.get_similar_preset(
                 raw_full_preset, preset_variation, self.learnable_params_idx, random_seed=preset_UID)
-        return DexedPresetsParams(full_presets=torch.unsqueeze(torch.tensor(raw_full_preset, dtype=torch.float32), 0),
-                                  dataset=self)
+        return Preset2d(self, raw_full_preset)
 
     # ================================== Constraints (on presets' parameters) =================================
 

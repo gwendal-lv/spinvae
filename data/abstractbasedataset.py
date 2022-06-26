@@ -589,7 +589,7 @@ class PresetDataset(AudioDataset):
         return "{}\n{} learnable synth params, {} fixed params. Learnable representation: '{}'\n" \
                "{}x audio delay data augmentation, {}x preset data augmentation." \
             .format(super().__str__(),
-                    len(self.learnable_params_idx), self.total_nb_params - len(self.learnable_params_idx),
+                    len(self.learnable_params_idx), self.total_nb_vst_params - len(self.learnable_params_idx),
                     self.learnable_representation_name,
                     self._nb_audio_delay_variations_per_note, self._nb_preset_variations_per_note)
 
@@ -603,14 +603,21 @@ class PresetDataset(AudioDataset):
         return spectrograms, preset_params, uid_tensor, notes, labels
 
     @abstractmethod
-    def get_full_preset_params(self, preset_UID, preset_variation=0) -> PresetsParams:
-        """ Returns a PresetsParams instance (see preset.py) of 1 preset for the requested preset_UID """
+    def get_full_preset_params(self, preset_UID, preset_variation=0):
+        """ Returns a Preset2d instance (see preset2d.py) of 1 preset for the requested preset_UID """
         pass
 
     @property
     def preset_param_names(self):
         """ Returns a List which contains the name of all parameters of presets (free and constrained). """
-        return ['unnamed_param_{}'.format(i) for i in range(self.total_nb_params)]
+        return ['unnamed_param_{}'.format(i) for i in range(self.total_nb_vst_params)]
+
+    @property
+    @abstractmethod
+    def preset_param_types(self) -> List[str]:
+        """ Returns a list which contains the type of each VST parameters. The type can be different
+        from the name, if e.g. all 'freq' controls are considered to have the same type. """
+        pass
 
     def get_preset_param_cardinality(self, idx, learnable_representation=True):
         """ Returns the cardinality i.e. the number of possible different values of all parameters.
@@ -643,7 +650,7 @@ class PresetDataset(AudioDataset):
 
     @property
     @abstractmethod
-    def total_nb_params(self):
+    def total_nb_vst_params(self):
         """ Total count of constrained and free VST parameters of a preset. """
         pass
 
@@ -656,13 +663,7 @@ class PresetDataset(AudioDataset):
         """
         pass
 
-    # ================================== Learnable representations of presets =================================
-
-    @property
-    @abstractmethod
-    def learnable_representation_name(self):
-        """ Returns the name of the current learnable representation of presets. """
-        pass
+    # ================================== Learnable (tensor) representations of presets =================================
 
     @property
     def learnable_params_count(self):
@@ -670,24 +671,23 @@ class PresetDataset(AudioDataset):
         return len(self.learnable_params_idx)
 
     @property
-    def learnable_params_tensor_length(self):
-        """ Length of a learnable parameters tensor (contains single-element numerical values and one-hot encoded
-        categorical params). """
-        _, params, _, _ = self.__getitem__(0)  # future FIXME: corriger ça quand 
-        return params.shape[0]
+    def learnable_params_tensor_shape(self):
+        """ Shape of a learnable parameters tensor. """
+        item = self.__getitem__(0)  # future FIXME: corriger ça quand
+        return item[1].shape
 
     @property
     def vst_param_learnable_model(self):
-        """ List of models for full-preset (VSTi-compatible) parameters. Possible values are None for non-learnable
+        """ List of types for full-preset (VSTi-compatible) parameters. Possible values are None for non-learnable
         parameters, 'num' for numerical data (continuous or discrete) and 'cat' for categorical data. """
-        return ['num' for _ in range(self.total_nb_params)]  # Default: 'num' only
+        return ['num' for _ in range(self.total_nb_vst_params)]  # Default: 'num' only
 
     @property
     def numerical_vst_params(self):
         """ List of indexes of numerical parameters (whatever their discrete number of values) in the VSTi.
         E.g. a 8-step volume param is numerical, while a LFO shape param is not (it is categorical). The
         learnable model can be different from the VSTi model. """
-        return [i for i in range(self.total_nb_params)]  # Default: numerical only
+        return [i for i in range(self.total_nb_vst_params)]  # Default: numerical only
 
     @property
     def categorical_vst_params(self):
@@ -696,14 +696,15 @@ class PresetDataset(AudioDataset):
         return []  # Default: no categorical params
 
     @property
+    @abstractmethod
     def preset_indexes_helper(self):
-        """ Returns the data.preset.PresetIndexesHelper instance which helps convert full/learnable presets
+        """ Returns the data.preset2d.Preset2dHelper instance which helps convert full/learnable presets
         from this dataset. """
-        return PresetIndexesHelper(nb_params=self.total_nb_params)  # Default: identity
+        pass  # No default indexes helper, because this would require circular imports... could be fixed
 
     @property
     def _learnable_preset_folder(self):
-        return self.data_storage_path.joinpath("LearnablePresets").joinpath(self.learnable_representation_name)
+        return self.data_storage_path.joinpath("LearnableTensorPresets")
 
     def _get_learnable_preset_file_path(self, preset_UID, preset_variation):
         return self._learnable_preset_folder.joinpath("{:06d}_pvar{:03d}.pt".format(preset_UID, preset_variation))
@@ -732,20 +733,27 @@ class PresetDataset(AudioDataset):
         os.makedirs(self._learnable_preset_folder)
         # dict for storing nb of samples for each class (categorical-learned params only)
         cat_params_samples_per_class = dict()
-        for vst_index, learn_model in enumerate(self.preset_indexes_helper.vst_param_learnable_model):
+        # FIXME
+        for vst_index, learn_model in enumerate(self.vst_param_learnable_model):
             if learn_model == 'cat':
                 cat_params_samples_per_class[vst_index] \
-                    = np.zeros_like(self.preset_indexes_helper.full_to_learnable[vst_index], dtype=int)
-        # Compute and store presets (learnable representation)
+                    = np.zeros(self.get_preset_param_cardinality(vst_index), dtype=int)
+        # Compute and store presets (learnable representation)  FIXME ALL OF THIS
         for preset_UID in self.valid_preset_UIDs:
             for preset_var in range(self._nb_preset_variations_per_note):
                 preset_params = self.get_full_preset_params(preset_UID, preset_variation=preset_var)
-                preset_params = torch.squeeze(preset_params.get_learnable(), 0)
+                preset_tensor = preset_params.to_learnable_tensor()
                 # stats about classes for each cat-encoded synth parameter (for all variations)
-                for vst_index in cat_params_samples_per_class:
-                    learn_indices = self.preset_indexes_helper.full_to_learnable[vst_index]
-                    cat_params_samples_per_class[vst_index] += np.asarray(preset_params[learn_indices], dtype=int)
-                torch.save(preset_params.clone(), self._get_learnable_preset_file_path(preset_UID, preset_var))
+                for vst_idx in cat_params_samples_per_class:
+                    row = self.preset_indexes_helper._vst_idx_to_matrix_row[vst_idx]
+                    class_idx = int(preset_tensor[row, 0].item())
+                    cat_params_samples_per_class[vst_idx][class_idx] += 1
+                # FIXME DUMMY TEST
+                from data.preset2d import Preset2d
+                p = Preset2d(self, learnable_tensor_preset=preset_tensor)
+                r = p.to_raw()
+                # END FIXME
+                torch.save(preset_tensor.clone(), self._get_learnable_preset_file_path(preset_UID, preset_var))
         # store classes samples counts
         with open(self._learnable_presets_cat_params_stats_file, 'wb') as f:
             pickle.dump(cat_params_samples_per_class, f)

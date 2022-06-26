@@ -10,6 +10,8 @@ import importlib
 import warnings
 from datetime import datetime
 
+import config
+
 from data import dataset
 from data.dataset import SurgeDataset, NsynthDataset, DexedDataset
 from data.abstractbasedataset import AudioDataset
@@ -40,24 +42,20 @@ def gen_dexed_dataset(regen_wav: bool, regen_spectrograms: bool, regen_learnable
     Learnable preset regeneration:
         1.3 min, 30293 presets with 1x data augmentation (presets variations), 2.7 ms / file  (on 1 CPU)
     """
-    importlib.reload(sys)
-    sys.path.append(pathlib.Path(__file__).parent.parent)
-    import config  # Dirty path trick to import config.py from project root dir
-    importlib.reload(config)
+    model_config, train_config = config.ModelConfig(), config.TrainConfig()
+    config.update_dynamic_config_params(model_config, train_config)
 
-    operators = config.model.dataset_synth_args[1]
-    continuous_params_max_resolution = config.model.continuous_params_max_resolution
+    operators = model_config.dataset_synth_args[1]
     # continuous_params_max_resolution = 100
 
     # No label restriction, no normalization, etc...
-    dexed_dataset = DexedDataset(** dataset.model_config_to_dataset_kwargs(config.model),
-                                 algos=None,  # allow all algorithms
-                                 operators=operators,  # Operators limitation (config.py, or chosen above)
-                                 vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
-                                 continuous_params_max_resolution=continuous_params_max_resolution,
-                                 restrict_to_labels=None,
-                                 check_constrains_consistency=(not regen_wav) and (not regen_spectrograms)
-                                 )
+    dexed_dataset = DexedDataset(
+        ** dataset.model_config_to_dataset_kwargs(model_config),
+        algos=None,  # allow all algorithms
+        operators=operators,  # Operators limitation (config.py, or chosen above)
+        restrict_to_labels=None,
+        check_constrains_consistency=(not regen_wav) and (not regen_spectrograms)
+    )
     if regen_learnable_presets:
         print(dexed_dataset.preset_indexes_helper)
         dexed_dataset.compute_and_store_learnable_presets()
@@ -83,6 +81,7 @@ def gen_surge_dataset(regen_patches_list: bool, regen_wav: bool, regen_spectrogr
     If both params are set to False, the entire dataset will be read on 1 CPU (testing procedure)
         1.4ms / __getitem__ call (6 notes / item ; 1 CPU)
     """
+    # FIXME REFACTOR
     importlib.reload(sys)
     sys.path.append(pathlib.Path(__file__).parent.parent)
     import config  # Dirty path trick to import config.py from project root dir
@@ -118,6 +117,7 @@ def gen_nsynth_dataset(regen_json: bool, regen_spectrograms: bool, regen_labels:
     If both params are set to False, the entire dataset will be read on 1 CPU (testing procedure)
         1.0ms / __getitem__ call (6 notes / item ; 1 CPU)
     """
+    # FIXME REFACTOR
     importlib.reload(sys)
     sys.path.append(pathlib.Path(__file__).parent.parent)
     import config  # Dirty path trick to import config.py from project root dir
@@ -168,7 +168,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regen_wav=False, regen_spectrograms=False, regen_learnable_presets=False, regen_labels=True)
-    gen_surge_dataset(regen_patches_list=True, regen_wav=False, regen_spectrograms=False, regen_labels=True)
-    gen_nsynth_dataset(regen_json=False, regen_spectrograms=False, regen_labels=True)
+    gen_dexed_dataset(regen_wav=False, regen_spectrograms=False, regen_learnable_presets=True, regen_labels=False)
+    #gen_surge_dataset(regen_patches_list=True, regen_wav=False, regen_spectrograms=False, regen_labels=True)
+    #gen_nsynth_dataset(regen_json=False, regen_spectrograms=False, regen_labels=True)
 

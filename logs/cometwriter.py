@@ -41,7 +41,6 @@ class CometWriter:
         self.experiment.log_parameter("z_dkl_autogamma", train_config.dkl_auto_gamma)
         self.experiment.log_parameter("mel_bins", model_config.mel_bins)
         self.experiment.log_parameter("n_midi_notes", len(model_config.midi_notes))
-        self.experiment.log_parameter("params_cat_learned", model_config.synth_vst_params_learned_as_categorical)
         self.experiment.log_parameter("batch_size", train_config.minibatch_size)
         self.experiment.log_parameter("att_gamma_warmup", train_config.attention_gamma_warmup_period)
         self.experiment.log_parameter("z_loss", train_config.latent_loss)

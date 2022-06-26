@@ -1,4 +1,10 @@
 """
+DEPRECATED - these classes extended preset into bigger 1D representations, which led to many small
+operations on tensor (very slow) and is harder to use.
+However we don't throw this code away yet, in case we go back to 1D normalizing flows in the future...
+
+See preset2d.py
+
 Classes to store and transform batches of synth presets. Some functionalities are:
 - can be initialized from a full preset or an inferred (incomplete) preset
 - retrieve only learnable params of full presets, or fill un-learned (not inferred) values
@@ -444,7 +450,7 @@ class PresetsParams:
         self._learnable_params_idx = dataset.learnable_params_idx
         self._default_constrained_values = dataset.params_default_values
         self._params_cardinality = [dataset.get_preset_param_cardinality(idx)
-                                    for idx in range(dataset.total_nb_params)]
+                                    for idx in range(dataset.total_nb_vst_params)]
         # Size checks - 2D Tensors only
         if self._full_presets is not None:
             assert len(self._full_presets.size()) == 2

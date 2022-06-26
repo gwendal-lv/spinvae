@@ -120,8 +120,6 @@ class ModelConfig:
         self.midi_notes = self.required_dataset_midi_notes
         self.main_midi_note_index = 2  # 56, 75
         self.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
-        # -1 corresponds to the deepest 1x1 conv, -2 to the layer before, ...
-        self.stack_specs_features_mix_level = -2  # FIXME allow 0 for RNN "features mixer"
         # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
         # dataset size is increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
         self.increased_dataset_size = None  # See update_dynamic_config_params()
@@ -133,11 +131,7 @@ class ModelConfig:
         # Dexed-specific auto rename: '*' in 'al*_op*_lab*' will be replaced by the actual algos, operators and labels
         self.synth_args_str = 'al*_op*_lab*'  # Auto-generated string (see end of script)
         self.synth_params_count = -1  # Will be set automatically - see data.build.get_full_and_split_datasets
-        self.learnable_params_tensor_length = -1  # Will be auto-set - see data.build.get_full_and_split_datasets
-        # Modeling of synth controls probability distributions
-        # Possible values: None, 'vst_cat', 'all<=xx' where xx is numerical params threshold cardinal, or 'all'
-        self.synth_vst_params_learned_as_categorical = 'vst_cat'  # FIXME this is a dataset argument
-        self.continuous_params_max_resolution = -1  # resolution of continuous synth params will be reduced to this
+        # FIXME Modeling of synth controls probability distributions - RE-IMPLEMENT, SHOULD BE A MODEL ARGUMENT
         # flags/values to describe the dataset to be used
         self.dataset_labels = None  # tuple of labels (e.g. ('harmonic', 'percussive')), or None to use all labels
         # Dexed: Preset Algorithms, and activated Operators (Lists of ints, None to use all)

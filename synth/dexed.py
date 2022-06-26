@@ -549,7 +549,7 @@ class Dexed:
             elif (param_index % 22) == (33 % 22):  # OPx F coarse
                 return 32
             elif (param_index % 22) == (35 % 22):  # OPx OSC Detune
-                return 15
+                return 15  # -7 to +7  (15 steps, including central position)
             elif (param_index % 22) == (39 % 22):  # OPx L Key Scale (-lin, -exp, +exp, +lin)
                 return 4
             elif (param_index % 22) == (40 % 22):  # OPx R Key Scale (-lin, -exp, +exp, +lin)
@@ -566,6 +566,31 @@ class Dexed:
                 return 100
         else:
             return 100
+
+    @staticmethod
+    def get_param_types(operator_index=False):
+        """ Returns a list of strings describing each parameter. If operator_index is False, all operator
+        will be considered to have the same types if parameters (no position information). """
+        param_types = \
+            ['Cutoff', 'Resonance', 'Output', 'MASTER_TUNE_ADJ', 'ALGORITHM', 'FEEDBACK', 'OSC_KEY_SYNC', 'LFO_SPEED',
+             'LFO_DELAY', 'LFO_PM_DEPTH', 'LFO_AM_DEPTH', 'LFO_KEY_SYNC', 'LFO_WAVE', 'MIDDLE_C', 'P_MODE_SENS',
+             'PITCH_EG_RATE_1', 'PITCH_EG_RATE_2', 'PITCH_EG_RATE_3', 'PITCH_EG_RATE_4',
+             'PITCH_EG_LEVEL_1', 'PITCH_EG_LEVEL_2', 'PITCH_EG_LEVEL_3', 'PITCH_EG_LEVEL_4',]
+        op_param_types = [
+            'OPx_EG_RATE_1', 'OPx_EG_RATE_2', 'OPx_EG_RATE_3', 'OPx_EG_RATE_4',
+            'OPx_EG_LEVEL_1', 'OPx_EG_LEVEL_2', 'OPx_EG_LEVEL_3', 'OPx_EG_LEVEL_4',
+            'OPx_OUTPUT_LEVEL', 'OPx_MODE', 'OPx_F_COARSE', 'OPx_F_FINE', 'OPx_OSC_DETUNE',
+            'OPx_BREAK_POINT', 'OPx_L_SCALE_DEP', 'OPx_R_SCALE_DEP', 'OPx_L_KEY_SCALE', 'OPx_R_KEY_SCALE',
+            'OPx_RATE_SCALING', 'OPx_A_MOD_SENS', 'OPx_KEY_VELOCITY', 'OPx_SWITCH'
+        ]
+        if not operator_index:
+            return param_types + op_param_types * 6
+        else:
+            all_ops_param_types = list()
+            for i in range(6):
+                for p_type in op_param_types:
+                    all_ops_param_types.append(p_type.replace('OPx', 'OP{}'.format(i+1)))
+            return param_types + all_ops_param_types
 
     @staticmethod
     def get_numerical_params_indexes():

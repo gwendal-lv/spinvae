@@ -7,6 +7,7 @@ from typing import Tuple
 
 import torch
 
+import config
 from . import dexeddataset
 from . import surgedataset
 from . import nsynthdataset
@@ -21,7 +22,7 @@ MergedDataset = mergeddataset.MergedDataset
 
 
 
-def model_config_to_dataset_kwargs(model_config):
+def model_config_to_dataset_kwargs(model_config: config.ModelConfig):
     """ Creates a dict that can be unpacked to pass to an AudioDataset class constructor.
 
     :param model_config: should be the config.model attribute from config.py.
