@@ -175,6 +175,10 @@ class TrainableMultiGroupModel(nn.Module):
         self._optimizers = {k: None for k in param_group_names}
         self._schedulers = {k: None for k in param_group_names}
 
+    @property
+    def pre_training_audio(self):
+        return self._train_config.pretrain_audio_only
+
     @abstractmethod
     def get_custom_group_module(self, group_name: str) -> nn.Module:
         pass

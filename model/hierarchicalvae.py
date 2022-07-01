@@ -14,6 +14,7 @@ import model.ladderbase
 import model.ladderencoder
 import model.ladderdecoder
 import utils.probability
+from data.preset2d import Preset2dHelper
 from utils.probability import gaussian_log_probability, standard_gaussian_log_probability, MMD
 
 
@@ -36,8 +37,10 @@ def parse_latent_extract_architecture(full_architecture: str):
 
 
 class HierarchicalVAEOutputs:
-    def __init__(self, z_mu: List[torch.Tensor], z_var: List[torch.Tensor], z_sampled: List[torch.Tensor], z_loss,
-                 x_decoded_proba, x_sampled):
+    def __init__(self, z_mu: List[torch.Tensor], z_var: List[torch.Tensor], z_sampled: List[torch.Tensor],
+                 z_loss, x_decoded_proba, x_sampled,
+                 u_out, u_numerical_nll, u_categorical_nll, u_l1_error, u_accuracy
+                 ):
         """
         Class to store outputs of a hierarchical VAE. Some constructor args are optional depending on the VAE
         architecture and training procedure (e.g. normalizing flows or not, etc...)
@@ -46,6 +49,13 @@ class HierarchicalVAEOutputs:
         """
         self.z_mu, self.z_var, self.z_sampled, self.z_loss = z_mu, z_var, z_sampled, z_loss
         self.x_decoded_proba, self.x_sampled = x_decoded_proba, x_sampled
+        self.u_out, self.u_numerical_nll, self.u_categorical_nll, self.u_l1_error, self.u_accuracy = \
+            u_out, u_numerical_nll, u_categorical_nll, u_l1_error, u_accuracy
+        # Quick tests to try to ensure that the proper data was provided
+        if u_out is not None:
+            assert len(u_out.shape) == 3
+            assert len(u_numerical_nll.shape) == 1
+            assert len(u_accuracy.shape) == 1
 
     def get_z_mu_no_hierarchy(self, to_numpy=False):
         flat_t = torch.cat([torch.flatten(z, start_dim=1) for z in self.z_mu], dim=1)
@@ -65,7 +75,8 @@ class HierarchicalVAEOutputs:
 
 
 class HierarchicalVAE(model.base.TrainableMultiGroupModel):
-    def __init__(self, model_config: config.ModelConfig, train_config: Optional[config.TrainConfig] = None):
+    def __init__(self, model_config: config.ModelConfig, train_config: Optional[config.TrainConfig] = None,
+                 preset_helper: Optional[Preset2dHelper] = None):
         """
         Builds a Hierarchical VAE which encodes and decodes multi-channel spectrograms or waveforms.
         A preset can be encoded/decoded as well (optional during pre-training).
@@ -80,9 +91,6 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         """
         trainable_param_group_names = ['audio', 'latent'] + ([] if train_config.pretrain_audio_only else ['preset'])
         super().__init__(train_config, ['audio', 'latent', 'preset'], trainable_param_group_names)
-
-        if not train_config.pretrain_audio_only:
-            raise NotImplementedError()  # TODO
 
         # Save some important values from configurations
         self._input_audio_tensor_size = model_config.input_audio_tensor_size
@@ -103,6 +111,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             self.main_conv_arch, self.latent_arch, model_config.vae_latent_levels, model_config.input_audio_tensor_size,
             approx_dim_z=model_config.approx_requested_dim_z
         )
+        warnings.warn("TODO: Preset encoder not implemented")
         with torch.no_grad():  # retrieve encoder output shapes (list of shapes for each latent level)
             dummy_z_mu, _ = self.encoder(torch.zeros(model_config.input_audio_tensor_size))
         self.z_shapes = [z.shape for z in dummy_z_mu]
@@ -112,10 +121,20 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                   "was {})".format(model_config.dim_z, model_config.approx_requested_dim_z))
             print("[HierarchicalVAE] latent feature maps shapes: {}".format([s[1:] for s in self.z_shapes]))
             print("[HierarchicalVAE] dim_z for each latent level: {}".format([np.prod(s[1:]) for s in self.z_shapes]))
+        if train_config.pretrain_audio_only:
+            decoder_opt_args = None, None, None
+        else:
+            assert preset_helper is not None
+            decoder_opt_args = (model_config.vae_preset_architecture,
+                                model_config.preset_hidden_size,
+                                model_config.preset_decoder_numerical_distribution,
+                                preset_helper)
+        self._preset_helper = preset_helper
         self.decoder = model.ladderdecoder.LadderDecoder(
             self.main_conv_arch, self.latent_arch,
             self.z_shapes, model_config.input_audio_tensor_size,
-            model_config.audio_decoder_distribution
+            model_config.audio_decoder_distribution,
+            *decoder_opt_args
         )
 
         # Build a ModuleList for each group of parameters (e.g. audio/latent/preset, ...)
@@ -142,12 +161,14 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
     def get_custom_group_module(self, group_name: str) -> nn.Module:
         return self._aggregated_modules_lists[group_name]
 
-    def forward(self, x, v=None, preset_uids=None, midi_notes=None):
-        if v is not None:
-            raise NotImplementedError("Presets can not be auto-encoded at the moment (audio input only).")
+    def forward(self, x_target, u_target=None, preset_uids=None, midi_notes=None):
+        if u_target is not None:
+            warnings.warn("Presets can not be encoded at the moment.")
+            if self.pre_training_audio:
+                u_target = None  # We force a None value even if a dummy preset was given at input
 
         # 1) Encode
-        z_mu, z_var = self.encoder(x, None, midi_notes)
+        z_mu, z_var = self.encoder(x_target, u_target, midi_notes)  # TODO encode
 
         # 2) Latent values
         # For each latent level, sample z_l from q_phi(z_l|x) using reparametrization trick (no conditional posterior)
@@ -181,7 +202,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         z_loss = sum([_z_loss * dkl_gamma_per_level[lvl] for lvl, _z_loss in enumerate(z_losses_per_lvl)])
 
         # 3) Decode
-        x_decoded_proba, x_sampled = self.decoder(z_sampled)
+        x_decoded_proba, x_sampled, preset_decoder_out = self.decoder(z_sampled, u_target)
 
         # 4) return all available values using Tensor only, for this method to remain usable
         # with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
@@ -190,7 +211,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         for lat_lvl in range(len(z_mu)):
             out_list += [z_mu[lat_lvl], z_var[lat_lvl], z_sampled[lat_lvl]]
         out_list += [z_loss, x_decoded_proba, x_sampled]
-        return tuple(out_list)
+        return tuple(out_list) + preset_decoder_out
 
     def parse_outputs(self, forward_outputs):
         """ Parses tuple output from a self.forward(...) call into a HierarchicalVAEOutputs instance. """
@@ -201,8 +222,15 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             z_var.append(forward_outputs[i + 1])
             z_sampled.append(forward_outputs[i + 2])
             i += 3
+        z_loss, x_decoded_proba, x_sampled = forward_outputs[i:i+3]
+        i += 3
+        # See preset_model.py
+        u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc = forward_outputs[i:i+5]
+        assert i+5 == len(forward_outputs)
         return HierarchicalVAEOutputs(
-            z_mu, z_var, z_sampled, forward_outputs[i], forward_outputs[i + 1], forward_outputs[i + 2]
+            z_mu, z_var, z_sampled,
+            z_loss, x_decoded_proba, x_sampled,
+            u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc
         )
 
     @staticmethod
@@ -248,13 +276,22 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         summary += str(self.encoder.get_single_ch_conv_summary()) + '\n\n'
         summary += sep_str + '********** ENCODER latent cells **********\n' + sep_str
         summary += str(self.encoder.get_latent_cells_summaries()) + '\n\n'
+        # TODO ADD ENCODER PRESET MODEL
         summary += sep_str + '********** DECODER latent cells **********\n' + sep_str
         summary += str(self.decoder.get_latent_cells_summaries()) + '\n\n'
         summary += sep_str + '********** DECODER audio single-channel conv **********\n' + sep_str
         summary += str(self.decoder.get_single_ch_conv_summary()) + '\n\n'
+        if self.decoder.preset_decoder is not None:
+            summary += sep_str + '********** DECODER preset **********\n' + sep_str
+            summary += str(self.decoder.preset_decoder.get_summary()) + '\n\n'
         summary += sep_str + '********** FULL VAE SUMMARY **********\n' + sep_str
+        if self._preset_helper is None:
+            input_data = (torch.empty(self._input_audio_tensor_size), )
+        else:
+            input_u = self._preset_helper.get_null_learnable_preset(self._input_audio_tensor_size[0])
+            input_data = (torch.empty(self._input_audio_tensor_size), input_u)
         summary += str(torchinfo.summary(
-            self, self._input_audio_tensor_size, depth=5, device=torch.device('cpu'), verbose=0,
+            self, input_data=input_data, depth=5, device=torch.device('cpu'), verbose=0,
             col_names=("input_size", "output_size", "num_params", "mult_adds"),
             row_settings=("depth", "var_names")
         ))
@@ -275,8 +312,8 @@ class AudioDecoder:
     def generate_from_latent_vector(self, z):
         # input z is expected to be a flattened tensor
         z_multi_level = self._hierarchical_vae.unflatten_latent_values(z)
-        x_decoded_proba, x_sampled = self._hierarchical_vae.decoder(z_multi_level)
-        return x_sampled
+        decoder_out = self._hierarchical_vae.decoder(z_multi_level, None)  # No preset: will return lots of None
+        return decoder_out[1]  # Return x_sampled only
 
 
 
@@ -284,14 +321,27 @@ class AudioDecoder:
 
 if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
-    _train_config.minibatch_size = 16
     _model_config.vae_main_conv_architecture = 'specladder8x1_res'
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
-    _model_config.vae_latent_levels = 3
-    _model_config.approx_requested_dim_z = 288
+    _model_config.vae_latent_levels = 1
+    _model_config.approx_requested_dim_z = 144
+
+    _train_config.pretrain_audio_only = True
+    _train_config.minibatch_size = 16
     config.update_dynamic_config_params(_model_config, _train_config)
 
-    hVAE = HierarchicalVAE(_model_config, _train_config)
+    if not _train_config.pretrain_audio_only:
+        import data.build
+        _ds = data.build.get_dataset(_model_config, _train_config)
+        _preset_helper = _ds.preset_indexes_helper
+        _dummy_preset = _preset_helper.get_null_learnable_preset(_train_config.minibatch_size)
+    else:
+        _preset_helper, _dummy_preset = None, None
+
+    hVAE = HierarchicalVAE(_model_config, _train_config, _preset_helper)
+
+    vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size), _dummy_preset)
+    vae_out = hVAE.parse_outputs(vae_out)
 
     print(hVAE.encoder.get_single_ch_conv_summary())
     print(hVAE.encoder.get_latent_cells_summaries())
@@ -299,11 +349,10 @@ if __name__ == "__main__":
 
     print(hVAE.decoder.get_single_ch_conv_summary())
     print(hVAE.decoder.get_latent_cells_summaries())
+    if not _train_config.pretrain_audio_only:
+        print(hVAE.decoder.preset_decoder.get_summary())
 
     print(hVAE.get_detailed_summary())
-
-    vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size))
-    vae_out = hVAE.parse_outputs(vae_out)
 
     print(hVAE)
 

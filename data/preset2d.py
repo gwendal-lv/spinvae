@@ -44,10 +44,10 @@ class Preset2dHelper:
         self._matrix_row_to_vst_idx = list()
         self._matrix_numerical_rows = list()
         self._num_row_to_matrix_row = list()
-        self._matrix_numerical_rows_card = list()
+        self.matrix_numerical_rows_card = list()
         self._matrix_categorical_rows = list()
         self._cat_row_to_matrix_row = list()
-        self._matrix_categorical_rows_card = list()
+        self.matrix_categorical_rows_card = list()
         for vst_idx, learnable_model in enumerate(self._vst_param_learnable_model):
             # For conversions between a raw VST preset and its 2D tensor representation
             if learnable_model is not None:
@@ -57,11 +57,11 @@ class Preset2dHelper:
                 if learnable_model == 'num':
                     self.vst_numerical_bool_mask[vst_idx] = True
                     self._matrix_numerical_rows.append(cur_matrix_row)
-                    self._matrix_numerical_rows_card.append(ds.get_preset_param_cardinality(vst_idx))
+                    self.matrix_numerical_rows_card.append(ds.get_preset_param_cardinality(vst_idx))
                 elif learnable_model == 'cat':
                     self.vst_categorical_bool_mask[vst_idx] = True
                     self._matrix_categorical_rows.append(cur_matrix_row)
-                    self._matrix_categorical_rows_card.append(ds.get_preset_param_cardinality(vst_idx))
+                    self.matrix_categorical_rows_card.append(ds.get_preset_param_cardinality(vst_idx))
                 else:
                     raise ValueError("Unexpected _vst_param_learnable_model value '{}'".format(learnable_model))
             else:
@@ -73,7 +73,7 @@ class Preset2dHelper:
         for i, vst_idx in enumerate(self.fixed_vst_indices):
             self.fixed_vst_params_bool_mask[vst_idx] = True
             self.fixed_vst_params_default_values[i] = ds.params_default_values[vst_idx]
-        self._max_cat_classes = max(self._matrix_categorical_rows_card)
+        self.max_cat_classes = max(self.matrix_categorical_rows_card)
         # Build tensor with the type of each learnable parameter (we don't care about fixed params set to default)
         self._param_types_str = [t for vst_idx, t in enumerate(ds.preset_param_types)
                                  if self._vst_param_learnable_model[vst_idx] is not None]
@@ -103,6 +103,14 @@ class Preset2dHelper:
         self.matrix_categorical_bool_mask_2d = torch.unsqueeze(self.matrix_categorical_bool_mask, dim=1).repeat(1, 3)
         self.matrix_categorical_bool_mask_2d[:, 1:3] = False
 
+        # Categorical groups (1 group / cardinal)
+        # Mask that must be applied to the reduced categotical-only sub-matrix
+        self.categorical_groups_submatrix_bool_masks = dict()  # FIXME
+        categorical_cardinals_set = sorted(list(set(self.matrix_categorical_rows_card)))
+        for card in categorical_cardinals_set:
+            self.categorical_groups_submatrix_bool_masks[card] = \
+                np.asarray(self.matrix_categorical_rows_card) == card
+
     @property
     def n_learnable_params(self):
         """ Returns the number of learnable preset parameters i.e. the number of rows of the matrix (2D tensor)
@@ -124,19 +132,30 @@ class Preset2dHelper:
 
     # TODO split any tensor into a dict of sub-tensors which have the same cardinality
 
+    def get_null_learnable_preset(self, batch_size: Optional[int] = None):
+        """
+        Returns a null learnable preset (useful to build an output, to retrieve sizes, for debugging, ...).
+
+        :param batch_size: If None, a 2D matrix will be returned. If int value is given, a batched 3D tensor
+            will be returned.
+        """
+        t = self.pre_filled_matrix
+        t[:, 0:2] = 0.0
+        return t if batch_size is None else t.unsqueeze(0).repeat(batch_size, 1, 1)  # Repeat copies data
+
     @property
     def pd_df_learnable_preset_debug(self):
         df = pd.DataFrame()
         df['preset_param_type_str'] = self._param_types_str
         df['preset_param_type'] = self._param_types_tensor.numpy()
         card_array = -10 * np.ones((self.n_learnable_params, ), dtype=np.int)
-        for cat_idx, card in enumerate(self._matrix_categorical_rows_card):
+        for cat_idx, card in enumerate(self.matrix_categorical_rows_card):
             card_array[self._matrix_categorical_rows[cat_idx]] = card
         df['cat_card'] = card_array
         df['cat_bool_mask'] = self.matrix_categorical_bool_mask.numpy()
         df['cat_mask'] = self.matrix_categorical_mask.numpy()
         card_array = -10 * np.ones((self.n_learnable_params, ), dtype=np.int)
-        for num_idx, card in enumerate(self._matrix_numerical_rows_card):
+        for num_idx, card in enumerate(self.matrix_numerical_rows_card):
             card_array[self._matrix_numerical_rows[num_idx]] = card
         df['num_card'] = card_array
         df['num_bool_mask'] = self.matrix_numerical_bool_mask.numpy()

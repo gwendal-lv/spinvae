@@ -57,7 +57,6 @@ def gen_dexed_dataset(regen_wav: bool, regen_spectrograms: bool, regen_learnable
         check_constrains_consistency=(not regen_wav) and (not regen_spectrograms)
     )
     if regen_learnable_presets:
-        print(dexed_dataset.preset_indexes_helper)
         dexed_dataset.compute_and_store_learnable_presets()
     _gen_dataset(dexed_dataset, regen_wav, regen_spectrograms)
     if regen_labels:  # Instruments labels only
@@ -168,7 +167,7 @@ def _gen_dataset(_dataset: AudioDataset, regenerate_wav: bool, regenerate_spectr
 
 if __name__ == "__main__":
 
-    gen_dexed_dataset(regen_wav=False, regen_spectrograms=False, regen_learnable_presets=True, regen_labels=False)
+    gen_dexed_dataset(regen_wav=False, regen_spectrograms=False, regen_learnable_presets=False, regen_labels=False)
     #gen_surge_dataset(regen_patches_list=True, regen_wav=False, regen_spectrograms=False, regen_labels=True)
     #gen_nsynth_dataset(regen_json=False, regen_spectrograms=False, regen_labels=True)
 

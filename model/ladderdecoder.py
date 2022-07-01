@@ -1,5 +1,5 @@
 import warnings
-from typing import Dict, Tuple, List, Sequence
+from typing import Dict, Tuple, List, Sequence, Optional
 
 import numpy as np
 import torch
@@ -9,14 +9,19 @@ import torchinfo
 
 import utils.probability
 from model.ladderbase import LadderBase
+from model.presetmodel import PresetDecoder
 from model.convlayer import ConvBlock2D, UpsamplingResBlock, SelfAttentionConv2D, ResBlockBase
+from data.preset2d import Preset2dHelper
 
 
 class LadderDecoder(LadderBase):
-
     def __init__(self, conv_arch, latent_arch,
                  latent_tensors_shapes: List[Sequence[int]], audio_output_shape: Sequence[int],
-                 audio_proba_distribution: str):
+                 audio_proba_distribution: str,
+                 preset_architecture: Optional[str] = None,
+                 preset_hidden_size: Optional[int] = None,
+                 preset_numerical_proba_distribution: Optional[str] = None,
+                 preset_helper: Optional[Preset2dHelper] = None):
         # TODO doc
         super().__init__(conv_arch, latent_arch)
         self.n_latent_levels = len(latent_tensors_shapes)
@@ -80,7 +85,7 @@ class LadderDecoder(LadderBase):
                         conv, self._get_conv_act(), self._get_conv_norm(blk_in_ch), 'nac'))
                     # Usual convs are applied after upsampling (less parameters)
                     for j in range(self.single_ch_conv_arch['n_layers_per_block'] - 1):
-                        if j == 0 and conv_args['att'] and (2 <= i_blk <= 4):
+                        if j == 0 and conv_args['att'] and (2 <= i_blk <= 4):  # attention costs a lot of GPU RAM
                             self_att = SelfAttentionConv2D(blk_hid_ch, position_encoding=True)
                             residuals_path.add_module('self_att', ConvBlock2D(
                                 self_att, None, self._get_conv_norm(blk_hid_ch), 'nc'))
@@ -169,6 +174,20 @@ class LadderDecoder(LadderBase):
         else:
             raise NotImplementedError("Cannot build latent arch {}: name not implemented".format(latent_arch))
 
+        # 3) Preset decoder (separate class)
+        if preset_architecture is not None:
+            assert (preset_numerical_proba_distribution is not None and preset_helper is not None
+                    and preset_hidden_size is not None)
+            self.preset_decoder = PresetDecoder(
+                preset_architecture,
+                self._latent_tensors_shapes,
+                preset_hidden_size,
+                preset_numerical_proba_distribution,
+                preset_helper
+            )
+        else:
+            self.preset_decoder = None
+
         # Finally, Python lists must be converted to nn.ModuleList to be properly recognized by PyTorch
         self.single_ch_cells = nn.ModuleList(self.single_ch_cells)
         self.latent_cells = nn.ModuleList(self.latent_cells)
@@ -180,14 +199,16 @@ class LadderDecoder(LadderBase):
         elif group_name == 'latent':
             return self.latent_cells
         elif group_name == 'preset':
-            return None  # FIXME
+            return self.preset_decoder  # Can be None
         else:
             raise ValueError("Unavailable group_name '{}'".format(group_name))
 
-    def forward(self, z_sampled: List[torch.Tensor]):
-        """ Returns the p(x|z) probability distributions and values sampled from them. """
-
-        # Audio decoder: apply latent cells and split outputs to get residuals
+    def forward(self, z_sampled: List[torch.Tensor], u_target: Optional[torch.Tensor] = None):
+        """ Returns the p(x|z) probability distributions and values sampled from them,
+            and preset_decoder_out (tuple of 5 values) if this instance has a preset decoder, and
+                if u_target is not None. """
+        # ---------- Audio decoder ----------
+        # apply latent cells and split outputs to get residuals
         conv_cell_res_inputs = [[] for _ in range(self.n_latent_levels)]  # 1st dim: cell index; 2nd dim: audio channel
         for latent_level, level_z in enumerate(z_sampled):  # Higher latent_level corresponds to deeper latent features
             cell_index = self._get_cell_index(latent_level)
@@ -212,11 +233,19 @@ class LadderDecoder(LadderBase):
         # Sample from the probability distribution should always be fast and easy (even for mixture models)
         audio_x_sampled = [self.audio_proba_distribution.sample(x) for x in audio_prob_parameters]
 
-        # All outputs are concatenated (channels dimension) to remain usable in a multi-GPU configuration
-        return torch.cat(audio_prob_parameters, dim=1), torch.cat(audio_x_sampled, dim=1)
+        # ---------- Preset decoder ----------
+        if self.preset_decoder is not None and u_target is not None:
+            # TODO teacher-forcing or not?
+            # TODO NEVER use teaching forcing during eval
+            preset_decoder_out = self.preset_decoder(z_sampled, u_target)
+        else:
+            preset_decoder_out = (None, ) * 5
+
+        # All audio outputs are concatenated (channels dimension) to remain usable in a multi-GPU configuration
+        return torch.cat(audio_prob_parameters, dim=1), torch.cat(audio_x_sampled, dim=1), preset_decoder_out
 
     def audio_log_prob_loss(self, audio_prob_parameters, x_in):
-        return self.audio_proba_distribution.log_prob(audio_prob_parameters, x_in)
+        return self.audio_proba_distribution.NLL(audio_prob_parameters, x_in)
 
     def _get_cell_index(self, latent_level: int):
         """ Returns the convolutional cell index which corresponds to a given latent levels. The ordering is reversed

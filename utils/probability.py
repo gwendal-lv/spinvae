@@ -57,9 +57,10 @@ def standard_gaussian_dkl(mu, var, reduction='none'):
 
 
 class ProbabilityDistribution:
-    def __init__(self, mu_activation=torch.nn.Hardtanh()):
+    def __init__(self, mu_activation=torch.nn.Hardtanh(), reduction='mean'):
         """ Generic class to use decoder outputs as parameters of a probability distribution. """
         self.mu_act = mu_activation
+        self.reduction = reduction
 
     @abstractmethod
     def apply_activations(self, nn_raw_output: torch.Tensor):
@@ -67,7 +68,7 @@ class ProbabilityDistribution:
         pass
 
     @abstractmethod
-    def log_prob(self, x: torch.Tensor, distribution_parameters: torch.Tensor):
+    def NLL(self, x: torch.Tensor, distribution_parameters: torch.Tensor):
         pass
 
     @abstractmethod
@@ -80,21 +81,28 @@ class ProbabilityDistribution:
         """ Number of parameters for each output pixel or time value (number of raw output channels). """
         pass
 
+    def _reduce(self, log_probs: torch.Tensor):
+        if self.reduction == 'mean':
+            return torch.mean(log_probs)
+        elif self.reduction == 'none':
+            return log_probs
+        else:
+            raise NotImplementedError("Unavailable reduction '{}'".format(self.reduction))
+
 
 class GaussianUnitVariance(ProbabilityDistribution):
-    def __init__(self, mu_activation=torch.nn.Hardtanh()):
-        super().__init__(mu_activation)
+    def __init__(self, mu_activation=torch.nn.Hardtanh(), reduction='mean'):
+        super().__init__(mu_activation, reduction)
 
     def apply_activations(self, nn_raw_output: torch.Tensor):
-        if nn_raw_output.shape[1] != 1:
-            raise ValueError("Parameters should be 1-ch (Gaussian means are the only free parameters)")
+        assert nn_raw_output.shape[1] == 1, "Parameters should be 1-ch (Gaussian means are the only free parameters)"
         return self.mu_act(nn_raw_output)
 
-    def log_prob(self, distribution_parameters: torch.Tensor, x: torch.Tensor):
+    def NLL(self, distribution_parameters: torch.Tensor, x: torch.Tensor):
         # We can evaluate the prob in a single operation - don't need to compute it channel-by-channel
         # Distribution parameters are expected to be means only. This computation is very close to being an MSE loss...
         distrib = torch.distributions.Normal(distribution_parameters, torch.ones_like(distribution_parameters))
-        return - torch.mean(distrib.log_prob(x))
+        return - self._reduce(distrib.log_prob(x))
 
     def sample(self, distribution_parameters: torch.Tensor):
         return distribution_parameters  # No sampling: parameters contain means only

@@ -285,7 +285,7 @@ class ConvLatentCell(nn.Module):
         :return:
         """
         if u_preset is not None:
-            return NotImplementedError()
+            warnings.warn("Preset encoding not implemented in conv latent cells.")
         x_audio = torch.flatten(x_audio, start_dim=1, end_dim=2)  # merge sequence and channels dimensions
         return self.conv(x_audio)
 
@@ -320,8 +320,8 @@ class ConvLSTMLatentCell(nn.Module):
 
     def forward(self, x_audio: torch.tensor,
                 u_preset: Optional[torch.Tensor] = None, midi_notes: Optional[torch.Tensor] = None):
-        if u_preset is not None:
-            return NotImplementedError()  # FIXME also use preset feature maps (first hidden features?)
+        if u_preset is not None:  # FIXME also use preset feature maps (first hidden features?)
+            warnings.warn("Encoder latent cells do not supports preset yet")
         # Learned residual positional encoding (per-pixel bias on the full feature maps)
         if midi_notes is not None and self.note_encoder is not None:
             for seq_idx in range(midi_notes.shape[1]):

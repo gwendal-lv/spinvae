@@ -18,8 +18,6 @@ import data.sampler
 def get_dataset(model_config, train_config):
     """
     Returns the full (main) dataset.
-    If a Flow-based synth params regression is to be used, this function will modify the latent space
-    dimension dim_z on the config.py module directly (its model attribute is given as an arg of this function).
     """
     if model_config.synth.startswith('dexed'):
         full_dataset = dataset.DexedDataset(** dataset.model_config_to_dataset_kwargs(model_config),
@@ -28,10 +26,6 @@ def get_dataset(model_config, train_config):
                                             restrict_to_labels=model_config.dataset_labels)
     else:
         raise NotImplementedError("No dataset available for '{}': unrecognized synth.".format(model_config.synth))
-    if train_config.verbosity >= 2:
-        print(full_dataset.preset_indexes_helper)
-    elif train_config.verbosity >= 1:
-        print(full_dataset.preset_indexes_helper.short_description)
     # config.py direct dirty modifications - number of learnable params depends on the synth and dataset arguments
     model_config.synth_params_count = full_dataset.learnable_params_count
     return full_dataset

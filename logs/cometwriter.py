@@ -22,7 +22,8 @@ class CometWriter:
                 log_env_cpu=False,  # annoying with numerous CPU cores
             )
             self.experiment.set_name(model_config.name + '/' + model_config.run_name)
-            self.experiment.add_tags(model_config.comet_tags)
+            if len(model_config.comet_tags) > 0:
+                self.experiment.add_tags(model_config.comet_tags)
             # TODO refactor - MODEL CONFIG IS MODIFIED HERE - dirty but quick....
             model_config.comet_experiment_key = self.experiment.get_key()
         else:
@@ -34,7 +35,6 @@ class CometWriter:
         self.experiment.log_parameter("vae_latent_arch", model_config.vae_latent_extract_architecture)
         self.experiment.log_parameter("vae_latent_levels", model_config.vae_latent_levels)
         self.experiment.log_parameter("att_gamma", model_config.attention_gamma)
-        self.experiment.log_parameter("params_regr_arch", model_config.params_regression_architecture)
         self.experiment.log_parameter("z_dim", model_config.dim_z)
         self.experiment.log_parameter("z_dim_requested", model_config.approx_requested_dim_z)
         self.experiment.log_parameter("z_flow_arch", str(model_config.latent_flow_arch))  # Possibly None
@@ -49,6 +49,9 @@ class CometWriter:
         self.experiment.log_parameter("params_loss_factor", train_config.params_loss_compensation_factor)
         self.experiment.log_parameter("params_loss_exclude", train_config.params_loss_exclude_useless)
         self.experiment.log_parameter("params_loss_permut", train_config.params_loss_with_permutations)
+        self.experiment.log_parameter("preset_arch", model_config.vae_preset_architecture)
+        self.experiment.log_parameter("preset_hid_size", model_config.preset_hidden_size)
+        self.experiment.log_parameter("preset_num_distribution", model_config.preset_decoder_numerical_distribution)
         self.experiment.log_parameter("optimizer", train_config.optimizer)
         if train_config.optimizer.lower() == 'adam':
             self.experiment.log_parameter("opt_adam_beta1", train_config.adam_betas[0])

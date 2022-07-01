@@ -65,23 +65,23 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # dataloader is a dict of 2 dataloaders ('train' and 'validation')
         dataloader, dataloaders_nb_items = data.build.get_pretrain_dataloaders(
             model_config, train_config, train_audio_dataset, validation_audio_dataset)
-        preset_indexes_helper = None
+        preset_helper = None
     else:
         # Must be constructed first because dataset output sizes will be required to automatically
         # infer models output sizes.
         dataset = data.build.get_dataset(model_config, train_config)
         # We use a single dataset (for train, valid, test) but different dataloaders
         train_audio_dataset, validation_audio_dataset = dataset, dataset
-        preset_indexes_helper = dataset.preset_indexes_helper
+        preset_helper = dataset.preset_indexes_helper
         # dataloader is a dict of 3 subsets dataloaders ('train', 'validation' and 'test')
         # This function will make copies of the original dataset (some with, some without data augmentation)
         dataloader, dataloaders_nb_items = data.build.get_split_dataloaders(train_config, dataset)
 
 
     # ================== Model definition - includes Losses, Optimizers, Schedulers ===================
-    #                       (requires the full_dataset to be built)
+    #                            (requires the full_dataset to be built)
     # HierarchicalVAE won't be the same during pre-train (empty parts without optimizer and scheduler)
-    ae_model = model.hierarchicalvae.HierarchicalVAE(model_config, train_config)
+    ae_model = model.hierarchicalvae.HierarchicalVAE(model_config, train_config, preset_helper)
     # will torchinfo txt summary. model must not be parallel (graph not written anymore: too complicated, unreadable)
     logger.init_with_model(ae_model, model_config.input_audio_tensor_size, write_graph=False)
 
@@ -109,6 +109,9 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
             raise AssertionError("This code must be checked for the new hierarchical VAE")
             pretrained_checkpoint = torch.load(model_config.pretrained_VAE_checkpoint, map_location=device)
             ae_model.load_checkpoint(pretrained_checkpoint)
+        else:
+            if train_config.verbosity >= 1:
+                print("Training starts from scratch (model_config.pretrained_VAE_checkpoint is None).")
 
 
     # ========== Scalars, metrics, images and audio to be tracked in Tensorboard ==========
@@ -132,12 +135,14 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                'Latent/MaxAbsVal/Train': SimpleMetric(), 'Latent/MaxAbsVal/Valid': SimpleMetric(),
                'VAELoss/Total/Train': EpochMetric(), 'VAELoss/Total/Valid': EpochMetric(),
                'VAELoss/Backprop/Train': EpochMetric(), 'VAELoss/Backprop/Valid': EpochMetric(),
-               # Controls (presets) losses used for backprop
-               #        + monitoring metrics (quantized numerical loss, categorical accuracy)
-               'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),  # FIXME logprob
-               'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
-               'Controls/QLoss/Train': EpochMetric(), 'Controls/QLoss/Valid': EpochMetric(),  # FIXME rename QError
-               'Controls/Accuracy/Train': EpochMetric(), 'Controls/Accuracy/Valid': EpochMetric(),
+               # Presets (synth controls) losses used for backprop
+               #        + monitoring metrics (numerical L1 loss, categorical accuracy)
+               'Preset/NLL/Total/Train': EpochMetric(), 'Preset/NLL/Total/Valid': EpochMetric(),
+               'Preset/NLL/Numerical/Train': EpochMetric(), 'Preset/NLL/Numerical/Valid': EpochMetric(),
+               'Preset/NLL/CatCE/Train': EpochMetric(), 'Preset/NLL/CatCE/Valid': EpochMetric(),
+               #'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
+               'Preset/L1error/Train': EpochMetric(), 'Preset/L1error/Valid': EpochMetric(),  # FIXME rename QError
+               'Preset/Accuracy/Train': EpochMetric(), 'Preset/Accuracy/Valid': EpochMetric(),
                # Other misc. metrics
                'Sched/LRwarmup': LinearDynamicParam(
                    train_config.lr_warmup_start_factor, 1.0,
@@ -179,7 +184,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
                 # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
                 ae_model.optimizers_zero_grad()
-                ae_out = ae_model_parallel(x_in, None, uid, notes)  # TODO auto-encode presets
+                ae_out = ae_model_parallel(x_in, v_in, uid, notes)  # TODO auto-encode presets
                 ae_out = ae_model.parse_outputs(ae_out)
                 # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
                 # reg_model.precompute_u_out_with_symmetries(v_out)   # FIXME pre-compute permutations
@@ -193,28 +198,28 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 extra_lat_reg_loss = 0.0  # Can be used for extra regularisation, contrastive loss...
                 extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
                 if not pretrain_audio:
-                    cont_loss = reg_model.backprop_loss_value  # FIXME
-                    cont_loss *= train_config.params_loss_compensation_factor
-                    scalars['Controls/BackpropLoss/Train'].append(cont_loss)
-                    cont_reg_loss = reg_model.regularization_loss(v_out, v_in)
-                    scalars['Controls/RegulLoss/Train'].append(cont_reg_loss)
+                    u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
+                    preset_loss = u_categorical_nll + u_numerical_nll
+                    scalars['Preset/NLL/Total/Train'].append(preset_loss)
+                    preset_loss *= train_config.params_loss_compensation_factor
+                    scalars['Preset/NLL/Numerical/Train'].append(u_numerical_nll)
+                    scalars['Preset/NLL/CatCE/Train'].append(u_categorical_nll)
                 else:
-                    cont_loss, cont_reg_loss = torch.zeros((1,), device=device), torch.zeros((1,), device=device)
+                    preset_loss = torch.zeros((1,), device=device)
+                preset_reg_loss = torch.zeros((1,), device=device)  # No regularization yet....
                 with torch.no_grad():  # Monitoring-only losses
                     scalars['Audio/MSE/Train'].append(F.mse_loss(ae_out.x_sampled, x_in))
                     scalars['Latent/MMD/Train'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
                     if not pretrain_audio:
-                        accuracy, numerical_error = reg_model.eval_criterion_values
-                        scalars['Controls/QLoss/Train'].append(numerical_error)
-                        scalars['Controls/Accuracy/Train'].append(accuracy)
-                        super_metrics['RegOutValues/Train'].append(v_out)
+                        scalars['Preset/Accuracy/Train'].append(ae_out.u_accuracy.mean())
+                        scalars['Preset/L1error/Train'].append(ae_out.u_l1_error.mean())
                     scalars['VAELoss/Total/Train'].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
                     scalars['VAELoss/Backprop/Train'].append(
                         audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss)
                 utils.exception.check_nan_values(
-                    epoch, audio_log_prob_loss, lat_backprop_loss, extra_lat_reg_loss, cont_loss, cont_reg_loss)
+                    epoch, audio_log_prob_loss, lat_backprop_loss, extra_lat_reg_loss, preset_loss, preset_reg_loss)
                 # Backprop and optimizers' step (before schedulers' step)
-                (audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss + cont_loss + cont_reg_loss).backward()
+                (audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss + preset_loss + preset_reg_loss).backward()
                 ae_model.optimizers_step()
                 # End of mini-batch (step)
                 logger.on_train_minibatch_finished(i)
@@ -231,7 +236,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
             for i, minibatch in enumerate(dataloader['validation']):
                 x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
                 # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
-                ae_out = ae_model_parallel(x_in, None, uid, notes)  # TODO auto-encode presets
+                ae_out = ae_model_parallel(x_in, v_in, uid, notes)  # TODO auto-encode presets
                 ae_out = ae_model.parse_outputs(ae_out)
                 # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
                 # reg_model.precompute_u_out_with_symmetries(v_out)  # FIXME pre-compute permutations
@@ -243,16 +248,15 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 scalars['Latent/BackpropLoss/Valid'].append(lat_backprop_loss)
                 scalars['Audio/MSE/Valid'].append(F.mse_loss(ae_out.x_sampled, x_in))
                 scalars['Latent/MMD/Valid'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
-                if not pretrain_audio:  # FIXME everything reg_model-related
-                    accuracy, numerical_error = reg_model.eval_criterion_values
-                    scalars['Controls/QLoss/Valid'].append(numerical_error)
-                    scalars['Controls/Accuracy/Valid'].append(accuracy)
-                    super_metrics['RegOutValues/Valid'].append(v_out)
-                    cont_loss = reg_model.backprop_loss_value
-                    cont_loss *= train_config.params_loss_compensation_factor
-                    scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
-                    cont_reg_loss = reg_model.regularization_loss(v_out, v_in)
-                    scalars['Controls/RegulLoss/Valid'].append(cont_reg_loss)
+                if not pretrain_audio:
+                    u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
+                    preset_loss = u_categorical_nll + u_numerical_nll
+                    scalars['Preset/NLL/Total/Valid'].append(preset_loss)
+                    preset_loss *= train_config.params_loss_compensation_factor
+                    scalars['Preset/NLL/Numerical/Valid'].append(u_numerical_nll)
+                    scalars['Preset/NLL/CatCE/Valid'].append(u_categorical_nll)
+                    scalars['Preset/Accuracy/Valid'].append(ae_out.u_accuracy.mean())
+                    scalars['Preset/L1error/Valid'].append(ae_out.u_l1_error.mean())
                 scalars['VAELoss/Total/Valid'].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
                 scalars['VAELoss/Backprop/Valid'].append(audio_log_prob_loss + lat_backprop_loss)
                 # Validation plots
@@ -281,9 +285,12 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         if logger.should_plot or early_stop:
             logger.plot_stats__threaded(super_metrics, ae_model, validation_audio_dataset)  # non-blocking
             if v_in_backup.shape[0] > 0 and not pretrain_audio:  # u_error might be empty on early_stop
+                pass  # FIXME reactivate this (also plot new confusion matrices)
+                """
                 fig, _ = utils.figures.plot_synth_preset_vst_error(
-                    v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_indexes_helper)
+                    v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_helper)
                 logger.add_figure('SynthControlsError', fig)
+                """
 
         # = = = = = End of epoch = = = = =
         logger.on_epoch_finished(epoch)

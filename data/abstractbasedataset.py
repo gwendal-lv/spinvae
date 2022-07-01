@@ -586,11 +586,10 @@ class PresetDataset(AudioDataset):
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
 
     def __str__(self):
-        return "{}\n{} learnable synth params, {} fixed params. Learnable representation: '{}'\n" \
+        return "{}\n{} learnable synth params, {} fixed params. \n" \
                "{}x audio delay data augmentation, {}x preset data augmentation." \
             .format(super().__str__(),
                     len(self.learnable_params_idx), self.total_nb_vst_params - len(self.learnable_params_idx),
-                    self.learnable_representation_name,
                     self._nb_audio_delay_variations_per_note, self._nb_preset_variations_per_note)
 
     def __getitem__(self, i):

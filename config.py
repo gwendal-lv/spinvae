@@ -30,9 +30,10 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "hvae"  # experiment base name
-        self.run_name = 'dummy_test_05_OK'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'dummy_test_12'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         self.pretrained_VAE_checkpoint \
             = self.logs_root_dir + "/TODO_MY_MODEL_CHECKPOINT.tar"
+        self.pretrained_VAE_checkpoint = None  # TODO Uncomment this to train a full model from scratch
         self.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
         # Comet.ml logger (replaces Tensorboard)
         self.comet_api_key = config_confidential.comet_api_key
@@ -49,7 +50,7 @@ class ModelConfig:
         #       also contains num of blocks and num of conv layers per block (e.g. 8x1)
         # Arch args:
         #    '_adain' some BN layers are replaced by AdaIN (fed with a style vector w, dim_w < dim_z)
-        #    '_att' self-attention in deep conv layers  TODO encoder and decoder
+        #    '_att' self-attention in deep conv layers
         #    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
         #    '_res' residual connections after each hidden strided conv layer (up/down sampling layers)
         #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
@@ -73,17 +74,13 @@ class ModelConfig:
         #    - 'gaussian_unitvariance' corresponds to the usual MSE reconstruction loss (up to a constant and factor)
         self.audio_decoder_distribution = 'gaussian_unitvariance'
         self.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
-        # FIXME "regression" does not exist anymore
-        # Possible values: 'flow_realnvp_6l300', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
-        # TODO random permutations when building flows
-        # 3l600 is associated to bad MMD values and "dirac-like" posteriors.
-        # Maybe try a bigger flow to prevent a to strong constraint on the latent space?
-        self.params_regression_architecture = 'flow_realnvp_8l500'  # TODO try bigger flow (if does not overfit anymore)
-        self.params_reg_hardtanh_out = False  # Applies to categorical params (numerical are always hardtanh-activated)
-        self.params_reg_softmax = False  # Apply softmax at the end of the reg model itself?
-        # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
-        # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
-        self.forward_controls_loss = True  # Must be true for non-invertible MLP regression (False is now deprecated)
+        # Preset encoder/decoder architecture
+        self.vae_preset_architecture = 'mlp_5l'
+        # Size of the hidden representation of 1 synth parameter
+        self.preset_hidden_size = 256
+        # Distribution for modeling (discrete-)numerical synth param values.
+        # (categorical variables always use a softmaxed categorical distribution)
+        self.preset_decoder_numerical_distribution = 'gaussian_unitvariance'
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector
@@ -146,7 +143,7 @@ class ModelConfig:
 # ===================================================================================================================
 class TrainConfig:
     def __init__(self):
-        self.pretrain_audio_only = True  # Should we pre-train the audio+latent parts of the auto-encoder model only?
+        self.pretrain_audio_only = False  # Should we pre-train the audio+latent parts of the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
         # 256 is okay for smaller conv structures - reduce to 64 to fit '_big' models into 24GB GPU RAM
         self.minibatch_size = 64  # TODO increase to 128 ?
@@ -195,7 +192,7 @@ class TrainConfig:
         # - - - Synth parameters losses - - -
         # - General options
         self.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
-        self.params_loss_compensation_factor = 1.0  # because MSE loss of the VAE is much lower (approx. 1e-2)
+        self.params_loss_compensation_factor = 0.5  # because MSE loss of the VAE is much lower (approx. 1e-2)
         self.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
         # - Loss for a dense dequantized output loss (set to 'None' to activate other losses)
@@ -218,7 +215,8 @@ class TrainConfig:
         # LR decreased if non-normalized losses (which are expected to be 9e4 times bigger with a 257x347 spectrogram)
         # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
         self.initial_learning_rate = {'audio': 2e-4, 'latent': 2e-4, 'preset': 1e-4}
-        self.initial_audio_latent_lr_factor_after_pretrain = 1e-1  # audio-related LR reduced after pre-train
+        # FIXME RESET TO 1e-1
+        self.initial_audio_latent_lr_factor_after_pretrain = 1.0  # audio-related LR reduced after pre-train
         # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
         # The warmup will be must faster during pre-train  (See update_dynamic_config_params())
         self.lr_warmup_epochs = 20
@@ -229,7 +227,7 @@ class TrainConfig:
         self.scheduler_period = 50  # resnets train quite fast
         # - - - ReduceLROnPlateau scheduler options - - -
         self.scheduler_losses = {
-            'audio': 'VAELoss/Backprop', 'latent': 'VAELoss/Backprop', 'preset': 'Controls/BackpropLoss' }
+            'audio': 'VAELoss/Backprop', 'latent': 'VAELoss/Backprop', 'preset': 'Preset/NLL/Total' }
         # Set a longer patience with smaller datasets and quite unstable trains
         # See update_dynamic_config_params(). 16k samples dataset:  set to 10
         self.scheduler_patience = 20
@@ -245,7 +243,7 @@ class TrainConfig:
         # for both Basic and MMD VAEs (without regression net). 3e-6 allows for the lowest reconstruction error.
         self.weight_decay = 1e-5
         self.ae_fc_dropout = 0.0  # 0.3 without MMD, to try to help prevent VAE posterior collapse
-        self.reg_fc_dropout = 0.4
+        self.reg_fc_dropout = 0.4  # FIXME rename or delete
         self.latent_input_dropout = 0.0  # Should always remain zero... intended for tests (not tensorboard-logged)
         # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl
         # can be used (warning: latent input batch-norm is a very strong constraint for the network).
@@ -256,7 +254,7 @@ class TrainConfig:
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
         self.large_plots_min_period = 100  # Min num of epochs between plots (e.g. embeddings, approx. 80MB .tsv files)
-        self.plot_epoch_0 = False
+        self.plot_epoch_0 = True
         self.verbosity = 1  # 0: no console output --> 3: fully-detailed per-batch console output
         self.init_security_pause = 0.0  # Short pause before erasing an existing run
         # Number of logged audio and spectrograms for a given epoch
