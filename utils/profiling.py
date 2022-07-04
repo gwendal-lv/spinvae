@@ -1,3 +1,4 @@
+# renamed to profiling.py (instead of profile.py) - otherwise, name clash with seaborn
 
 import contextlib
 from pathlib import Path

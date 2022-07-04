@@ -46,13 +46,19 @@ model_config_mods, train_config_mods = list(), list()
 
 
 
-
+# Train arrêté à hvae/8x2_dimz100_lvls1_big_att_lat2l_k3x3__dklgammaFalse (trop long...)
+# c'était le 7/24 de la série des "attention"
+i = 0
 for dim_z in [100]:
     for conv_layers in ['8x2']:  # '8x1' already done
-        for big in ['', '_big']:
+        for big in ['_big_att', '_att']:
             for latent_arch in ['conv_1l_k1x1_gated', 'conv_2l_k3x3_gated']:
                 for num_levels in [1, 2, 3]:
                     for dkl_auto_gamma in [False, True]:
+                        i += 1
+                        if i <= 7:  # entraînements déjà faits dans cette série
+                            continue
+
                         conv_arch = 'specladder' + conv_layers + '_res' + big
                         model_config_mods.append(
                             {'comet_tags': ['conv_hpar_sweep'],

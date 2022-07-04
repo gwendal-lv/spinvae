@@ -38,7 +38,7 @@ from logs.metrics import SimpleMetric, EpochMetric, VectorMetric, LatentMetric, 
 import data.dataset
 import data.build
 import utils.configutils
-import utils.profile
+import utils.profiling
 from utils.hparams import LinearDynamicParam
 import utils.figures
 import utils.exception
@@ -160,7 +160,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
 
 
     # ========== PyTorch Profiling (optional) ==========
-    optional_profiler = utils.profile.OptionalProfiler(train_config, logger.tensorboard_run_dir)
+    optional_profiler = utils.profiling.OptionalProfiler(train_config, logger.tensorboard_run_dir)
 
 
     # ========== Model training epochs ==========
@@ -230,8 +230,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
         with torch.no_grad():  # TODO use comet context if available
             ae_model_parallel.eval()  # BN stops running estimates
-            v_out_backup = torch.Tensor().to(device=lat_loss.device)  # Params inference error (Comet/Tensorboard plot)
-            v_in_backup = torch.Tensor().to(device=lat_loss.device)
+            v_out_backup, v_in_backup = [], []  # Params inference error (Comet/Tensorboard plot)
             i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
             for i, minibatch in enumerate(dataloader['validation']):
                 x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
@@ -261,9 +260,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 scalars['VAELoss/Backprop/Valid'].append(audio_log_prob_loss + lat_backprop_loss)
                 # Validation plots
                 if logger.should_plot:
-                    # FIXME
-                    # v_out_backup = torch.cat([v_out_backup, v_out])  # Full-batch error storage - will be used later
-                    v_in_backup = torch.cat([v_in_backup, v_in])
+                    v_in_backup.append(v_in)  # Full-batch error storage - will be used later
+                    v_out_backup.append(ae_out.u_out)
                     if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
                         logger.plot_spectrograms(x_in, ae_out.x_sampled, uid, notes, validation_audio_dataset)
                         logger.plot_decoder_interpolation(
@@ -284,13 +282,12 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         logger.add_scalars(scalars)  # Some scalars might not be added (e.g. during pretrain)
         if logger.should_plot or early_stop:
             logger.plot_stats__threaded(super_metrics, ae_model, validation_audio_dataset)  # non-blocking
-            if v_in_backup.shape[0] > 0 and not pretrain_audio:  # u_error might be empty on early_stop
-                pass  # FIXME reactivate this (also plot new confusion matrices)
-                """
-                fig, _ = utils.figures.plot_synth_preset_vst_error(
+            # TODO also thread this one (30s plot... !!!!)
+            if len(v_in_backup) > 0 and not pretrain_audio:
+                v_in_backup, v_out_backup = torch.cat(v_in_backup), torch.cat(v_out_backup)
+                fig, _ = utils.figures.plot_preset2d_batch_error(
                     v_out_backup.detach().cpu(), v_in_backup.detach().cpu(), preset_helper)
-                logger.add_figure('SynthControlsError', fig)
-                """
+                logger.add_figure('PresetError/Validation', fig)
 
         # = = = = = End of epoch = = = = =
         logger.on_epoch_finished(epoch)

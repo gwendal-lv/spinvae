@@ -48,7 +48,8 @@ class PresetDecoder(nn.Module):
                  latent_tensors_shapes: List[Sequence[int]],
                  hidden_size: int,
                  numerical_proba_distribution: str,
-                 preset_helper: Preset2dHelper):
+                 preset_helper: Preset2dHelper,
+                 dropout_p=0.0, label_smoothing=0.0, use_cross_entropy_weights=False):
         """
         TODO DOC
         """
@@ -94,7 +95,10 @@ class PresetDecoder(nn.Module):
         # Output transformations are linear (probably position-wise...) then softmax to get the next-token probs;
         #     equivalent to conv1d, kernel 1, without bias
         # FIXME dropout p arg
-        self.categorical_module = MultiCardinalCategories(self._hidden_size, self.preset_helper, 0.1)
+        self.categorical_module = MultiCardinalCategories(
+            self._hidden_size, self.preset_helper,
+            dropout_p=dropout_p, label_smoothing=label_smoothing, use_cross_entropy_weights=use_cross_entropy_weights
+        )
         if numerical_proba_distribution == "gaussian_unitvariance":
             self.numerical_distrib = GaussianUnitVariance(
                 mu_activation=nn.Hardtanh(0.0, 1.0), reduction='none'
@@ -162,7 +166,6 @@ class PresetDecoder(nn.Module):
             acc = acc.count_nonzero(dim=1) / acc.shape[1]
 
         # sum NLLs and divide by total sequence length (num of params) - keep batch dimension (if multi-GPU)
-        # TODO apply factor to CE loss?
         u_numerical_nll = u_numerical_nll.sum(dim=1) / self._seq_len
         u_categorical_nll = u_categorical_nll.sum(dim=1) / self._seq_len
         return u_out, \
@@ -240,29 +243,34 @@ class MlpDecoder(nn.Module):
 
 
 class MultiCardinalCategories(nn.Module):
-    def __init__(self, hidden_size: int, preset_helper: Preset2dHelper, dropout_p=0.0, label_smoothing=0.0):
+    def __init__(self, hidden_size: int, preset_helper: Preset2dHelper,
+                 dropout_p=0.0, label_smoothing=0.0, use_cross_entropy_weights=False):
         """
         This class is able to compute the categorical logits using several groups, and to compute the CE loss
         for each synth param of each group.
         Each group contains categorical synth params with the same number of classes (cardinal of the set of values).
         Each group has a different number of logits (using only 1 group with masking could lead to a biased
          preference towards the first logits).
-
-         TODO method to compute NLL (should work on a single item, or all of them)
-
-         TODO method to compute accuracy
-
         """
         super().__init__()
         self.preset_helper = preset_helper
         self.label_smoothing = label_smoothing
+        self.use_ce_weights = use_cross_entropy_weights
         # 1 conv1d for each categorical group - 4 groups instead of 1 (the overhead should be acceptable...)
         self.categorical_distribs_conv1d = dict()
+        self.cross_entropy_weights = dict()
         for card, mask in self.preset_helper.categorical_groups_submatrix_bool_masks.items():
             self.categorical_distribs_conv1d[card] = nn.Sequential(
                 nn.Dropout(dropout_p),
                 nn.Conv1d(hidden_size, card, 1, bias=False)
             )
+            # Compute some "merged class counts" or "weights". We don't instantiate a CE loss because we don't know
+            # the device yet (and Pytorch's CE class is a basic wrapper that calls F.cross_entropy)
+            class_counts = self.preset_helper.categorical_groups_class_samples_counts[card] + 10  # 10 is an "epsilon"
+            weights = class_counts.mean() / class_counts
+            # average weight will be 1.0
+            self.cross_entropy_weights[card] = torch.tensor(weights / weights.mean(), dtype=torch.float)
+
         # This dict allows nn parameters to be registered by PyTorch
         self._mods_dict = nn.ModuleDict(
             {'card{}'.format(card): m for card, m in self.categorical_distribs_conv1d.items()}
@@ -294,9 +302,15 @@ class MultiCardinalCategories(nn.Module):
             # logits is the output of a conv-like module, so the sequence dim is dim=2, and
             # class probabilities are dim=1 (which is expected when calling F.cross_entropy
             sampled_categories[:, mask] = torch.argmax(logits, dim=1, keepdim=False)
+            # Don't turn off label smoothing during validation (we don't want validation over-confidence either)
+            # However, we don't use the (training) weights during validation
+            if self.use_ce_weights and self.training:
+                weight = self.cross_entropy_weights[card].to(u_target.device)
+            else:
+                weight = None
             out_ce[:, mask] = F.cross_entropy(
                 logits, u_target[:, mask],
-                reduction='none', label_smoothing=self.label_smoothing  # TODO weights!!!!
+                reduction='none', label_smoothing=self.label_smoothing, weight=weight
             )
             out_logits[card] = logits
         return out_logits, out_ce, sampled_categories

@@ -29,8 +29,8 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "hvae"  # experiment base name
-        self.run_name = 'dummy_test_12'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.name = "dev"  # experiment base name
+        self.run_name = 'CEweights'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         self.pretrained_VAE_checkpoint \
             = self.logs_root_dir + "/TODO_MY_MODEL_CHECKPOINT.tar"
         self.pretrained_VAE_checkpoint = None  # TODO Uncomment this to train a full model from scratch
@@ -199,12 +199,8 @@ class TrainConfig:
         self.params_dense_dequantized_loss = 'None'  # Preempts CE losses
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
         # TODO log the more important as hparams into comet.ml
-        self.params_cat_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
-        self.params_target_noise = 0.00
-        self.params_cat_CE_use_weights = False
-        self.params_cat_bceloss = False  # If True, disables the CE loss to compute BCE loss instead (deprecated)
-        # FIXME Temperature if softmax if applied in the loss only (!=0 is deprecated)
-        self.params_cat_softmax_temperature = 1.0
+        self.preset_CE_label_smoothing = 0.1  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
+        self.preset_CE_use_weights = True
 
         # ------------------------------------------- Optimizer + scheduler -------------------------------------------
         # Different optimizer parameters can be used for the pre-trained AE and the regression networks
@@ -243,13 +239,7 @@ class TrainConfig:
         # for both Basic and MMD VAEs (without regression net). 3e-6 allows for the lowest reconstruction error.
         self.weight_decay = 1e-5
         self.ae_fc_dropout = 0.0  # 0.3 without MMD, to try to help prevent VAE posterior collapse
-        self.reg_fc_dropout = 0.4  # FIXME rename or delete
-        self.latent_input_dropout = 0.0  # Should always remain zero... intended for tests (not tensorboard-logged)
-        # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl
-        # can be used (warning: latent input batch-norm is a very strong constraint for the network).
-        # 'BN' (on encoder output), 'Dkl' (on q_Z0 gaussian flow input) or 'None' (always use a str arg)
-        self.latent_flow_input_regularization = 'None'
-        self.latent_flow_input_regul_weight = 0.1  # Used for 'Dkl' only
+        self.preset_dropout = 0.1  # Applied only to subnets which do not handle value regression tasks
 
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)

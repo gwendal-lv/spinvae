@@ -13,11 +13,13 @@ import pandas as pd
 import librosa.display
 import torch
 import torch.nn.functional as F
+from sklearn.metrics import confusion_matrix
 
 import logs.metrics
 
 from data.abstractbasedataset import AudioDataset, PresetDataset
 from data.preset import PresetIndexesHelper
+from data.preset2d import Preset2d, Preset2dHelper
 
 import model.regression
 import model.loss
@@ -582,6 +584,7 @@ def plot_synth_preset_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper:
     :param boxplots_y_limits: Constant y-axis box plots display limits.
     :param idx_helper: to improve the display (param names, cardinality, ...) """
     # init
+    warnings.warn("DEPRECATED - does not supports preset 2D", category=DeprecationWarning)
     if apply_softmax_to_v_out:
         act = model.regression.PresetActivation(idx_helper, cat_hardtanh_activation=False, cat_softmax_activation=True)
         param_batch_errors = act(v_out) - v_in
@@ -677,9 +680,60 @@ def plot_synth_preset_vst_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_hel
     return fig, ax
 
 
+def plot_preset2d_batch_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper: Preset2dHelper,
+                              log_scale=True):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        N = v_out.shape[0]
+        # Retrieve numerical and categorical values
+        v_out_numerical = v_out[:, idx_helper.matrix_numerical_bool_mask, 1]
+        v_in_numerical = v_in[:, idx_helper.matrix_numerical_bool_mask, 1]
+        v_error_numerical = v_out_numerical - v_in_numerical
+        v_out_categorical = v_out[:, idx_helper.matrix_categorical_bool_mask, 0]
+        v_in_categorical = v_in[:, idx_helper.matrix_categorical_bool_mask, 0]
+
+        # TODO Create a proper subplot figure: numerical errrors boxplots, confusion matrix for each categorical param
+        #    More width for cat param with a larger cardinal
+        confusion_mat_axes_names = [['cat{}'.format(i)] * (1 + card // 4)  # Increase subplot Wsize if greater num of classes
+                                    for i, card in enumerate(idx_helper.matrix_categorical_rows_card)]
+        confusion_mat_axes_names = sum(confusion_mat_axes_names, [])
+        fig, axes_dict = plt.subplot_mosaic(
+            [['numerical'] * len(confusion_mat_axes_names),  # Numerical boxplots span over the whole width
+             ['.'] * len(confusion_mat_axes_names),  # Empty row for numerical x tick labels
+             confusion_mat_axes_names,  # 2 Rows for the confusion matrices
+             confusion_mat_axes_names],
+            figsize=(0.15 * idx_helper.n_learnable_numerical_params, 10.0), constrained_layout=True
+        )
+        # Numerical params: box plots
+        numerical_error_df = pd.DataFrame(v_error_numerical, columns=idx_helper.matrix_numerical_params_names)
+        # "wide-form" DataFrame (each numeric column will be plotted)
+        sns.boxplot(data=numerical_error_df, fliersize=0.5, ax=axes_dict['numerical'])
+        axes_dict['numerical'].tick_params(axis='x', rotation=90, labelsize='small')
+        # Categorical params: confusion matrices
+        confusion_mat_axes_names = ['cat{}'.format(i) for i in range(idx_helper.n_learnable_categorical_params)]
+        for cat_idx, k in enumerate(confusion_mat_axes_names):
+            ax = axes_dict[k]
+            cmat = confusion_matrix(v_in_categorical[:, cat_idx], v_out_categorical[:, cat_idx],
+                                    labels=list(range(idx_helper.matrix_categorical_rows_card[cat_idx])))
+            cmat = np.log(1.0 + cmat) if log_scale else cmat
+            sns.heatmap(cmat, ax=ax, cbar=False, square=True, cmap='viridis', vmin=0.0)
+            # Axes: ticks and ticks labels
+            class_indices = list(range(idx_helper.matrix_categorical_rows_card[cat_idx]))
+            ax.set_xticks(np.asarray(class_indices) + 0.5)
+            if len(class_indices) < 10:  # single-digit indices: force display all
+                ax.set_xticklabels(class_indices)
+            ax.tick_params(axis='x', labelsize='small')
+            ax.set_yticks(np.asarray(class_indices) + 0.5)
+            ax.yaxis.set_ticklabels([])
+            # Title: keep a few letters only
+            ax.set_title(idx_helper.matrix_categorical_params_names[cat_idx][0:(len(class_indices) + 1)])
+    return fig, axes_dict
+
+
 if __name__ == "__main__":
 
     # Latent Metric plot tests - filled with artificial values
+    """
     dim_z = 10
     latent_metrics = logs.metrics.LatentMetric(dim_z, 1000)  # dim_z is the 2nd dim in the hidden data member
     for k in ['mu', 'sigma', 'zK']:
@@ -692,4 +746,28 @@ if __name__ == "__main__":
     fig.savefig(svg_file)
     print("SVG file size = {:.1f} M bytes".format(svg_file.stat().st_size / 1000000.0))
     plt.show()
+    """
+
+    # Preset errors - from fake batches
+    import config
+    _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
+    config.update_dynamic_config_params(_model_config, _train_config)
+    import data.build
+    _ds = data.build.get_dataset(_model_config, _train_config)
+    fake_v_out, fake_v_in = list(), list()
+    for _i in range(100):
+        ref_preset = _ds[_i][1]
+        fake_v_out.append(ref_preset)  # 1/3:   100% accuracy / 0% L1 error
+        fake_v_out.append(_ds[_i+1000][1])
+        #fake_v_out.append(_ds[_i+200][1])
+        fake_v_in.append(ref_preset)
+        fake_v_in.append(ref_preset)
+        #fake_v_in.append(ref_preset)
+    fake_v_out = torch.cat([torch.unsqueeze(v, dim=0) for v in fake_v_out])
+    fake_v_in = torch.cat([torch.unsqueeze(v, dim=0) for v in fake_v_in])
+    _fig, _ax = plot_preset2d_batch_error(fake_v_out, fake_v_in, _ds.preset_indexes_helper)
+    plt.show()
+
+    a = 0
+
 

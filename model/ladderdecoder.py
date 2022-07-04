@@ -21,7 +21,8 @@ class LadderDecoder(LadderBase):
                  preset_architecture: Optional[str] = None,
                  preset_hidden_size: Optional[int] = None,
                  preset_numerical_proba_distribution: Optional[str] = None,
-                 preset_helper: Optional[Preset2dHelper] = None):
+                 preset_helper: Optional[Preset2dHelper] = None,
+                 preset_dropout_p=0.0, preset_label_smoothing=0.0, preset_use_cross_entropy_weights=False):
         # TODO doc
         super().__init__(conv_arch, latent_arch)
         self.n_latent_levels = len(latent_tensors_shapes)
@@ -183,7 +184,9 @@ class LadderDecoder(LadderBase):
                 self._latent_tensors_shapes,
                 preset_hidden_size,
                 preset_numerical_proba_distribution,
-                preset_helper
+                preset_helper,
+                dropout_p=preset_dropout_p, label_smoothing=preset_label_smoothing,
+                use_cross_entropy_weights=preset_use_cross_entropy_weights
             )
         else:
             self.preset_decoder = None

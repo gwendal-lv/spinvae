@@ -128,7 +128,9 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             decoder_opt_args = (model_config.vae_preset_architecture,
                                 model_config.preset_hidden_size,
                                 model_config.preset_decoder_numerical_distribution,
-                                preset_helper)
+                                preset_helper,
+                                train_config.preset_dropout, train_config.preset_CE_label_smoothing,
+                                train_config.preset_CE_use_weights)
         self._preset_helper = preset_helper
         self.decoder = model.ladderdecoder.LadderDecoder(
             self.main_conv_arch, self.latent_arch,
@@ -326,8 +328,10 @@ if __name__ == "__main__":
     _model_config.vae_latent_levels = 1
     _model_config.approx_requested_dim_z = 144
 
-    _train_config.pretrain_audio_only = True
+    _train_config.pretrain_audio_only = False
     _train_config.minibatch_size = 16
+    _train_config.preset_dropout = 0.12
+    _train_config.preset_CE_label_smoothing = 0.13
     config.update_dynamic_config_params(_model_config, _train_config)
 
     if not _train_config.pretrain_audio_only:
