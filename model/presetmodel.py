@@ -48,7 +48,10 @@ class PresetEmbedding(nn.Module):
         # Currently no max norm is implemented (categorical or "numerical" embeddings)
         #     We rely on weight decay (and layer norm?) to prevent exploding values
 
-        # TODO is type numerical - to be able to retrieve the embedding inside forward_single_step(...)
+        # is type numerical - to be able to retrieve the embedding inside forward_single_step(...)
+        self.is_type_numerical = [False] * self.preset_helper.n_param_types
+        for matrix_row, param_type in enumerate(self.preset_helper.param_types_tensor.numpy()):
+            self.is_type_numerical[int(param_type)] = self.preset_helper.matrix_numerical_bool_mask[matrix_row].item()
 
         # TODO ctor arg to use "naive basic" transforms, identical for all synth params (interesting experiment)
 
@@ -73,34 +76,53 @@ class PresetEmbedding(nn.Module):
         n_categorical_embeddings = preset_helper.max_cat_classes * preset_helper.n_param_types
         self.categorical_embedding = nn.Embedding(n_categorical_embeddings, hidden_size, max_norm=None)
 
-        a = 0
+        # Save other masks - they are will be moved to the GPU
+        self._matrix_categorical_bool_mask = self.preset_helper.matrix_categorical_bool_mask.clone()
+        self._matrix_numerical_bool_mask = self.preset_helper.matrix_numerical_bool_mask.clone()
 
     @property
     def _n_num_params(self):
         return self.preset_helper.n_learnable_numerical_params
 
+    def _get_categorical_embed_idx(self, u_categorical_only: torch.Tensor):
+        return torch.round(
+            u_categorical_only[:, :, 2] * self.preset_helper.max_cat_classes + u_categorical_only[:, :, 0]
+        ).long()
+
+    def _move_masks_to(self, device):
+        if self.numerical_embedding_mask.device != device:
+            # numerical_embedding_mask is huge so this leads to a big improvement
+            self.numerical_embedding_mask = self.numerical_embedding_mask.to(device)
+            self._matrix_numerical_bool_mask = self._matrix_numerical_bool_mask.to(device)
+            self._matrix_categorical_bool_mask = self._matrix_categorical_bool_mask.to(device)
+
     def forward(self, u_in: torch.Tensor):
         """ Returns an embedding (shape N x L x hidden_size) for an entire input preset (shape N x L x 3) """
-        # TODO move masks to device only once
+        self._move_masks_to(u_in.device)
         embed_out = torch.empty((u_in.shape[0], u_in.shape[1], self.hidden_size), device=u_in.device)
         # Categorical: Class values in "column" 0, types in "column" 2 ("column" is the last dimension)
-        u_categorical = u_in[:, self.preset_helper.matrix_categorical_bool_mask, :]
-        u_cat_embed_idx = torch.round(
-            u_categorical[:, :, 2] * self.preset_helper.max_cat_classes + u_categorical[:, :, 0]
-        ).long()
+        u_categorical = u_in[:, self._matrix_categorical_bool_mask, :]
+        u_cat_embed_idx = self._get_categorical_embed_idx(u_categorical)
         u_categorical_embeds = self.categorical_embedding(u_cat_embed_idx)
-        embed_out[:, self.preset_helper.matrix_categorical_bool_mask, :] = u_categorical_embeds
+        embed_out[:, self._matrix_categorical_bool_mask, :] = u_categorical_embeds
         # Numerical:
-        u_numerical = u_in[:, self.preset_helper.matrix_numerical_bool_mask, 1:2]  # 3D tensor, not squeezed
+        u_numerical = u_in[:, self._matrix_numerical_bool_mask, 1:2]  # 3D tensor, not squeezed
         u_numerical_unmasked = self.numerical_embedding_conv(u_numerical.transpose(1, 2)).transpose(2, 1)
         u_numerical_embeds = u_numerical_unmasked[self.numerical_embedding_mask.expand(u_in.shape[0], -1, -1)]
         # This view is risky... but necessary because self.numerical_embedding_mask leads to a flattened tensor
         #   seems to work properly w/ pytorch 1.10, let's hope an update won't break the current behavior
         u_numerical_embeds = u_numerical_embeds.view(u_in.shape[0], self._n_num_params, self.hidden_size)
-        embed_out[:, self.preset_helper.matrix_numerical_bool_mask, :] = u_numerical_embeds
+        embed_out[:, self._matrix_numerical_bool_mask, :] = u_numerical_embeds
         return embed_out
 
-    # TODO should be usable for a single input param
     def forward_single_step(self, u_single_step: torch.Tensor):
-        raise NotImplementedError()
+        """ Returns the embedding (shape N x 1 x hidden_size) of a single-step input element (shape N x 1 x 3) """
+        assert u_single_step.shape[1] == 1
+        type_class = int(u_single_step[0, 0, 2].item())  # Types (~= positions) are the same for all items from a batch
+        if self.is_type_numerical[type_class]:  # Numerical type
+            embed = self.numerical_embedding_conv(u_single_step[:, :, 1:2].transpose(1, 2)).transpose(2, 1)
+            # We can use the known range instead of using a mask
+            return embed[:, :, (type_class * self.hidden_size): ((type_class + 1) * self.hidden_size)]
+        else:  # Categorical type
+            return self.categorical_embedding(self._get_categorical_embed_idx(u_single_step))
 

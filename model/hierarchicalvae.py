@@ -135,6 +135,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                                 model_config.preset_hidden_size,
                                 model_config.preset_decoder_numerical_distribution,
                                 preset_helper,
+                                self.encoder.preset_encoder.embedding,  # Embedding net is built by the encoder
                                 train_config.preset_dropout, train_config.preset_CE_label_smoothing,
                                 train_config.preset_CE_use_weights)
         self.decoder = model.ladderdecoder.LadderDecoder(

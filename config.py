@@ -30,7 +30,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
-        self.run_name = 'CEweights_other'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'prof_test_02'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         self.pretrained_VAE_checkpoint \
             = self.logs_root_dir + "/TODO_MY_MODEL_CHECKPOINT.tar"
         self.pretrained_VAE_checkpoint = None  # TODO Uncomment this to train a full model from scratch

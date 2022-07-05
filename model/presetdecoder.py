@@ -3,12 +3,14 @@ from typing import List, Sequence
 import numpy as np
 import torch
 import torchinfo
+import warnings
 from torch import nn as nn
 from torch.nn import functional as F
 
 from data.preset2d import Preset2dHelper
-from model.presetmodel import parse_preset_model_architecture, get_act
+from model.presetmodel import parse_preset_model_architecture, get_act, PresetEmbedding
 from utils.probability import GaussianUnitVariance
+
 
 
 class PresetDecoder(nn.Module):
@@ -17,6 +19,7 @@ class PresetDecoder(nn.Module):
                  hidden_size: int,
                  numerical_proba_distribution: str,
                  preset_helper: Preset2dHelper,
+                 embedding: PresetEmbedding,
                  dropout_p=0.0, label_smoothing=0.0, use_cross_entropy_weights=False):
         """
         TODO DOC
@@ -25,46 +28,30 @@ class PresetDecoder(nn.Module):
 
         # TODO add teacher-forcing input arg (and raise warning if non-sequential network)
 
-        self._arch = parse_preset_model_architecture(architecture)
-        arch_args = self._arch['args']
+        self.arch = parse_preset_model_architecture(architecture)
+        arch_args = self.arch['args']
         self._latent_tensors_shapes = latent_tensors_shapes
         assert all([len(s) == 4 for s in self._latent_tensors_shapes]), "4d shapes (including batch size) are expected"
-        self._dim_z = sum([np.prod(s[1:]) for s in self._latent_tensors_shapes])
-        self._hidden_size = hidden_size
+        self.dim_z = sum([np.prod(s[1:]) for s in self._latent_tensors_shapes])
+        self.hidden_size = hidden_size
         self.preset_helper = preset_helper
-        self._seq_len = self.preset_helper.n_learnable_params
+        self.embedding = embedding
+        self.seq_len = self.preset_helper.n_learnable_params
 
         # Warning: PyTorch broadcasting:
         #   - tensor broadcasting for (basic?) tensor operations requires the *trailing* dimensions to be equal
         #   - tensor default "broadcasting" for masks uses the mask on the 1st dimensions of the tensor to be masked
         # Masks don't need to be on the same device as the tensor they are masking
-        self._seq_numerical_items_bool_mask = self.preset_helper.matrix_numerical_bool_mask.clone()
-        self._seq_categorical_items_bool_mask = self.preset_helper.matrix_categorical_bool_mask.clone()
+        self.seq_numerical_items_bool_mask = self.preset_helper.matrix_numerical_bool_mask.clone()
+        self.seq_categorical_items_bool_mask = self.preset_helper.matrix_categorical_bool_mask.clone()
 
-        # Build the main network
-        if self._arch['name'] == 'mlp':
-            # Feed-forward decoder
-            # MLP is mostly used as a baseline/debugging model - so it uses its own quite big 2048 hidden dim
-            self.ff_decoder = MlpDecoder(
-                self._seq_len, self._hidden_size, self._dim_z,
-                self._arch['n_layers'], arch_args, mlp_hidden_features=2048
-            )
-
-        else:
-            self.ff_decoder = None  # FIXME maybe don't even use the same variable name???
-            # TODO Constraints on latent feature maps: size checks depend on the architecture (some are more flexible)
-            #    currently support only single-level latents
-            raise NotImplementedError("Preset architecture {} not implemented".format(self._arch['name']))
-
-        # TODO Use 2 different nets (for numerical and categorical parameters) from the output of the
-        #    last hidden layer, which will always have the shape of (???)
+        # B) Categorical/Numerical final modules and probability distributions (required for A))
         # In hidden layers, the transformer does: "position-wise FC feed-forward network", equivalent to
         #     two 1-kernel convolution with ReLU in-between.
         # Output transformations are linear (probably position-wise...) then softmax to get the next-token probs;
         #     equivalent to conv1d, kernel 1, without bias
-        # FIXME dropout p arg
         self.categorical_module = MultiCardinalCategories(
-            self._hidden_size, self.preset_helper,
+            self.hidden_size, self.preset_helper,
             dropout_p=dropout_p, label_smoothing=label_smoothing, use_cross_entropy_weights=use_cross_entropy_weights
         )
         if numerical_proba_distribution == "gaussian_unitvariance":
@@ -74,8 +61,24 @@ class PresetDecoder(nn.Module):
         else:
             raise NotImplementedError()
         self.numerical_distrib_conv1d = nn.Conv1d(
-            self._hidden_size, self.numerical_distrib.num_parameters, 1, bias=False
+            self.hidden_size, self.numerical_distrib.num_parameters, 1, bias=False
         )
+
+        # A) Build the main network (uses some self. attributes)
+        if self.arch['name'] == 'mlp':
+            # Feed-forward decoder
+            # MLP is mostly used as a baseline/debugging model - so it uses its own quite big 2048 hidden dim
+            self.child_decoder = MlpDecoder(self, mlp_hidden_features=2048)
+        else:
+            self.child_decoder = None
+            # TODO Constraints on latent feature maps: size checks depend on the architecture (some are more flexible)
+            #    currently support only single-level latents
+            raise NotImplementedError("Preset architecture {} not implemented".format(self.arch['name']))
+
+    def _move_masks_to(self, device):
+        if self.seq_numerical_items_bool_mask.device != device:
+            self.seq_numerical_items_bool_mask = self.seq_numerical_items_bool_mask.to(device)
+            self.seq_categorical_items_bool_mask = self.seq_categorical_items_bool_mask.to(device)
 
     def forward(self, z_multi_level: List[torch.Tensor], u_target: torch.Tensor):
         """
@@ -84,58 +87,25 @@ class PresetDecoder(nn.Module):
         :param u_target: Input preset, sequence-like (expected shape: N x n_synth_presets x 3)
         :return:
         """
-        N = z_multi_level[0].shape[0]  # batch size
+        self._move_masks_to(u_target.device)
 
-        # ----- 1) Apply the "main" feed-forward or recurrent / sequential network -----
-        if self.ff_decoder is None:  # Recurrent / sequential structure
-            # TODO implement sequential mode.... a lot of refactoring is going to happen!
-            raise NotImplementedError()
-            # TODO transpose at the end, such that the sequence dimension is last (for the final conv1d layers)
-        else:
-            u_last_hidden = self.ff_decoder(z_multi_level)
-        # TODO allow "output positional encoding" - maybe before the 1st conv layer after the MLP (when the
-        #   "spatial" structure if available, after .view(...))
+        # ----- A) Apply the "main" feed-forward or recurrent / sequential network -----$
+        u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples \
+            = self.child_decoder(z_multi_level, u_target)
 
-        u_out = self.preset_helper.get_null_learnable_preset(N).to(u_target.device)
-
-        # ----- 2) Compute parameters of probability distributions, compute NLLs -----
-        # At this point, u_last_hidden is the hidden sequence representation of the preset
-        #     shape must be: hidden_size x L (sequence dimension last)
-        #
-        # --- Categorical distribution(s) ---
-        u_categorical_logits, u_categorical_nll, u_categorical_samples = self.categorical_module.forward_full_sequence(
-            u_last_hidden[:, :, self._seq_categorical_items_bool_mask],
-            u_target[:, self._seq_categorical_items_bool_mask, 0]
-        )
-        u_categorical_samples_float = u_categorical_samples.float()
-        u_out[:, self._seq_categorical_items_bool_mask, 0] = u_categorical_samples_float
-        # --- Numerical distribution (s) ---
-        # FIXME different distributions for parameters w/ a different cardinal
-        numerical_distrib_params = self.numerical_distrib_conv1d(
-            u_last_hidden[:, :, self._seq_numerical_items_bool_mask]
-        )
-        numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
-        # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
-        u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
-            numerical_distrib_params,
-            u_target[:, self._seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
-        ))
-        u_numerical_samples = torch.squeeze(self.numerical_distrib.sample(numerical_distrib_params))
-        u_out[:, self._seq_numerical_items_bool_mask, 1] = u_numerical_samples
-
-        # ----- 3) Compute metrics (quite easy, we can do it now) -----
+        # ----- B) Compute metrics (quite easy, we can do it now) -----
         # we don't return separate metric for teacher-forcing
         #    -> because teacher-forcing will be activated or not from the owner of this module
         with torch.no_grad():
             num_l1_error = torch.mean(
-                torch.abs(u_target[:, self._seq_numerical_items_bool_mask, 1] - u_numerical_samples), dim=1
+                torch.abs(u_target[:, self.seq_numerical_items_bool_mask, 1] - u_numerical_samples), dim=1
             )
-            acc = torch.isclose(u_target[:, self._seq_categorical_items_bool_mask, 0], u_categorical_samples_float)
+            acc = torch.eq(u_target[:, self.seq_categorical_items_bool_mask, 0].long(), u_categorical_samples)
             acc = acc.count_nonzero(dim=1) / acc.shape[1]
 
         # sum NLLs and divide by total sequence length (num of params) - keep batch dimension (if multi-GPU)
-        u_numerical_nll = u_numerical_nll.sum(dim=1) / self._seq_len
-        u_categorical_nll = u_categorical_nll.sum(dim=1) / self._seq_len
+        u_numerical_nll = u_numerical_nll.sum(dim=1) / self.seq_len
+        u_categorical_nll = u_categorical_nll.sum(dim=1) / self.seq_len
         return u_out, \
             u_numerical_nll, u_categorical_nll, \
             num_l1_error, acc
@@ -153,11 +123,30 @@ class PresetDecoder(nn.Module):
             )
 
 
-class MlpDecoder(nn.Module):
-    def __init__(self, seq_len: int, seq_hidden_dim: int, dim_z: int,
-                 n_layers: int, arch_args,
-                 mlp_hidden_features=2048,
-                 sequence_dim_last=True):
+class ChildDecoderBase(nn.Module):
+    def __init__(self, parent_dec: PresetDecoder):
+        """
+        Base class for any "sub-decoder" child (e.g. Mlp, RNN, Transformer) of a PresetDecoder instance.
+        This allows to easily share useful instances and information with all children.
+        """
+        super().__init__()
+        self.seq_len = parent_dec.seq_len
+        self.dim_z = parent_dec.dim_z
+        self.hidden_size = parent_dec.hidden_size
+        self.preset_helper = parent_dec.preset_helper
+        self.embedding = parent_dec.embedding
+        self.arch_args = parent_dec.arch['args']
+        self.n_layers = parent_dec.arch['n_layers']
+
+        self.categorical_module = parent_dec.categorical_module
+        self.numerical_distrib_conv1d = parent_dec.numerical_distrib_conv1d
+        self.numerical_distrib = parent_dec.numerical_distrib
+        self.seq_numerical_items_bool_mask = parent_dec.seq_numerical_items_bool_mask
+        self.seq_categorical_items_bool_mask = parent_dec.seq_categorical_items_bool_mask
+
+
+class MlpDecoder(ChildDecoderBase):
+    def __init__(self, parent_dec: PresetDecoder,mlp_hidden_features=2048, sequence_dim_last=True):
         """
         Simple module that reshapes the output from an MLP network into a 2D feature map with seq_len as
         its first dimension (number of channels will be inferred automatically), and applies a 1x1 conv
@@ -167,46 +156,69 @@ class MlpDecoder(nn.Module):
             the output of this module is used by a CNN). If False, the features (channels) dimension will be last
             (for use as RNN input).
         """
-        super().__init__()
-        self.seq_len = seq_len
+        super().__init__(parent_dec)
+        # self.hidden_size is NOT the number of hidden neurons in this MLP (it's the feature vector size, for
+        #  recurrent networks only - not applicable to this MLP).
+        self.seq_hidden_dim = self.hidden_size
 
         self.mlp = nn.Sequential()
-        n_pre_out_features = seq_len * (mlp_hidden_features // seq_len)
-        for l in range(0, n_layers):
+        n_pre_out_features = self.seq_len * (mlp_hidden_features // self.seq_len)
+        for l in range(0, self.n_layers):
             if l > 0:
-                if l < n_layers - 1:  # No norm before the last layer
-                    if arch_args['bn']:
+                if l < self.n_layers - 1:  # No norm before the last layer
+                    if self.arch_args['bn']:
                         self.mlp.add_module('bn{}'.format(l), nn.BatchNorm1d(mlp_hidden_features))
-                    if arch_args['ln']:
+                    if self.arch_args['ln']:
                         raise NotImplementedError()
-                self.mlp.add_module('act{}'.format(l), get_act(arch_args))
-            n_in_features = mlp_hidden_features if (l > 0) else dim_z
-            n_out_features = mlp_hidden_features if (l < n_layers - 1) else n_pre_out_features
+                self.mlp.add_module('act{}'.format(l), get_act(self.arch_args))
+            n_in_features = mlp_hidden_features if (l > 0) else self.dim_z
+            n_out_features = mlp_hidden_features if (l < self.n_layers - 1) else n_pre_out_features
             self.mlp.add_module('fc{}'.format(l), nn.Linear(n_in_features, n_out_features))
 
-        # TODO look for 'posenc' in arch_args
-        # And don't use add encoding, concatenate conv channels instead (so the convs will use only what
-        #    needed to lower the loss - they won't have to compensate for added values)
-        if arch_args['posenc']:
-            raise NotImplementedError()
+        if self.arch_args['posenc']:
+            warnings.warn("Cannot use positional embeddings with an MLP network - ignored")
 
         # Last layer should output a 1d tensor that can be reshaped as a "sequence-like" 2D tensor.
         #    This would represent an overly huge FC layer.... so it's done in 2 steps (See ReshapeMlpOutput)
-        self.in_channels = n_pre_out_features // seq_len
+        self.in_channels = n_pre_out_features // self.seq_len
         self.conv = nn.Sequential(
-            get_act(arch_args),
-            nn.Conv1d(self.in_channels, seq_hidden_dim, 1)
+            get_act(self.arch_args),
+            nn.Conv1d(self.in_channels, self.seq_hidden_dim, 1)
         )
         self.sequence_dim_last = sequence_dim_last
 
-    def forward(self, z_multi_level):
+    def forward(self, z_multi_level, u_target):
+        # ---------- 1) Apply the feed-forward MLP ----------
         z_flat = torch.cat([z.flatten(start_dim=1) for z in z_multi_level], dim=1)
         u_hidden = self.mlp(z_flat).view(-1, self.in_channels, self.seq_len)
-
-        # FIXME maybe concat positional embeddings (and non-linearity, and another conv?) before this conv
         u_hidden = self.conv(u_hidden)  # After this conv, sequence dim ("time" or "step" dimension) is last
-        # If required: swap dims to get a sequence-like output (sequence after batch dim, not last)
-        return u_hidden if self.sequence_dim_last else u_hidden.transpose(1, 2)
+
+        u_out = self.preset_helper.get_null_learnable_preset(u_target.shape[0]).to(u_target.device)
+        # ---------- 2) Compute parameters of probability distributions, compute NLLs (all at once) ----------
+        # At this point, u_last_hidden is the hidden sequence representation of the preset
+        #     shape must be: hidden_size x L (sequence dimension last)
+        #
+        # --- Categorical distribution(s) ---
+        u_categorical_logits, u_categorical_nll, u_categorical_samples = self.categorical_module.forward_full_sequence(
+            u_hidden[:, :, self.seq_categorical_items_bool_mask],
+            u_target[:, self.seq_categorical_items_bool_mask, 0]
+        )
+        u_out[:, self.seq_categorical_items_bool_mask, 0] = u_categorical_samples.float()
+        # --- Numerical distribution (s) ---
+        # FIXME different distributions for parameters w/ a different cardinal
+        numerical_distrib_params = self.numerical_distrib_conv1d(
+            u_hidden[:, :, self.seq_numerical_items_bool_mask]
+        )
+        numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
+        # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
+        u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
+            numerical_distrib_params,
+            u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
+        ))
+        u_numerical_samples = torch.squeeze(self.numerical_distrib.sample(numerical_distrib_params))
+        u_out[:, self.seq_numerical_items_bool_mask, 1] = u_numerical_samples
+
+        return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
 
 
 class MultiCardinalCategories(nn.Module):
