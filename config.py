@@ -30,7 +30,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
-        self.run_name = 'CEweights'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'CEweights_other'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         self.pretrained_VAE_checkpoint \
             = self.logs_root_dir + "/TODO_MY_MODEL_CHECKPOINT.tar"
         self.pretrained_VAE_checkpoint = None  # TODO Uncomment this to train a full model from scratch
@@ -244,7 +244,7 @@ class TrainConfig:
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
         self.large_plots_min_period = 100  # Min num of epochs between plots (e.g. embeddings, approx. 80MB .tsv files)
-        self.plot_epoch_0 = True
+        self.plot_epoch_0 = False
         self.verbosity = 1  # 0: no console output --> 3: fully-detailed per-batch console output
         self.init_security_pause = 0.0  # Short pause before erasing an existing run
         # Number of logged audio and spectrograms for a given epoch

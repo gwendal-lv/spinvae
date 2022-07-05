@@ -7,15 +7,20 @@ import torch.nn.functional as F
 import torchinfo
 import warnings
 
+import model.presetencoder
 from model.ladderbase import LadderBase
 from model.convlayer import ConvBlock2D, DownsamplingResBlock, SelfAttentionConv2D
 from model.convlstm import ConvLSTM
+from data.preset2d import Preset2d, Preset2dHelper
 
 
 class LadderEncoder(LadderBase):
 
     def __init__(self, conv_arch, latent_arch, latent_levels: int, input_tensor_size: Tuple[int, int, int, int],
-                 approx_dim_z=2000):
+                 approx_dim_z: int,
+                 preset_architecture: Optional[str] = None,
+                 preset_hidden_size: Optional[int] = None,
+                 preset_helper: Optional[Preset2dHelper] = None):
         """
         Contains cell which define the hierarchy levels (the output of each cell is used to extract latent values)
             Each cell is made of blocks (skip connection may be added/concat/other at the end of block)
@@ -112,6 +117,7 @@ class LadderEncoder(LadderBase):
                 raise NotImplementedError("Can't build latent cells: conv kernel arg ('_k1x1' or '_k3x3') not provided")
             for i, cell_output_shape in enumerate(self.cells_output_shapes):
                 n_latent_ch = n_latent_ch_per_level[i] * 2  # Output mu and sigma2
+                # FIXME preset encoding has to be considered
                 cell_args = (
                     cell_output_shape[1], cell_output_shape[2:], self._audio_seq_len,
                     n_latent_ch, self.latent_arch['n_layers'], kernel_size, padding, self.latent_arch['args']
@@ -122,6 +128,16 @@ class LadderEncoder(LadderBase):
                     self.latent_cells.append(ConvLatentCell(*cell_args))
         else:
             raise NotImplementedError("Cannot build latent arch {}: name not implemented".format(latent_arch))
+
+        # 3) Preset encoder (no hierarchical levels) - in its own Python module
+        if preset_helper is not None:
+            assert preset_architecture is not None and preset_hidden_size is not None
+            # TODO EXPECTED OUTPUT SHAPE CTOR ARG
+            self.preset_encoder = model.presetencoder.PresetEncoder(
+                preset_architecture, preset_hidden_size, preset_helper
+            )
+        else:
+            self.preset_encoder = None
 
         # Finally, Python lists must be converted to nn.ModuleList to be properly recognized by PyTorch
         self.single_ch_cells = nn.ModuleList(self.single_ch_cells)
@@ -182,10 +198,15 @@ class LadderEncoder(LadderBase):
         # Latent levels are currently independent (no top-down conditional posterior or prior)
         # We just stack inputs from all input channels to create the sequence dimension
         latent_cells_audio_input_tensors = [torch.stack(t, dim=1) for t in latent_cells_audio_input_tensors]
-        # 2) Compute latent vectors: tuple (mean and variance) of lists (one tensor per latent level)
+        # TODO 2) Optional: Compute hidden representation of the preset
+        if self.preset_encoder is not None:  # TODO or if auto synth prog mode
+            dummy_u_hidden = self.preset_encoder(u)
+            # TODO  Don't always compute it... if using null representations (preset not used), this
+            #   corresponds to an automatic synthesizer programming model
+        # 3) Compute latent vectors: tuple (mean and variance) of lists (one tensor per latent level)
         z_mu, z_var = list(), list()
         for latent_level, latent_cell in enumerate(self.latent_cells):
-            z_out = latent_cell(latent_cells_audio_input_tensors[latent_level], u, midi_notes)
+            z_out = latent_cell(latent_cells_audio_input_tensors[latent_level], u, midi_notes)  # FIXME not u
             n_ch = z_out.shape[1]
             z_mu.append(z_out[:, 0:n_ch//2, :, :])
             z_var.append(F.softplus(z_out[:, n_ch//2:, :, :]))

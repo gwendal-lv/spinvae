@@ -107,13 +107,20 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                           "by the HierarchicalVAE during its construction.".format(model_config.dim_z))
 
         # Build encoder and decoder
+        self._preset_helper = preset_helper
+        if train_config.pretrain_audio_only:
+            encoder_opt_args, dummy_u = (None, ) * 3, None
+        else:
+            assert preset_helper is not None
+            encoder_opt_args = (model_config.vae_preset_architecture, model_config.preset_hidden_size, preset_helper)
+            dummy_u = preset_helper.get_null_learnable_preset(train_config.minibatch_size)
         self.encoder = model.ladderencoder.LadderEncoder(
             self.main_conv_arch, self.latent_arch, model_config.vae_latent_levels, model_config.input_audio_tensor_size,
-            approx_dim_z=model_config.approx_requested_dim_z
+            model_config.approx_requested_dim_z,
+            *encoder_opt_args
         )
-        warnings.warn("TODO: Preset encoder not implemented")
         with torch.no_grad():  # retrieve encoder output shapes (list of shapes for each latent level)
-            dummy_z_mu, _ = self.encoder(torch.zeros(model_config.input_audio_tensor_size))
+            dummy_z_mu, _ = self.encoder(torch.zeros(model_config.input_audio_tensor_size), dummy_u)
         self.z_shapes = [z.shape for z in dummy_z_mu]
         model_config.dim_z = self.dim_z  # Compute dim_z and update model_config (.dim_z property uses self.z_shapes)
         if train_config.verbosity >= 1:
@@ -122,16 +129,14 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             print("[HierarchicalVAE] latent feature maps shapes: {}".format([s[1:] for s in self.z_shapes]))
             print("[HierarchicalVAE] dim_z for each latent level: {}".format([np.prod(s[1:]) for s in self.z_shapes]))
         if train_config.pretrain_audio_only:
-            decoder_opt_args = None, None, None
+            decoder_opt_args = (None, ) * 7
         else:
-            assert preset_helper is not None
             decoder_opt_args = (model_config.vae_preset_architecture,
                                 model_config.preset_hidden_size,
                                 model_config.preset_decoder_numerical_distribution,
                                 preset_helper,
                                 train_config.preset_dropout, train_config.preset_CE_label_smoothing,
                                 train_config.preset_CE_use_weights)
-        self._preset_helper = preset_helper
         self.decoder = model.ladderdecoder.LadderDecoder(
             self.main_conv_arch, self.latent_arch,
             self.z_shapes, model_config.input_audio_tensor_size,
@@ -164,10 +169,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         return self._aggregated_modules_lists[group_name]
 
     def forward(self, x_target, u_target=None, preset_uids=None, midi_notes=None):
-        if u_target is not None:
-            warnings.warn("Presets can not be encoded at the moment.")
-            if self.pre_training_audio:
-                u_target = None  # We force a None value even if a dummy preset was given at input
+        if u_target is not None and self.pre_training_audio:
+            u_target = None  # We force a None value even if a dummy preset was given at input
 
         # 1) Encode
         z_mu, z_var = self.encoder(x_target, u_target, midi_notes)  # TODO encode
@@ -276,9 +279,11 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         sep_str = '************************************************************************************************\n'
         summary = sep_str + '********** ENCODER audio single-channel conv **********\n' + sep_str
         summary += str(self.encoder.get_single_ch_conv_summary()) + '\n\n'
+        if self.encoder.preset_encoder is not None:
+            summary += sep_str + '********** ENCODER preset **********\n' + sep_str
+            summary += str(self.encoder.preset_encoder.get_summary(self._input_audio_tensor_size[0])) + '\n\n'
         summary += sep_str + '********** ENCODER latent cells **********\n' + sep_str
         summary += str(self.encoder.get_latent_cells_summaries()) + '\n\n'
-        # TODO ADD ENCODER PRESET MODEL
         summary += sep_str + '********** DECODER latent cells **********\n' + sep_str
         summary += str(self.decoder.get_latent_cells_summaries()) + '\n\n'
         summary += sep_str + '********** DECODER audio single-channel conv **********\n' + sep_str
@@ -349,6 +354,9 @@ if __name__ == "__main__":
 
     print(hVAE.encoder.get_single_ch_conv_summary())
     print(hVAE.encoder.get_latent_cells_summaries())
+    if not _train_config.pretrain_audio_only:
+        print(hVAE.encoder.preset_encoder.get_summary(_train_config.minibatch_size))
+
     print(hVAE.z_shapes)
 
     print(hVAE.decoder.get_single_ch_conv_summary())

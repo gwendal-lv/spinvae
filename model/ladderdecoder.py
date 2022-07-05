@@ -9,7 +9,7 @@ import torchinfo
 
 import utils.probability
 from model.ladderbase import LadderBase
-from model.presetmodel import PresetDecoder
+from model.presetdecoder import PresetDecoder
 from model.convlayer import ConvBlock2D, UpsamplingResBlock, SelfAttentionConv2D, ResBlockBase
 from data.preset2d import Preset2dHelper
 
