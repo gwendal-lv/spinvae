@@ -49,9 +49,7 @@ class PresetEmbedding(nn.Module):
         #     We rely on weight decay (and layer norm?) to prevent exploding values
 
         # is type numerical - to be able to retrieve the embedding inside forward_single_step(...)
-        self.is_type_numerical = [False] * self.preset_helper.n_param_types
-        for matrix_row, param_type in enumerate(self.preset_helper.param_types_tensor.numpy()):
-            self.is_type_numerical[int(param_type)] = self.preset_helper.matrix_numerical_bool_mask[matrix_row].item()
+        self.is_type_numerical = self.preset_helper.is_type_numerical
 
         # TODO ctor arg to use "naive basic" transforms, identical for all synth params (interesting experiment)
 
@@ -91,13 +89,16 @@ class PresetEmbedding(nn.Module):
 
     def _move_masks_to(self, device):
         if self.numerical_embedding_mask.device != device:
-            # numerical_embedding_mask is huge so this leads to a big improvement
+            # numerical_embedding_mask is huge so this leads to a significantly reduced epoch duration
             self.numerical_embedding_mask = self.numerical_embedding_mask.to(device)
             self._matrix_numerical_bool_mask = self._matrix_numerical_bool_mask.to(device)
             self._matrix_categorical_bool_mask = self._matrix_categorical_bool_mask.to(device)
 
-    def forward(self, u_in: torch.Tensor):
-        """ Returns an embedding (shape N x L x hidden_size) for an entire input preset (shape N x L x 3) """
+    def forward(self, u_in: torch.Tensor, start_token=False):
+        """
+        Returns an embedding, shape N x L x hidden_size if start_token is False else N x (L+1) x hidden_size
+        corresponding to an entire input preset (shape N x L x 3)
+        """
         self._move_masks_to(u_in.device)
         embed_out = torch.empty((u_in.shape[0], u_in.shape[1], self.hidden_size), device=u_in.device)
         # Categorical: Class values in "column" 0, types in "column" 2 ("column" is the last dimension)
@@ -113,9 +114,13 @@ class PresetEmbedding(nn.Module):
         #   seems to work properly w/ pytorch 1.10, let's hope an update won't break the current behavior
         u_numerical_embeds = u_numerical_embeds.view(u_in.shape[0], self._n_num_params, self.hidden_size)
         embed_out[:, self._matrix_numerical_bool_mask, :] = u_numerical_embeds
+        # TODO insert start token (we do not it at the end, not to mess with masks)
+        if start_token:
+            start_embed = torch.zeros((embed_out.shape[0], 1, embed_out.shape[2]), device=embed_out.device)
+            embed_out = torch.cat((start_embed, embed_out), dim=1)  # Concat along seq dim, start token first
         return embed_out
 
-    def forward_single_step(self, u_single_step: torch.Tensor):
+    def forward_single_token(self, u_single_step: torch.Tensor):
         """ Returns the embedding (shape N x 1 x hidden_size) of a single-step input element (shape N x 1 x 3) """
         assert u_single_step.shape[1] == 1
         type_class = int(u_single_step[0, 0, 2].item())  # Types (~= positions) are the same for all items from a batch

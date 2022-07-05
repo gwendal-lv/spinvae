@@ -82,6 +82,7 @@ class ConvLSTM(nn.Module):
         self.bidirectional = bidirectional
 
         cell_list = []
+        # TODO USE REVERSE CELLS
         for i in range(num_layers):
             # Bidirectional: h outputs from both directions will be concatenated
             inner_input_ch = hidden_channels if not bidirectional else hidden_channels * 2
@@ -115,13 +116,16 @@ class ConvLSTM(nn.Module):
         last_states_per_layer = [[], []]  # The last hidden states h, c of each layer
         current_layer_input = input_tensor
 
+        # FIXME pytorch LSTM implementation uses 2 parallel LSTM with different weights
+        #     this is different from what's done here (2x more back prop - more vanishing gradient)
+
         for layer_idx, cell in enumerate(self.cells):
             h, c = initial_h_c_per_layer[layer_idx]
             current_output_sequence = []  # Output sequence for a given layer
             for t in range(seq_len):
                 h, c = cell(current_layer_input[:, t, :, :, :], (h, c))
                 current_output_sequence.append(h)
-            if self.bidirectional:
+            if self.bidirectional:  # FIXME USE REVERSE CELLS
                 for t in reversed(range(seq_len)):
                     h, c = cell(current_layer_input[:, t, :, :, :], (h, c))
                     current_output_sequence[t] = torch.cat((current_output_sequence[t], h), dim=1)  # Cat along ch dim

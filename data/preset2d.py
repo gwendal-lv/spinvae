@@ -120,6 +120,21 @@ class Preset2dHelper:
 
         # Retrieve params names (for plots) - numerical/categorical names can be extract from this one
         self.vst_params_names = np.array(ds.preset_param_names, copy=True)
+        # Used in various classes: is type numerical, and retrieve the cardinality of a type of synth param
+        self.is_type_numerical = [False] * self.n_param_types
+        for matrix_row, param_type in enumerate(self.param_types_tensor.numpy()):
+            self.is_type_numerical[int(param_type)] = self.matrix_numerical_bool_mask[matrix_row].item()
+        self.param_type_to_cardinality = [None] * self.n_param_types
+        # type2card: search for all params, and assert that all params of the same type have the same cardinality
+        for matrix_idx, param_type in enumerate(self.param_types_tensor):
+            type_class = int(param_type.item())
+            vst_idx = self._matrix_row_to_vst_idx[matrix_idx]
+            card = self.vst_params_card[vst_idx]
+            if self.param_type_to_cardinality[type_class] is None:
+                self.param_type_to_cardinality[type_class] = card
+            else:
+                assert self.param_type_to_cardinality[type_class] == card
+
 
     @property
     def n_learnable_params(self):

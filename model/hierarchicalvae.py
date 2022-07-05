@@ -333,6 +333,7 @@ if __name__ == "__main__":
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 1
     _model_config.approx_requested_dim_z = 144
+    _model_config.vae_preset_architecture = 'lstm_5l'
 
     _train_config.pretrain_audio_only = False
     _train_config.minibatch_size = 16

@@ -69,6 +69,8 @@ class PresetDecoder(nn.Module):
             # Feed-forward decoder
             # MLP is mostly used as a baseline/debugging model - so it uses its own quite big 2048 hidden dim
             self.child_decoder = MlpDecoder(self, mlp_hidden_features=2048)
+        elif self.arch['name'] in ['lstm', 'gru']:
+            self.child_decoder = RnnDecoder(self, cell_type=self.arch['name'])
         else:
             self.child_decoder = None
             # TODO Constraints on latent feature maps: size checks depend on the architecture (some are more flexible)
@@ -143,10 +145,15 @@ class ChildDecoderBase(nn.Module):
         self.numerical_distrib = parent_dec.numerical_distrib
         self.seq_numerical_items_bool_mask = parent_dec.seq_numerical_items_bool_mask
         self.seq_categorical_items_bool_mask = parent_dec.seq_categorical_items_bool_mask
+        self.is_type_numerical = self.preset_helper.is_type_numerical
+
+    @staticmethod
+    def flatten_z_multi_level(z_multi_level):
+        return torch.cat([z.flatten(start_dim=1) for z in z_multi_level], dim=1)
 
 
 class MlpDecoder(ChildDecoderBase):
-    def __init__(self, parent_dec: PresetDecoder,mlp_hidden_features=2048, sequence_dim_last=True):
+    def __init__(self, parent_dec: PresetDecoder, mlp_hidden_features=2048, sequence_dim_last=True):
         """
         Simple module that reshapes the output from an MLP network into a 2D feature map with seq_len as
         its first dimension (number of channels will be inferred automatically), and applies a 1x1 conv
@@ -189,7 +196,7 @@ class MlpDecoder(ChildDecoderBase):
 
     def forward(self, z_multi_level, u_target):
         # ---------- 1) Apply the feed-forward MLP ----------
-        z_flat = torch.cat([z.flatten(start_dim=1) for z in z_multi_level], dim=1)
+        z_flat = self.flatten_z_multi_level(z_multi_level)
         u_hidden = self.mlp(z_flat).view(-1, self.in_channels, self.seq_len)
         u_hidden = self.conv(u_hidden)  # After this conv, sequence dim ("time" or "step" dimension) is last
 
@@ -215,10 +222,94 @@ class MlpDecoder(ChildDecoderBase):
             numerical_distrib_params,
             u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
         ))
-        u_numerical_samples = torch.squeeze(self.numerical_distrib.sample(numerical_distrib_params))
+        u_numerical_samples = torch.squeeze(self.numerical_distrib.sample(numerical_distrib_params))  # FIXME set squeeze dim (not to squeeze batch dim)
         u_out[:, self.seq_numerical_items_bool_mask, 1] = u_numerical_samples
 
         return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
+
+
+class RnnDecoder(ChildDecoderBase):
+    def __init__(self, parent_dec: PresetDecoder, cell_type='lstm'):
+        """
+        Decoder based on a single-way RNN (LSTM)
+        """
+        super().__init__(parent_dec)
+        if cell_type != 'lstm':
+            raise NotImplementedError()
+        # Network to use the flattened z as hidden state
+        # We use z sampled values as much as possible (in c0 then in h0) not to add another gradient to the
+        # computational path. Remaining 'empty spaces' in h0 are filled using an MLP.
+        if 2 * self.hidden_size <= self.dim_z:
+            raise NotImplementedError()
+        self.latent_expand_mlp = nn.Linear(self.dim_z, self.n_layers * (2 * self.hidden_size - self.dim_z))
+
+        # TODO LSTM with attention?
+        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, self.n_layers, batch_first=True)
+
+        # TODO check arch args
+
+
+    def forward(self, z_multi_level, u_target):
+        N, device = u_target.shape[0], u_target.device
+        # Compute h0 and c0 hidden states for each layer - expected shapes (num_layers, N, hidden_size)
+        z_flat = self.flatten_z_multi_level(z_multi_level)
+        z_expansion_split = torch.chunk(self.latent_expand_mlp(z_flat), self.n_layers, dim=1)
+        # We fill this "merged" tensor, then we'll split it into c0 (first) and h0
+        c0_h0 = torch.empty((self.n_layers, u_target.shape[0], 2 * self.hidden_size), device=u_target.device)
+        c0_h0[:, :, 0:z_flat.shape[1]] = z_flat  # use broadcasting
+        for l in range(self.n_layers):
+            c0_h0[l, :, z_flat.shape[1]:] = z_expansion_split[l]
+        c0, h0 = torch.chunk(c0_h0, 2, dim=2)
+        c0, h0 = c0.contiguous(), h0.contiguous()
+        # apply tanh to h0; not to c0? c_t values are not bounded in -1, +1 by LSTM cells
+        h0 = torch.tanh(h0)
+
+        # Prepare data structures to store all results (will be filled token-by-token)
+        u_out = self.preset_helper.get_null_learnable_preset(N).to(device)
+        u_categorical_nll = torch.zeros((N, self.preset_helper.n_learnable_categorical_params), device=device)
+        u_numerical_nll = torch.zeros((N, self.preset_helper.n_learnable_numerical_params), device=device)
+        numerical_idx, categorical_idx = 0, 0
+
+        # apply LSTM, token-by-token
+        embed_target = self.embedding(u_target, start_token=True)  # Inputs are shifted right
+        input_embed = embed_target[:, 0:1, :]  # Initial: Start token with zeros
+        h_t, c_t = h0, c0
+        for t in range(u_target.shape[1]):
+            type_class = int(u_target[0, t, 2].item())
+            output, (h_t, c_t) = self.lstm(input_embed, (h_t, c_t))
+            # compute NLLs and sample (and embed the sample)  TODO no_grad, no NLL
+            #    we could compute NLLs only once at the end, but this section should be run with no_grad() context
+            #    (optimization left for future works)
+            if self.is_type_numerical[type_class]:
+                # The conv requires seq dim to be last FIXME different distribs for different discrete cards
+                numerical_distrib_params = self.numerical_distrib_conv1d(output.transpose(1, 2))
+                numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
+                samples = self.numerical_distrib.sample(numerical_distrib_params).view((N, ))
+                u_out[:, t, 1] = samples
+                u_numerical_nll[:, numerical_idx] = self.numerical_distrib.NLL(
+                    numerical_distrib_params, u_target[:, t:t+1, 1:2].transpose(2, 1)).view((N, ))
+                numerical_idx += 1
+            else:
+                logits, ce_nll, samples = self.categorical_module.forward_single_token(
+                    output, u_target[:, t, 0].long(), type_class
+                )
+                u_out[:, t, 0] = samples.float()
+                u_categorical_nll[:, categorical_idx] = ce_nll
+                categorical_idx += 1
+            # Compute next embedding
+            if self.training and True:  # TODO teacher forcing proba
+                input_embed = self.embedding.forward_single_token(u_target[:, t:t+1, :])
+            else:  # Eval or no teacher forcing: use the net's own output
+                input_embed = self.embedding.forward_single_token(u_out[:, t:t+1, :])  # expected in shape: N x 1 x 3
+
+        # Retrieve numerical and categorical samples from u_out - and return everything
+        u_categorical_samples = u_out[:, self.seq_categorical_items_bool_mask, 0].long()
+        u_numerical_samples = u_out[:, self.seq_numerical_items_bool_mask, 1]
+        return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
+
+
+# TODO TransformerDecoder, with teacher-forced parallel forward (train, possibly use parallel sched sampling)
+# and single token forward for inference
 
 
 class MultiCardinalCategories(nn.Module):
@@ -257,6 +348,12 @@ class MultiCardinalCategories(nn.Module):
         # Constant sizes
         self.Lc = self.preset_helper.n_learnable_categorical_params
 
+    def get_ce_weights(self, card: int, device):
+        if self.use_ce_weights and self.training:
+            return self.cross_entropy_weights[card].to(device)
+        else:
+            return None
+
     def forward(self):
         raise NotImplementedError("Use forward_full_sequence or forward_item.")
 
@@ -283,23 +380,26 @@ class MultiCardinalCategories(nn.Module):
             sampled_categories[:, mask] = torch.argmax(logits, dim=1, keepdim=False)
             # Don't turn off label smoothing during validation (we don't want validation over-confidence either)
             # However, we don't use the (training) weights during validation
-            if self.use_ce_weights and self.training:
-                weight = self.cross_entropy_weights[card].to(u_target.device)
-            else:
-                weight = None
+            weights = self.get_ce_weights(card, u_target.device)
             out_ce[:, mask] = F.cross_entropy(
                 logits, u_target[:, mask],
-                reduction='none', label_smoothing=self.label_smoothing, weight=weight
+                reduction='none', label_smoothing=self.label_smoothing, weight=weights
             )
             out_logits[card] = logits
         return out_logits, out_ce, sampled_categories
 
-    def forward_item(self, u_categorical_last_hidden, categorical_submatrix_index: int):
+    def forward_single_token(self, u_token_hidden, u_target_classes, type_class: int):
         """
+        :param u_categorical_last_hidden: Tensor of shape N x 1 x hidden_size
+        :returns logits (shape N), out_ce (shape N), samples (shape N)
+        """
+        card_group = self.preset_helper.param_type_to_cardinality[type_class]
+        logits = self.categorical_distribs_conv1d[card_group](u_token_hidden.transpose(1, 2))
+        logits = torch.squeeze(logits, 2)
+        out_ce = F.cross_entropy(
+            logits, u_target_classes,
+            reduction='none', label_smoothing=self.label_smoothing,
+            weight=self.get_ce_weights(card_group, u_token_hidden.device)
+        )
+        return logits, out_ce, torch.argmax(logits, dim=1, keepdim=False)
 
-        :param u_categorical_last_hidden: Tensor of shape TODO SHAPE
-        :param categorical_submatrix_index: Sequence-index of the current sequence item (index in [0, Lc - 1])
-        :return:
-        """
-        card_group = self.preset_helper.matrix_categorical_rows_card[categorical_submatrix_index]
-        raise NotImplementedError()  # FIXME this has to be checked before being used
