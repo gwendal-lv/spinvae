@@ -30,7 +30,7 @@ class ModelConfig:
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
-        self.run_name = 'lstm_00'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'transformer_02'  # experiment run: different hyperparams, optimizer, etc... for a given exp
         self.pretrained_VAE_checkpoint \
             = self.logs_root_dir + "/TODO_MY_MODEL_CHECKPOINT.tar"
         self.pretrained_VAE_checkpoint = None  # TODO Uncomment this to train a full model from scratch
@@ -76,7 +76,7 @@ class ModelConfig:
         self.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
         # Preset encoder/decoder architecture
         # TODO description (base + options)
-        self.vae_preset_architecture = 'lstm_3l'
+        self.vae_preset_architecture = 'tfm_3l'
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values.
@@ -88,7 +88,7 @@ class ModelConfig:
         self.concat_midi_to_z = None  # See update_dynamic_config_params()
         # Latent space dimension  ********* this dim is automatically set when using a Hierarchical VAE *************
         self.dim_z = -1
-        self.approx_requested_dim_z = 100  # Hierarchical VAE will try to get close to this, will often be higher
+        self.approx_requested_dim_z = 144  # Hierarchical VAE will try to get close to this, will often be higher
         # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
         #    - base architectures can be realnvp, maf, ...
         #    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
@@ -115,8 +115,9 @@ class ModelConfig:
         self.required_dataset_midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
         # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
         # self.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
-        self.midi_notes = self.required_dataset_midi_notes
-        self.main_midi_note_index = 2  # 56, 75
+        # self.midi_notes = ((41, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 5 notes
+        self.midi_notes = ((41, 75), (56, 75), (56, 127))  # 3 notes (faster training)
+        self.main_midi_note_index = 1 if len(self.midi_notes) <= 3 else 2  # 56, 75
         self.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
         # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
         # dataset size is increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled

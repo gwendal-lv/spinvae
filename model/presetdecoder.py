@@ -71,10 +71,10 @@ class PresetDecoder(nn.Module):
             self.child_decoder = MlpDecoder(self, mlp_hidden_features=2048)
         elif self.arch['name'] in ['lstm', 'gru']:
             self.child_decoder = RnnDecoder(self, cell_type=self.arch['name'])
+        elif self.arch['name'] == 'tfm':  # Transformer
+            self.child_decoder = TransformerDecoder(self)  # TODO args: n_head, ...
         else:
             self.child_decoder = None
-            # TODO Constraints on latent feature maps: size checks depend on the architecture (some are more flexible)
-            #    currently support only single-level latents
             raise NotImplementedError("Preset architecture {} not implemented".format(self.arch['name']))
 
     def _move_masks_to(self, device):
@@ -116,13 +116,22 @@ class PresetDecoder(nn.Module):
         device = torch.device(device)
         input_z = [torch.rand(s).to(device) - 0.5 for s in self._latent_tensors_shapes]
         input_u = self.preset_helper.get_null_learnable_preset(self._latent_tensors_shapes[0][0]).to(device)
+        was_training = self.training
+        if self.arch['name'] == 'tfm':
+            # Recursive inference makes the transformer summary absolutely impossible to read - force use training mode
+            self.train()
+            summary_mode = "train"
+        else:
+            summary_mode = "eval"
         with torch.no_grad():
-            return torchinfo.summary(
-                self, input_data=(input_z, input_u),
+            summary = torchinfo.summary(
+                self, input_data=(input_z, input_u), mode=summary_mode,
                 depth=5, verbose=0, device=device,
                 col_names=("input_size", "kernel_size", "output_size", "num_params", "mult_adds"),
                 row_settings=("depth", "var_names")
             )
+        self.train(mode=was_training)
+        return summary
 
 
 class ChildDecoderBase(nn.Module):
@@ -150,6 +159,78 @@ class ChildDecoderBase(nn.Module):
     @staticmethod
     def flatten_z_multi_level(z_multi_level):
         return torch.cat([z.flatten(start_dim=1) for z in z_multi_level], dim=1)
+
+    def compute_full_sequence_samples_and_losses(self, u_hidden, u_target):
+        """
+         Compute parameters of probability distributions, compute NLLs (all at once) ----------
+        At this point, u_hidden is the hidden sequence representation of the preset - shape N x L x Hembed
+        """
+        u_hidden = u_hidden.transpose(2, 1)  # TODO DOC: why? for convs?
+        u_out = self.preset_helper.get_null_learnable_preset(u_target.shape[0]).to(u_target.device)
+        # --- Categorical distribution(s) ---
+        u_categorical_logits, u_categorical_nll, u_categorical_samples = self.categorical_module.forward_full_sequence(
+            u_hidden[:, :, self.seq_categorical_items_bool_mask],
+            u_target[:, self.seq_categorical_items_bool_mask, 0]
+        )
+        u_out[:, self.seq_categorical_items_bool_mask, 0] = u_categorical_samples.float()
+        # --- Numerical distribution (s) ---
+        # FIXME different distributions for parameters w/ a different cardinal
+        numerical_distrib_params = self.numerical_distrib_conv1d(
+            u_hidden[:, :, self.seq_numerical_items_bool_mask]
+        )
+        numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
+        # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
+        u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
+            numerical_distrib_params,
+            u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
+        ))
+        u_numerical_samples = torch.squeeze(
+            self.numerical_distrib.sample(numerical_distrib_params))  # FIXME set squeeze dim (not to squeeze batch dim)
+        u_out[:, self.seq_numerical_items_bool_mask, 1] = u_numerical_samples
+
+        return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
+
+    def get_init_u_out_and_nlls(self, N, device):
+        u_out = self.preset_helper.get_null_learnable_preset(N).to(device)
+        u_categorical_nll = torch.zeros((N, self.preset_helper.n_learnable_categorical_params), device=device)
+        u_numerical_nll = torch.zeros((N, self.preset_helper.n_learnable_numerical_params), device=device)
+        return u_out, u_categorical_nll, u_numerical_nll
+
+    def compute_single_token_sample_and_loss(
+            self,
+            token_hidden, target_token,
+            u_out, u_categorical_nll, u_numerical_nll,
+            categorical_idx, numerical_idx
+    ):
+        """ Computes the loss about a single token (either categorial or numerical), samples from it, and
+        stores values into the proper structures (u_out, indexes, and NLL numerical or categorical).
+
+        :param token_hidden: (N x 1 x hidden_size) output from the last hidden layer
+        :param target_token: (N x 1 x 3) target
+        """
+        N = token_hidden.shape[0]
+        t = categorical_idx + numerical_idx
+        type_class = int(target_token[0, 0, 2].item())
+        # compute NLLs and sample (and embed the sample)  TODO no_grad, no NLL
+        #    we could compute NLLs only once at the end, but this section should be run with no_grad() context
+        #    (optimization left for future works)
+        if self.is_type_numerical[type_class]:
+            # The conv requires seq dim to be last FIXME different distribs for different discrete cards
+            numerical_distrib_params = self.numerical_distrib_conv1d(token_hidden.transpose(1, 2))
+            numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
+            samples = self.numerical_distrib.sample(numerical_distrib_params).view((N,))
+            u_out[:, t, 1] = samples
+            u_numerical_nll[:, numerical_idx] = self.numerical_distrib.NLL(
+                numerical_distrib_params, target_token[:, :, 1:2].transpose(2, 1)).view((N,))
+            numerical_idx += 1
+        else:
+            logits, ce_nll, samples = self.categorical_module.forward_single_token(
+                token_hidden, target_token[:, 0, 0].long(), type_class
+            )
+            u_out[:, t, 0] = samples.float()
+            u_categorical_nll[:, categorical_idx] = ce_nll
+            categorical_idx += 1
+        return u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
 
 
 class MlpDecoder(ChildDecoderBase):
@@ -195,37 +276,12 @@ class MlpDecoder(ChildDecoderBase):
         self.sequence_dim_last = sequence_dim_last
 
     def forward(self, z_multi_level, u_target):
-        # ---------- 1) Apply the feed-forward MLP ----------
+        # Apply the feed-forward MLP
         z_flat = self.flatten_z_multi_level(z_multi_level)
         u_hidden = self.mlp(z_flat).view(-1, self.in_channels, self.seq_len)
         u_hidden = self.conv(u_hidden)  # After this conv, sequence dim ("time" or "step" dimension) is last
-
-        u_out = self.preset_helper.get_null_learnable_preset(u_target.shape[0]).to(u_target.device)
-        # ---------- 2) Compute parameters of probability distributions, compute NLLs (all at once) ----------
-        # At this point, u_last_hidden is the hidden sequence representation of the preset
-        #     shape must be: hidden_size x L (sequence dimension last)
-        #
-        # --- Categorical distribution(s) ---
-        u_categorical_logits, u_categorical_nll, u_categorical_samples = self.categorical_module.forward_full_sequence(
-            u_hidden[:, :, self.seq_categorical_items_bool_mask],
-            u_target[:, self.seq_categorical_items_bool_mask, 0]
-        )
-        u_out[:, self.seq_categorical_items_bool_mask, 0] = u_categorical_samples.float()
-        # --- Numerical distribution (s) ---
-        # FIXME different distributions for parameters w/ a different cardinal
-        numerical_distrib_params = self.numerical_distrib_conv1d(
-            u_hidden[:, :, self.seq_numerical_items_bool_mask]
-        )
-        numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
-        # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
-        u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
-            numerical_distrib_params,
-            u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
-        ))
-        u_numerical_samples = torch.squeeze(self.numerical_distrib.sample(numerical_distrib_params))  # FIXME set squeeze dim (not to squeeze batch dim)
-        u_out[:, self.seq_numerical_items_bool_mask, 1] = u_numerical_samples
-
-        return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
+        # Full-sequence loss (shared with the transformer in training mode) - embed dim last
+        return self.compute_full_sequence_samples_and_losses(u_hidden.transpose(1, 2), u_target)
 
 
 class RnnDecoder(ChildDecoderBase):
@@ -242,12 +298,8 @@ class RnnDecoder(ChildDecoderBase):
         if 2 * self.hidden_size <= self.dim_z:
             raise NotImplementedError()
         self.latent_expand_mlp = nn.Linear(self.dim_z, self.n_layers * (2 * self.hidden_size - self.dim_z))
-
         # TODO LSTM with attention?
         self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, self.n_layers, batch_first=True)
-
-        # TODO check arch args
-
 
     def forward(self, z_multi_level, u_target):
         N, device = u_target.shape[0], u_target.device
@@ -265,9 +317,7 @@ class RnnDecoder(ChildDecoderBase):
         h0 = torch.tanh(h0)
 
         # Prepare data structures to store all results (will be filled token-by-token)
-        u_out = self.preset_helper.get_null_learnable_preset(N).to(device)
-        u_categorical_nll = torch.zeros((N, self.preset_helper.n_learnable_categorical_params), device=device)
-        u_numerical_nll = torch.zeros((N, self.preset_helper.n_learnable_numerical_params), device=device)
+        u_out, u_categorical_nll, u_numerical_nll = self.get_init_u_out_and_nlls(N, device)
         numerical_idx, categorical_idx = 0, 0
 
         # apply LSTM, token-by-token
@@ -275,27 +325,14 @@ class RnnDecoder(ChildDecoderBase):
         input_embed = embed_target[:, 0:1, :]  # Initial: Start token with zeros
         h_t, c_t = h0, c0
         for t in range(u_target.shape[1]):
-            type_class = int(u_target[0, t, 2].item())
             output, (h_t, c_t) = self.lstm(input_embed, (h_t, c_t))
-            # compute NLLs and sample (and embed the sample)  TODO no_grad, no NLL
-            #    we could compute NLLs only once at the end, but this section should be run with no_grad() context
-            #    (optimization left for future works)
-            if self.is_type_numerical[type_class]:
-                # The conv requires seq dim to be last FIXME different distribs for different discrete cards
-                numerical_distrib_params = self.numerical_distrib_conv1d(output.transpose(1, 2))
-                numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
-                samples = self.numerical_distrib.sample(numerical_distrib_params).view((N, ))
-                u_out[:, t, 1] = samples
-                u_numerical_nll[:, numerical_idx] = self.numerical_distrib.NLL(
-                    numerical_distrib_params, u_target[:, t:t+1, 1:2].transpose(2, 1)).view((N, ))
-                numerical_idx += 1
-            else:
-                logits, ce_nll, samples = self.categorical_module.forward_single_token(
-                    output, u_target[:, t, 0].long(), type_class
+
+            u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx \
+                = self.compute_single_token_sample_and_loss(
+                    output, u_target[:, t:t+1, :],
+                    u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
                 )
-                u_out[:, t, 0] = samples.float()
-                u_categorical_nll[:, categorical_idx] = ce_nll
-                categorical_idx += 1
+
             # Compute next embedding
             if self.training and True:  # TODO teacher forcing proba
                 input_embed = self.embedding.forward_single_token(u_target[:, t:t+1, :])
@@ -308,8 +345,107 @@ class RnnDecoder(ChildDecoderBase):
         return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
 
 
-# TODO TransformerDecoder, with teacher-forced parallel forward (train, possibly use parallel sched sampling)
-# and single token forward for inference
+class TransformerDecoder(ChildDecoderBase):
+    def __init__(self, parent_dec: PresetDecoder, n_head=4):
+        """
+        TODO doc
+
+        # TODO ctor args: different ways to build memory embeddings from latent space
+
+        TODO AR ctor arg (AR_forward, AR_backward.. BIDIR Transformer?)
+                Bidirectional: won't actually be AR (we'll have different forward/backward predictions,
+                which would to be "merged" somehow - ensembling approach?)
+        """
+        super().__init__(parent_dec)
+        self.n_head = n_head
+
+        # Mlp + conv to create a (big) memory from the small latent space
+        #    The MLP is applied to the flattened z (channel 0), and computes approx. 1000 new values which are reshaped
+        #    into other latent channels. A 1d conv then increases the number of channels to obtain the memory matrix.
+        self.n_mlp_out_reshaped_ch = max(1000 // self.seq_len, 1)
+        mlp_out_features = self.seq_len * self.n_mlp_out_reshaped_ch
+        self.input_memory_mlp = nn.Linear(self.dim_z, mlp_out_features)
+        self.input_memory_conv = nn.Conv1d(self.hidden_size, self.hidden_size, 1)
+
+        # Transformer decoder
+        tfm_layer = nn.TransformerDecoderLayer(
+            self.hidden_size, n_head,  # each head's embed dim will be: self.hidden_size // num_heads
+            dim_feedforward=self.hidden_size * 2, batch_first=True, dropout=0.0,  # FIXME dropout_p
+        )
+        self.tfm = nn.TransformerDecoder(tfm_layer, self.n_layers)  # opt norm: between blocks? (default: None)
+        self.subsequent_mask = nn.Transformer.generate_square_subsequent_mask(self.seq_len)
+        # TODO reverse
+
+    def forward(self, z_multi_level, u_target):
+        N, device = u_target.shape[0], u_target.device  # minibatch size, current device
+        # Build memory from z
+        z_flat = self.flatten_z_multi_level(z_multi_level)
+        memory_in = self.input_memory_mlp(z_flat)  # no activation (sampled latent values are not activated)
+        # Sequence dimension last, for convs (will be transposed later)
+        z_flat = z_flat.view(N, -1, self.seq_len)
+        memory_in = memory_in.view(N, self.n_mlp_out_reshaped_ch, self.seq_len)
+        # TODO maybe DON'T use the original latent codes? Because their ordering will be related
+        #    to the memory's ordering (is that an issue after pretraining? could this force the
+        #    audio latent codes to change too much?)
+        # (((TODO '_latskipco' architecture argument)))
+        memory_in = torch.cat((z_flat, memory_in), dim=1)
+        # Expand the memory values such that they can be used as residuals
+        n_repeats = int(np.ceil(self.hidden_size / memory_in.shape[1]))
+        memory_in = torch.repeat_interleave(memory_in, n_repeats, dim=1, output_size=n_repeats*memory_in.shape[1])
+        memory_in = memory_in[:, 0:self.hidden_size, :]  # Discard extra embedding dimensions (probable after repeat)
+        # Residual conv - transpose to set sequence dim last
+        memory_in = (memory_in + self.input_memory_conv(memory_in)).transpose(1, 2)
+
+        ar_forward_mask = self.subsequent_mask.to(device)
+        # Different training and eval procedures: parallel training, sequential evaluation
+        if self.training:  # TODO at some point, scheduled sampling for transformers? (2+ passes)
+            # Get embeddings w/ start token, discard the last token
+            u_target_embeds = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]
+            # Some details about PyTorch's standard Transformer decoding layers and modules:
+            #     (see torch/nn/modules/transformer.py, line 460 for pytorch 1.10)
+            # Target data corresponds to the decoder's input embeddings (i.e. the target in teacher-forcing training)
+            #    -> the first mha layer computes Q, K, V from x, x, x   (attention mask: tgt_mask)
+            #       where x is the target for the very first layer, and is the target+residuals for hidden layers
+            # Memory data corresponds to hidden states from the encoder (or extracted from the latent space....)
+            #    -> memory data does not contain some K and V, but can be turned into Keys and Values using
+            #       the decoder's own Wv and Wk matrices.
+            #    -> the second mha layer computes Q, K, V from x, memory, memory     (attention mask: memory_mask)
+            # FIXME: the transformer always takes the target as input
+            tfm_out = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask, memory_mask=ar_forward_mask)
+            # Compute logits and losses - all at once (shared with the MLP decoder)
+            return self.compute_full_sequence_samples_and_losses(tfm_out, u_target)
+
+        else:  # Eval mode - AR forward inference
+            # Prepare data structures to store all results (will be filled token-by-token)
+            u_out, u_categorical_nll, u_numerical_nll = self.get_init_u_out_and_nlls(N, device)
+            numerical_idx, categorical_idx = 0, 0
+            # Default null embeddings (we don't need to pre-embed null values): will contain positional embeddings only
+            u_input_feedback_embeds = torch.zeros((N, self.seq_len, self.hidden_size), device=device)
+            u_input_feedback_embeds[:, 0:1, :] = self.embedding.get_start_token(device, batch_dim=False)
+            u_input_feedback_embeds += self.embedding.pos_embed_L
+
+            for t in range(self.seq_len):
+                # use the TFM on a reduced set of input embeds
+                #  Sub-optimal (default pytorch) implementation: we'll recompute the same Q, K, V multiple times....
+                tfm_out = self.tfm(
+                    u_input_feedback_embeds[:, 0:t+1, :],
+                    memory_in[:, 0:t+1, :],
+                    tgt_mask=ar_forward_mask[0:t+1, 0:t+1],
+                    memory_mask=ar_forward_mask[0:t+1, 0:t+1]
+                )
+                u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx \
+                    = self.compute_single_token_sample_and_loss(
+                    tfm_out[:, t:t+1, :], u_target[:, t:t + 1, :],
+                    u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
+                )
+                # add the next embedding to its (previously computed) positional embedding
+                next_embed = self.embedding.forward_single_token(u_out[:, t:t + 1, :])  # expected in shape: N x 1 x 3
+                u_input_feedback_embeds[:, t+1:t+2, :] += next_embed
+
+            # Retrieve numerical and categorical samples from u_out - and return everything
+            u_categorical_samples = u_out[:, self.seq_categorical_items_bool_mask, 0].long()
+            u_numerical_samples = u_out[:, self.seq_numerical_items_bool_mask, 1]
+            return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
 
 
 class MultiCardinalCategories(nn.Module):

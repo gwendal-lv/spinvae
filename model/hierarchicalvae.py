@@ -294,10 +294,10 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             summary += str(self.decoder.preset_decoder.get_summary()) + '\n\n'
         summary += sep_str + '********** FULL VAE SUMMARY **********\n' + sep_str
         if self._preset_helper is None:
-            input_data = (torch.empty(self._input_audio_tensor_size), )
+            input_data = (torch.rand(self._input_audio_tensor_size) - 0.5, )
         else:
             input_u = self._preset_helper.get_null_learnable_preset(self._input_audio_tensor_size[0])
-            input_data = (torch.empty(self._input_audio_tensor_size), input_u)
+            input_data = (torch.rand(self._input_audio_tensor_size) - 0.5, input_u)
         summary += str(torchinfo.summary(
             self, input_data=input_data, depth=5, device=torch.device('cpu'), verbose=0,
             col_names=("input_size", "output_size", "num_params", "mult_adds"),
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 1
     _model_config.approx_requested_dim_z = 144
-    _model_config.vae_preset_architecture = 'lstm_5l'
+    _model_config.vae_preset_architecture = 'tfm_3l'
 
     _train_config.pretrain_audio_only = False
     _train_config.minibatch_size = 16
@@ -350,7 +350,8 @@ if __name__ == "__main__":
         _preset_helper, _dummy_preset = None, None
 
     hVAE = HierarchicalVAE(_model_config, _train_config, _preset_helper)
-
+    hVAE.train()
+    hVAE.eval()  # FIXME remove
     vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size), _dummy_preset)
     vae_out = hVAE.parse_outputs(vae_out)
 

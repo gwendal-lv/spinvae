@@ -71,12 +71,22 @@ class PresetEmbedding(nn.Module):
         #       max_categorical_cardinal * n_param_types
         # Most embeddings values will never be used, but the embedding index can be obtained very easily using
         # a simple product (synth param type * class index)
+        # FIXME don't use so much unnecessary embeddings
         n_categorical_embeddings = preset_helper.max_cat_classes * preset_helper.n_param_types
         self.categorical_embedding = nn.Embedding(n_categorical_embeddings, hidden_size, max_norm=None)
 
         # Save other masks - they are will be moved to the GPU
         self._matrix_categorical_bool_mask = self.preset_helper.matrix_categorical_bool_mask.clone()
         self._matrix_numerical_bool_mask = self.preset_helper.matrix_numerical_bool_mask.clone()
+
+        # Precompute the largest possible embedding: seq w/ start and end tokens
+        self.pos_embed_L_plus_2 = self.get_sin_cos_positional_embedding(seq_len=self.seq_len + 2)
+
+        # TODO unit test: assert that all embeddings are different (after random init)
+
+    @property
+    def seq_len(self):
+        return self.preset_helper.n_learnable_params
 
     @property
     def _n_num_params(self):
@@ -87,20 +97,32 @@ class PresetEmbedding(nn.Module):
             u_categorical_only[:, :, 2] * self.preset_helper.max_cat_classes + u_categorical_only[:, :, 0]
         ).long()
 
-    def _move_masks_to(self, device):
+    def _move_masks_and_embeds_to(self, device):
         if self.numerical_embedding_mask.device != device:
             # numerical_embedding_mask is huge so this leads to a significantly reduced epoch duration
             self.numerical_embedding_mask = self.numerical_embedding_mask.to(device)
             self._matrix_numerical_bool_mask = self._matrix_numerical_bool_mask.to(device)
             self._matrix_categorical_bool_mask = self._matrix_categorical_bool_mask.to(device)
+            self.pos_embed_L_plus_2 = self.pos_embed_L_plus_2.to(device)
 
-    def forward(self, u_in: torch.Tensor, start_token=False):
+    def get_start_token(self, device, batch_dim=False):
+        if batch_dim:
+            return torch.zeros((1, 1, self.hidden_size), device=device)
+        else:
+            return torch.zeros((1, self.hidden_size), device=device)
+
+    def forward(self, u_in: torch.Tensor, start_token=False, pos_embed=True):
         """
         Returns an embedding, shape N x L x hidden_size if start_token is False else N x (L+1) x hidden_size
         corresponding to an entire input preset (shape N x L x 3)
+
+        :param start_token: If True, a special start token will be inserted at the beginning of the sequence,
+            but the last item will NOT be discarded.
+        :param pos_embed: If True, Transformer positional embeddings will be added.
         """
-        self._move_masks_to(u_in.device)
-        embed_out = torch.empty((u_in.shape[0], u_in.shape[1], self.hidden_size), device=u_in.device)
+        self._move_masks_and_embeds_to(u_in.device)
+        N = u_in.shape[0]  # minibatch size
+        embed_out = torch.empty((N, u_in.shape[1], self.hidden_size), device=u_in.device)
         # Categorical: Class values in "column" 0, types in "column" 2 ("column" is the last dimension)
         u_categorical = u_in[:, self._matrix_categorical_bool_mask, :]
         u_cat_embed_idx = self._get_categorical_embed_idx(u_categorical)
@@ -109,19 +131,25 @@ class PresetEmbedding(nn.Module):
         # Numerical:
         u_numerical = u_in[:, self._matrix_numerical_bool_mask, 1:2]  # 3D tensor, not squeezed
         u_numerical_unmasked = self.numerical_embedding_conv(u_numerical.transpose(1, 2)).transpose(2, 1)
-        u_numerical_embeds = u_numerical_unmasked[self.numerical_embedding_mask.expand(u_in.shape[0], -1, -1)]
+        u_numerical_embeds = u_numerical_unmasked[self.numerical_embedding_mask.expand(N, -1, -1)]
         # This view is risky... but necessary because self.numerical_embedding_mask leads to a flattened tensor
         #   seems to work properly w/ pytorch 1.10, let's hope an update won't break the current behavior
-        u_numerical_embeds = u_numerical_embeds.view(u_in.shape[0], self._n_num_params, self.hidden_size)
+        u_numerical_embeds = u_numerical_embeds.view(N, self._n_num_params, self.hidden_size)
         embed_out[:, self._matrix_numerical_bool_mask, :] = u_numerical_embeds
-        # TODO insert start token (we do not it at the end, not to mess with masks)
-        if start_token:
-            start_embed = torch.zeros((embed_out.shape[0], 1, embed_out.shape[2]), device=embed_out.device)
+        # insert start token (we do not it at the end, not to mess with masks)
+        if start_token:  # TODO learnable start token?
+            start_embed = self.get_start_token(u_in.device, batch_dim=True).expand(N, -1, -1)
             embed_out = torch.cat((start_embed, embed_out), dim=1)  # Concat along seq dim, start token first
+            if pos_embed:
+                embed_out += self.pos_embed_L_plus_1  # broadcast over minibatch dimension
+        else:
+            if pos_embed:
+                embed_out += self.pos_embed_L  # broadcast over minibatch dimension
         return embed_out
 
     def forward_single_token(self, u_single_step: torch.Tensor):
-        """ Returns the embedding (shape N x 1 x hidden_size) of a single-step input element (shape N x 1 x 3) """
+        """ Returns the embedding (shape N x 1 x hidden_size) of a single-step input element (shape N x 1 x 3).
+        This method is NOT able to add any positional embedding - it has to be done outside of this method. """
         assert u_single_step.shape[1] == 1
         type_class = int(u_single_step[0, 0, 2].item())  # Types (~= positions) are the same for all items from a batch
         if self.is_type_numerical[type_class]:  # Numerical type
@@ -130,4 +158,24 @@ class PresetEmbedding(nn.Module):
             return embed[:, :, (type_class * self.hidden_size): ((type_class + 1) * self.hidden_size)]
         else:  # Categorical type
             return self.categorical_embedding(self._get_categorical_embed_idx(u_single_step))
+
+    def get_sin_cos_positional_embedding(self, max_len=10000.0, seq_len=None):
+        D = self.hidden_size
+        # Sequence length can be increased w/ start/stop tokens
+        L = seq_len if seq_len is not None else self.seq_len
+        embed = torch.unsqueeze(torch.arange(0, L, dtype=torch.int).float(), dim=1)
+        embed = embed.repeat(1, D)
+        for i in range(D//2):
+            omega_inverse = max_len ** (2.0 * i / D)
+            embed[:, 2 * i] = torch.sin(embed[:, 2 * i] / omega_inverse)
+            embed[:, 2 * i + 1] = torch.cos(embed[:, 2 * i + 1] / omega_inverse)
+        return embed
+
+    @property
+    def pos_embed_L(self):
+        return self.pos_embed_L_plus_2[0:self.seq_len, :]
+
+    @property
+    def pos_embed_L_plus_1(self):
+        return self.pos_embed_L_plus_2[0:self.seq_len + 1, :]
 
