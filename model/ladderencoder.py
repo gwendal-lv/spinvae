@@ -75,15 +75,15 @@ class LadderEncoder(LadderBase):
                         if j == 0 and conv_args['att'] and (3 <= i_blk <= 5):
                             self_att = SelfAttentionConv2D(blk_hid_ch, position_encoding=True)
                             residuals_path.add_module('self_att', ConvBlock2D(
-                                self_att, None, self._get_conv_norm(blk_hid_ch), 'nc'))
+                                self_att, None, self._get_conv_norm(), 'nc'))
                         else:
                             # No depth-separable conv in the encoder (see NVAE NeurIPS 2020) - only 3x3 conv
                             conv = nn.Conv2d(blk_hid_ch, blk_hid_ch, (3, 3), 1, 1)
                             residuals_path.add_module('conv' + str(j), ConvBlock2D(
-                                conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
+                                conv, self._get_conv_act(), self._get_conv_norm(), 'nac'))
                     strided_conv = nn.Conv2d(blk_hid_ch, blk_out_ch, (4, 4), 2, 2)
                     residuals_path.add_module('strided', ConvBlock2D(
-                        strided_conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
+                        strided_conv, self._get_conv_act(), self._get_conv_norm(), 'nac'))
 
                 # Add a skip-connection if required, then add this new block to the current cell
                 if conv_args['res'] and i_blk > 0:

@@ -217,6 +217,7 @@ class TrainableMultiGroupModel(nn.Module):
                 self._schedulers[k].step()
 
     def save_checkpoints(self, model_dir: pathlib.Path):
+        """ Saves all sub-models into a unique checkpoint.tar file (non-trained sub-models will be saved as None). """
         checkpoint_dict = dict()
         for k in self.param_group_names:
             checkpoint_dict[k] = dict()
@@ -235,6 +236,16 @@ class TrainableMultiGroupModel(nn.Module):
             print("[RunLogger] Saved checkpoint (models, optimizers, schedulers) to {}"
                   .format(model_dir.joinpath("checkpoint.tar")))
 
-    def load_checkpoints(self, checkpoints_dir: pathlib.Path):
-        raise NotImplementedError()
-        # TODO load only available
+    def load_checkpoints(self, checkpoints_path: pathlib.Path, reload_opt_sched=False):
+        """ Loads weights from pre-trained submodels (dicts corresponding to non-pretrained sub-models are set
+        to None values). """
+        checkpoint_dict = torch.load(checkpoints_path)
+        for k, submodel_checkpoint in checkpoint_dict.items():
+            assert k in self.param_group_names  # e.g. 'audio', 'latent' or 'preset'
+            if submodel_checkpoint is not None and submodel_checkpoint['model_state_dict'] is not None:
+                group_module = self.get_custom_group_module(k)
+                group_module.load_state_dict(submodel_checkpoint['model_state_dict'])
+                if self._train_config.verbosity >= 1:
+                    print("[TrainableMultiGroupModel] Loaded '{}' model_state_dict from {}".format(k, checkpoints_path))
+                if reload_opt_sched:
+                    raise NotImplementedError("Can only load some models at the moment (not the optimizers or scheds")

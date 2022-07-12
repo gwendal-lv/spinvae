@@ -27,7 +27,7 @@ def parse_main_conv_architecture(full_architecture: str):
         raise AssertionError("Base architecture not available for given arch '{}'".format(base_arch_name))
     # Check arch args, transform
     arch_args_dict = {'adain': False, 'big': False, 'bigger': False, 'res': False, 'att': False,
-                      'depsep5x5': False, 'swish': False}
+                      'depsep5x5': False, 'swish': False, 'wn': False}
     for arch_arg in arch_args:
         if arch_arg in arch_args_dict.keys():
             arch_args_dict[arch_arg] = True  # Authorized arguments
@@ -54,8 +54,11 @@ class LadderBase(nn.Module):
         else:
             return nn.LeakyReLU(0.1)
 
-    def _get_conv_norm(self, n_ch: int):
-        return nn.BatchNorm2d(n_ch)  # Others (e.g. layer norm) are not considered yet for the main CNN
+    def _get_conv_norm(self):
+        if self.single_ch_conv_arch['args']['wn']:
+            return 'wn'
+        else:  # Default (no arg): Batch Norm
+            return 'bn'
 
     @abstractmethod
     def get_custom_group_module(self, group_name: str) -> nn.Module:

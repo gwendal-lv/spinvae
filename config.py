@@ -29,11 +29,10 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "dev"  # experiment base name
-        self.run_name = 'transformer_02'  # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.pretrained_VAE_checkpoint \
-            = self.logs_root_dir + "/TODO_MY_MODEL_CHECKPOINT.tar"
-        self.pretrained_VAE_checkpoint = None  # TODO Uncomment this to train a full model from scratch
+        self.name = "hvae"  # experiment base name
+        self.run_name = 'free_bits_2pow-5'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.pretrained_VAE_checkpoint = self.logs_root_dir + "/hvae/midi3notes_specladder8x1_res/checkpoint.tar"
+        # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
         self.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
         # Comet.ml logger (replaces Tensorboard)
         self.comet_api_key = config_confidential.comet_api_key
@@ -88,7 +87,7 @@ class ModelConfig:
         self.concat_midi_to_z = None  # See update_dynamic_config_params()
         # Latent space dimension  ********* this dim is automatically set when using a Hierarchical VAE *************
         self.dim_z = -1
-        self.approx_requested_dim_z = 144  # Hierarchical VAE will try to get close to this, will often be higher
+        self.approx_requested_dim_z = 256  # Hierarchical VAE will try to get close to this, will often be higher
         # Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
         #    - base architectures can be realnvp, maf, ...
         #    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
@@ -145,17 +144,17 @@ class ModelConfig:
 # ===================================================================================================================
 class TrainConfig:
     def __init__(self):
-        self.pretrain_audio_only = False  # Should we pre-train the audio+latent parts of the auto-encoder model only?
+        self.pretrain_audio_only = True  # Should we pre-train the audio+latent parts of the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
         # 256 is okay for smaller conv structures - reduce to 64 to fit '_big' models into 24GB GPU RAM
-        self.minibatch_size = 64  # TODO increase to 128 ?
+        self.minibatch_size = 64  # reduce to 64 for big models - also smaller N seems to improve VAE perfs...
         self.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
         self.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
         self.k_folds = 9  # 10% for validation set, 80% for training
-        self.current_k_fold = 0
+        self.current_k_fold = 0  # k-folds are not used anymore, but we'll keep the training/validation/test splits
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load the last saved checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
-        self.n_epochs = 200 if self.pretrain_audio_only else 275  # See update_dynamic_config_params().
+        self.n_epochs = 170  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -178,18 +177,23 @@ class TrainConfig:
         # coordinate always 'has' the same amount of regularization
         self.normalize_latent_loss = False
         # Here, beta = beta_vae / Dx in the beta-VAE formulation (ICLR 2017)
-        # where Dx is the input dimensionality (257 * 251 = 64 507)
+        # where Dx is the input dimensionality (257 * 251 = 64 507 for 1 spectogram)
         # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
-        #            ELBO loss is obtained by using beta = 1.55 e-5
-        self.beta = 1.6e-5
+        #            ELBO loss is obtained by using beta = 1.55 e-5 (for 1 spectrogram)
+        self.beta = 1.6e-5  # FIXME With 6 specs, this corresponds to beta=6
         # Should not be zero with Normalizing Flows or with a multi-layer structure for extracting latent values
         # (risk of a very unstable training)
         self.beta_start_value = self.beta * 1e-3
         # Epochs of warmup increase from start_value to beta TODO increase to reduce posterior collapse
-        self.beta_warmup_epochs = 50  # See update_dynamic_config_params(). Used during pre-train only
+        self.beta_warmup_epochs = 50  # Used during both pre-train and fine-tuning
         # VAE Kullback-Leibler divergence weighting during warmup, to try to prevent posterior collapse of some
         # latent levels (see NVAE, NeurIPS 2020). Leads to higher latent losses during warmup.
         self.dkl_auto_gamma = False  # If True, latent groups with small minibatch-KLDs will be assigned a smaller loss
+        # Free-bits from the IAF paper (NeurIPS 16) https://arxiv.org/abs/1606.04934
+        # Our VAE uses 2D feature maps as latent variables, and entire channels seem to collapse
+        # (a single pixel collapsing has not been observed). The "free bits" min Dkl constraint is then applied
+        # to each latent channel, no to hierarchical latent groups
+        self.latent_free_bits = 0.0  #2 ** -1  # this is a *single-pixel* min KLD value
 
         # - - - Synth parameters losses - - -
         # - General options
@@ -197,12 +201,9 @@ class TrainConfig:
         self.params_loss_compensation_factor = 0.5  # because MSE loss of the VAE is much lower (approx. 1e-2)
         self.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
-        # - Loss for a dense dequantized output loss (set to 'None' to activate other losses)
-        self.params_dense_dequantized_loss = 'None'  # Preempts CE losses
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
-        # TODO log the more important as hparams into comet.ml
-        self.preset_CE_label_smoothing = 0.1  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
-        self.preset_CE_use_weights = True
+        self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
+        self.preset_CE_use_weights = False
 
         # ------------------------------------------- Optimizer + scheduler -------------------------------------------
         # Different optimizer parameters can be used for the pre-trained AE and the regression networks
@@ -212,13 +213,12 @@ class TrainConfig:
         # Maximal learning rate (reached after warmup, then reduced on plateaus)
         # LR decreased if non-normalized losses (which are expected to be 9e4 times bigger with a 257x347 spectrogram)
         # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
-        self.initial_learning_rate = {'audio': 2e-4, 'latent': 2e-4, 'preset': 1e-4}
+        self.initial_learning_rate = {'audio': 2e-4, 'latent': 2e-4, 'preset': 2e-4}
         # FIXME RESET TO 1e-1
         self.initial_audio_latent_lr_factor_after_pretrain = 1.0  # audio-related LR reduced after pre-train
         # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
-        # The warmup will be must faster during pre-train  (See update_dynamic_config_params())
-        self.lr_warmup_epochs = 20
-        self.lr_warmup_start_factor = 0.05  # Reduced for large realnvp flows
+        self.lr_warmup_epochs = 20  # Will be decreased /2 during pre-training (stable CNN structure)
+        self.lr_warmup_start_factor = 0.05  # Will be increased 2x during pre-training
         self.scheduler_name = 'StepLR'  # can use ReduceLROnPlateau during pre-train (stable CNN), StepLR for reg model
         self.scheduler_lr_factor = 0.2
         # - - - StepLR scheduler options - - -
@@ -240,8 +240,10 @@ class TrainConfig:
         # WD definitely helps for regularization but significantly impairs results. 1e-4 seems to be a good compromise
         # for both Basic and MMD VAEs (without regression net). 3e-6 allows for the lowest reconstruction error.
         self.weight_decay = 1e-5
-        self.ae_fc_dropout = 0.0  # 0.3 without MMD, to try to help prevent VAE posterior collapse
-        self.preset_dropout = 0.1  # Applied only to subnets which do not handle value regression tasks
+        self.ae_fc_dropout = 0.0
+        # FIXME use dropout
+        self.preset_cat_dropout = 0.0  # Applied only to subnets which do not handle value regression tasks
+        self.preset_internal_dropout = 0.0
 
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
@@ -277,8 +279,6 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
     else:
         train_config.initial_learning_rate['audio'] *= train_config.initial_audio_latent_lr_factor_after_pretrain
         train_config.initial_learning_rate['latent'] *= train_config.initial_audio_latent_lr_factor_after_pretrain
-        train_config.beta_warmup_epochs = 0
-        train_config.attention_gamma_warmup_period = 0
 
     # stack_spectrograms must be False for 1-note datasets - security check
     model_config.stack_spectrograms = model_config.stack_spectrograms and (len(model_config.midi_notes) > 1)

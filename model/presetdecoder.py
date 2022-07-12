@@ -20,7 +20,8 @@ class PresetDecoder(nn.Module):
                  numerical_proba_distribution: str,
                  preset_helper: Preset2dHelper,
                  embedding: PresetEmbedding,
-                 dropout_p=0.0, label_smoothing=0.0, use_cross_entropy_weights=False):
+                 internal_dropout_p=0.0, cat_dropout_p=0.0,
+                 label_smoothing=0.0, use_cross_entropy_weights=False):
         """
         TODO DOC
         """
@@ -52,7 +53,8 @@ class PresetDecoder(nn.Module):
         #     equivalent to conv1d, kernel 1, without bias
         self.categorical_module = MultiCardinalCategories(
             self.hidden_size, self.preset_helper,
-            dropout_p=dropout_p, label_smoothing=label_smoothing, use_cross_entropy_weights=use_cross_entropy_weights
+            dropout_p=cat_dropout_p, label_smoothing=label_smoothing,
+            use_cross_entropy_weights=use_cross_entropy_weights
         )
         if numerical_proba_distribution == "gaussian_unitvariance":
             self.numerical_distrib = GaussianUnitVariance(
@@ -135,7 +137,7 @@ class PresetDecoder(nn.Module):
 
 
 class ChildDecoderBase(nn.Module):
-    def __init__(self, parent_dec: PresetDecoder):
+    def __init__(self, parent_dec: PresetDecoder, dropout_p=0.0):
         """
         Base class for any "sub-decoder" child (e.g. Mlp, RNN, Transformer) of a PresetDecoder instance.
         This allows to easily share useful instances and information with all children.
@@ -148,6 +150,7 @@ class ChildDecoderBase(nn.Module):
         self.embedding = parent_dec.embedding
         self.arch_args = parent_dec.arch['args']
         self.n_layers = parent_dec.arch['n_layers']
+        self._dropout_p = dropout_p
 
         self.categorical_module = parent_dec.categorical_module
         self.numerical_distrib_conv1d = parent_dec.numerical_distrib_conv1d
@@ -234,7 +237,7 @@ class ChildDecoderBase(nn.Module):
 
 
 class MlpDecoder(ChildDecoderBase):
-    def __init__(self, parent_dec: PresetDecoder, mlp_hidden_features=2048, sequence_dim_last=True):
+    def __init__(self, parent_dec: PresetDecoder, mlp_hidden_features=2048, sequence_dim_last=True, dropout_p=0.0):
         """
         Simple module that reshapes the output from an MLP network into a 2D feature map with seq_len as
         its first dimension (number of channels will be inferred automatically), and applies a 1x1 conv
@@ -244,7 +247,7 @@ class MlpDecoder(ChildDecoderBase):
             the output of this module is used by a CNN). If False, the features (channels) dimension will be last
             (for use as RNN input).
         """
-        super().__init__(parent_dec)
+        super().__init__(parent_dec, dropout_p)
         # self.hidden_size is NOT the number of hidden neurons in this MLP (it's the feature vector size, for
         #  recurrent networks only - not applicable to this MLP).
         self.seq_hidden_dim = self.hidden_size
@@ -259,6 +262,8 @@ class MlpDecoder(ChildDecoderBase):
                     if self.arch_args['ln']:
                         raise NotImplementedError()
                 self.mlp.add_module('act{}'.format(l), get_act(self.arch_args))
+                if self._dropout_p > 0.0:
+                    self.mlp.add_module('drop{}'.format(l), nn.Dropout(self._dropout_p))
             n_in_features = mlp_hidden_features if (l > 0) else self.dim_z
             n_out_features = mlp_hidden_features if (l < self.n_layers - 1) else n_pre_out_features
             self.mlp.add_module('fc{}'.format(l), nn.Linear(n_in_features, n_out_features))
@@ -300,6 +305,8 @@ class RnnDecoder(ChildDecoderBase):
         self.latent_expand_mlp = nn.Linear(self.dim_z, self.n_layers * (2 * self.hidden_size - self.dim_z))
         # TODO LSTM with attention?
         self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, self.n_layers, batch_first=True)
+        if self._dropout_p > 0.0:
+            raise NotImplementedError()
 
     def forward(self, z_multi_level, u_target):
         N, device = u_target.shape[0], u_target.device
@@ -359,18 +366,20 @@ class TransformerDecoder(ChildDecoderBase):
         super().__init__(parent_dec)
         self.n_head = n_head
 
-        # Mlp + conv to create a (big) memory from the small latent space
+        # FIXME DEPRECATED Mlp + conv to create a (big) memory from the small latent space
         #    The MLP is applied to the flattened z (channel 0), and computes approx. 1000 new values which are reshaped
         #    into other latent channels. A 1d conv then increases the number of channels to obtain the memory matrix.
         self.n_mlp_out_reshaped_ch = max(1000 // self.seq_len, 1)
         mlp_out_features = self.seq_len * self.n_mlp_out_reshaped_ch
-        self.input_memory_mlp = nn.Linear(self.dim_z, mlp_out_features)
+        assert self.dim_z < self.hidden_size  # Future versions: they should be equal
+        self.input_memory_linear = nn.Linear(self.dim_z, self.hidden_size - self.dim_z)
         self.input_memory_conv = nn.Conv1d(self.hidden_size, self.hidden_size, 1)
 
         # Transformer decoder
+        # TODO maybe inherit TransformerDecoderLayer and override dropout3 (the last one, may impair regression)
         tfm_layer = nn.TransformerDecoderLayer(
             self.hidden_size, n_head,  # each head's embed dim will be: self.hidden_size // num_heads
-            dim_feedforward=self.hidden_size * 2, batch_first=True, dropout=0.0,  # FIXME dropout_p
+            dim_feedforward=self.hidden_size * 2, batch_first=True, dropout=self._dropout_p,
         )
         self.tfm = nn.TransformerDecoder(tfm_layer, self.n_layers)  # opt norm: between blocks? (default: None)
         self.subsequent_mask = nn.Transformer.generate_square_subsequent_mask(self.seq_len)
@@ -380,21 +389,28 @@ class TransformerDecoder(ChildDecoderBase):
         N, device = u_target.shape[0], u_target.device  # minibatch size, current device
         # Build memory from z
         z_flat = self.flatten_z_multi_level(z_multi_level)
+        """
         memory_in = self.input_memory_mlp(z_flat)  # no activation (sampled latent values are not activated)
-        # Sequence dimension last, for convs (will be transposed later)
+        # Sequence dimension last, for convs (will be transposed later) FIXME DON'T TRANSPOSE, USE LINEAR INSTEAD
         z_flat = z_flat.view(N, -1, self.seq_len)
         memory_in = memory_in.view(N, self.n_mlp_out_reshaped_ch, self.seq_len)
-        # TODO maybe DON'T use the original latent codes? Because their ordering will be related
-        #    to the memory's ordering (is that an issue after pretraining? could this force the
-        #    audio latent codes to change too much?)
         # (((TODO '_latskipco' architecture argument)))
+        # FIXME this forces latent noise to be fed to the keys and queries - we should let the model decide whether
+        #    it needs latent noise or not
+        #    and maybe gated conv???? everything is layer-normed... so small values should not be an issue
         memory_in = torch.cat((z_flat, memory_in), dim=1)
         # Expand the memory values such that they can be used as residuals
+        # FIXME this also forces all input noise to be propagated into the transformer's "linear" K, V
         n_repeats = int(np.ceil(self.hidden_size / memory_in.shape[1]))
         memory_in = torch.repeat_interleave(memory_in, n_repeats, dim=1, output_size=n_repeats*memory_in.shape[1])
         memory_in = memory_in[:, 0:self.hidden_size, :]  # Discard extra embedding dimensions (probable after repeat)
         # Residual conv - transpose to set sequence dim last
+        # FIXME DON'T USE CONVs - linear layers are applied to the last dim only
         memory_in = (memory_in + self.input_memory_conv(memory_in)).transpose(1, 2)
+        """
+        # Very simple memory: 1-token sequence (FIXME use latent space of size hidden_dim not to use this linear)
+        memory_in = torch.cat((z_flat, self.input_memory_linear(z_flat)), dim=-1)
+        memory_in = torch.unsqueeze(memory_in, dim=1)
 
         ar_forward_mask = self.subsequent_mask.to(device)
         # Different training and eval procedures: parallel training, sequential evaluation
@@ -409,9 +425,10 @@ class TransformerDecoder(ChildDecoderBase):
             # Memory data corresponds to hidden states from the encoder (or extracted from the latent space....)
             #    -> memory data does not contain some K and V, but can be turned into Keys and Values using
             #       the decoder's own Wv and Wk matrices.
-            #    -> the second mha layer computes Q, K, V from x, memory, memory     (attention mask: memory_mask)
+            #    -> the second mha layer computes Q, K, V from x, memory, memory
+            #       (attention mask: memory_mask, don't use any mask to use all information from the input seq)
             # FIXME: the transformer always takes the target as input
-            tfm_out = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask, memory_mask=ar_forward_mask)
+            tfm_out = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
             # Compute logits and losses - all at once (shared with the MLP decoder)
             return self.compute_full_sequence_samples_and_losses(tfm_out, u_target)
 
@@ -430,8 +447,7 @@ class TransformerDecoder(ChildDecoderBase):
                 tfm_out = self.tfm(
                     u_input_feedback_embeds[:, 0:t+1, :],
                     memory_in[:, 0:t+1, :],
-                    tgt_mask=ar_forward_mask[0:t+1, 0:t+1],
-                    memory_mask=ar_forward_mask[0:t+1, 0:t+1]
+                    tgt_mask=ar_forward_mask[0:t+1, 0:t+1]
                 )
                 u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx \
                     = self.compute_single_token_sample_and_loss(

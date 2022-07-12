@@ -38,7 +38,7 @@ def parse_latent_extract_architecture(full_architecture: str):
 
 class HierarchicalVAEOutputs:
     def __init__(self, z_mu: List[torch.Tensor], z_var: List[torch.Tensor], z_sampled: List[torch.Tensor],
-                 z_loss, x_decoded_proba, x_sampled,
+                 x_decoded_proba, x_sampled,
                  u_out, u_numerical_nll, u_categorical_nll, u_l1_error, u_accuracy
                  ):
         """
@@ -47,7 +47,7 @@ class HierarchicalVAEOutputs:
 
         Latent values can be retrieved as N * dimZ tensors (without the latent hierarchy dimension)
         """
-        self.z_mu, self.z_var, self.z_sampled, self.z_loss = z_mu, z_var, z_sampled, z_loss
+        self.z_mu, self.z_var, self.z_sampled= z_mu, z_var, z_sampled
         self.x_decoded_proba, self.x_sampled = x_decoded_proba, x_sampled
         self.u_out, self.u_numerical_nll, self.u_categorical_nll, self.u_l1_error, self.u_accuracy = \
             u_out, u_numerical_nll, u_categorical_nll, u_l1_error, u_accuracy
@@ -56,6 +56,8 @@ class HierarchicalVAEOutputs:
             assert len(u_out.shape) == 3
             assert len(u_numerical_nll.shape) == 1
             assert len(u_accuracy.shape) == 1
+        # Can be assigned later
+        self.z_loss = None
 
     def get_z_mu_no_hierarchy(self, to_numpy=False):
         flat_t = torch.cat([torch.flatten(z, start_dim=1) for z in self.z_mu], dim=1)
@@ -95,6 +97,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # Save some important values from configurations
         self._input_audio_tensor_size = model_config.input_audio_tensor_size
         self._dkl_auto_gamma = train_config.dkl_auto_gamma
+        self._latent_free_bits = train_config.latent_free_bits
         self.beta_warmup_ongoing = train_config.beta_warmup_epochs > 0  # Will be modified when warmup has ended
 
         # Pre-process configuration
@@ -136,7 +139,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                                 model_config.preset_decoder_numerical_distribution,
                                 preset_helper,
                                 self.encoder.preset_encoder.embedding,  # Embedding net is built by the encoder
-                                train_config.preset_dropout, train_config.preset_CE_label_smoothing,
+                                train_config.preset_internal_dropout, train_config.preset_cat_dropout,
+                                train_config.preset_CE_label_smoothing,
                                 train_config.preset_CE_use_weights)
         self.decoder = model.ladderdecoder.LadderDecoder(
             self.main_conv_arch, self.latent_arch,
@@ -186,26 +190,6 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                 z_sampled.append(z_mu[lat_lvl] + torch.sqrt(z_var[lat_lvl]) * eps)
             else:  # eval mode: no random sampling
                 z_sampled.append(z_mu[lat_lvl])
-        # We can already compute the per-element latent loss (not batch-averaged/normalized, no beta factor yet)
-        # Only the vanilla-VAE Dkl loss is available at the moment
-        #    HOW TO compute self._dkl_gamma
-        z_losses_per_lvl = list()
-        for lat_lvl in range(len(z_mu)):
-            # Dkl for a batch item is the sum of per-coordinates Dkls
-            # We don't normalize (divide by the latent size) to stay closer to the ELBO when the latent size is changed.
-            z_losses_per_lvl.append(utils.probability.standard_gaussian_dkl(
-                z_mu[lat_lvl].flatten(start_dim=1), z_var[lat_lvl].flatten(start_dim=1), reduction='none'))
-        # Compute a Dkl factor for each latent level, to ensure that the encode approx. the same amount
-        #    of information (shallower latents seem to collapse more easily than deeper latents)?
-        #    These gamma_l factors can be applied to KLDs during warmup (and if activated).
-        if self._dkl_auto_gamma and self.beta_warmup_ongoing:
-            with torch.no_grad():  # 0.5 arbitrary factor - TODO try to find a better solution
-                dkl_per_level = 0.5 * np.asarray([_z_loss.mean().item() for _z_loss in z_losses_per_lvl])
-            dkl_gamma_per_level = dkl_per_level / dkl_per_level.mean()
-        else:
-            dkl_gamma_per_level = [1.0 for _ in range(len(z_mu))]
-        # N-dimensional loss (not minibatch-averaged) - sum of N-dim vectors
-        z_loss = sum([_z_loss * dkl_gamma_per_level[lvl] for lvl, _z_loss in enumerate(z_losses_per_lvl)])
 
         # 3) Decode
         x_decoded_proba, x_sampled, preset_decoder_out = self.decoder(z_sampled, u_target)
@@ -216,7 +200,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         out_list = list()
         for lat_lvl in range(len(z_mu)):
             out_list += [z_mu[lat_lvl], z_var[lat_lvl], z_sampled[lat_lvl]]
-        out_list += [z_loss, x_decoded_proba, x_sampled]
+        out_list += [x_decoded_proba, x_sampled]
         return tuple(out_list) + preset_decoder_out
 
     def parse_outputs(self, forward_outputs):
@@ -228,14 +212,14 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             z_var.append(forward_outputs[i + 1])
             z_sampled.append(forward_outputs[i + 2])
             i += 3
-        z_loss, x_decoded_proba, x_sampled = forward_outputs[i:i+3]
-        i += 3
+        x_decoded_proba, x_sampled = forward_outputs[i:i+2]
+        i += 2
         # See preset_model.py
         u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc = forward_outputs[i:i+5]
         assert i+5 == len(forward_outputs)
         return HierarchicalVAEOutputs(
             z_mu, z_var, z_sampled,
-            z_loss, x_decoded_proba, x_sampled,
+            x_decoded_proba, x_sampled,
             u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc
         )
 
@@ -260,8 +244,42 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
 
     def latent_loss(self, ae_out: HierarchicalVAEOutputs, beta):
         """ Returns the non-normalized latent loss, and the same value multiplied by beta (for backprop) """
-        batch_latent_loss = torch.mean(ae_out.z_loss)
-        return batch_latent_loss, batch_latent_loss * beta
+        z_mu, z_var = ae_out.z_mu, ae_out.z_var
+        # Only the vanilla-VAE Dkl loss is available at the moment
+        z_losses_per_lvl = list()  # Batch-averaged losses
+        for lat_lvl in range(len(z_mu)):
+            # Dkl for a batch item is the sum of per-coordinates Dkls
+            # We don't normalize (divide by the latent size) to stay closer to the ELBO when the latent size is changed.
+            if np.isclose(self._latent_free_bits, 0.0):
+                z_losses_per_lvl.append(utils.probability.standard_gaussian_dkl(
+                    z_mu[lat_lvl].flatten(start_dim=1), z_var[lat_lvl].flatten(start_dim=1), reduction='mean'))
+            else:
+                # "Free bits" constraint is applied to each channel
+                # The hyper-param is given as a "per-pixel" free bits (for it to be generalized to any
+                # latent feature map size)
+                min_dkl = torch.tensor(
+                    self._latent_free_bits * np.prod(z_mu[lat_lvl].shape[2:]),
+                    dtype=z_mu[lat_lvl].dtype, device=z_mu[lat_lvl].device)
+                # Average over batch dimension (not over pixels dimensions), but keep the channels dim
+                dkl_per_ch = utils.probability.standard_gaussian_dkl_2d(
+                    z_mu[lat_lvl], z_var[lat_lvl], dim=(2, 3), reduction='mean')
+                dkl_per_ch = torch.maximum(dkl_per_ch, min_dkl)  # Free-bits constraint
+                # Sum Dkls from all channels (overall diagonal gaussian prior)
+                z_losses_per_lvl.append(torch.sum(dkl_per_ch))
+        # Compute a Dkl factor for each latent level, to ensure that they encode approx. the same amount
+        #    of information (shallower latents seem to collapse more easily than deeper latents)?
+        #    These gamma_l factors can be applied to KLDs during warmup (and if activated) - then optimize (beta-)ELBO
+        if self._dkl_auto_gamma and self.beta_warmup_ongoing:
+            with torch.no_grad():  # 0.5 arbitrary factor - TODO try to find a better solution
+                dkl_per_level = 0.5 * np.asarray([_z_loss.item() for _z_loss in z_losses_per_lvl])
+            dkl_gamma_per_level = dkl_per_level / dkl_per_level.mean()
+            z_loss = sum([_z_loss * dkl_gamma_per_level[lvl] for lvl, _z_loss in enumerate(z_losses_per_lvl)])
+        else:
+            z_loss = sum([_z_loss for _z_loss in z_losses_per_lvl])
+
+        # Store the new loss in the ae_out structure
+        ae_out.z_loss = z_loss
+        return z_loss, z_loss * beta
 
     def vae_loss(self, audio_log_prob_loss, x_shape, ae_out: HierarchicalVAEOutputs):
         """
@@ -273,8 +291,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         """
         # Factorized distributions - we suppose that the independant log-probs were added
         # We don't consider the  beta factor for the latent loss (but z_loss must be average over the batch dim)
-        x_data_dims = np.prod(np.asarray(x_shape[2:]))
-        return audio_log_prob_loss * x_data_dims + torch.mean(ae_out.z_loss)
+        x_data_dims = np.prod(np.asarray(x_shape[1:]))  # C spectrograms of size H x W
+        return audio_log_prob_loss * x_data_dims + ae_out.z_loss
 
     def get_detailed_summary(self):
         sep_str = '************************************************************************************************\n'
@@ -329,15 +347,15 @@ class AudioDecoder:
 
 if __name__ == "__main__":
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
-    _model_config.vae_main_conv_architecture = 'specladder8x1_res'
+    _model_config.vae_main_conv_architecture = 'specladder8x1_res_swish'
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 1
-    _model_config.approx_requested_dim_z = 144
+    _model_config.approx_requested_dim_z = 256
     _model_config.vae_preset_architecture = 'tfm_3l'
 
-    _train_config.pretrain_audio_only = False
+    _train_config.pretrain_audio_only = True
     _train_config.minibatch_size = 16
-    _train_config.preset_dropout = 0.12
+    _train_config.preset_cat_dropout = 0.12
     _train_config.preset_CE_label_smoothing = 0.13
     config.update_dynamic_config_params(_model_config, _train_config)
 
@@ -351,9 +369,10 @@ if __name__ == "__main__":
 
     hVAE = HierarchicalVAE(_model_config, _train_config, _preset_helper)
     hVAE.train()
-    hVAE.eval()  # FIXME remove
+    #hVAE.eval()  # FIXME remove
     vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size), _dummy_preset)
     vae_out = hVAE.parse_outputs(vae_out)
+    lat_loss, lat_backprop_loss = hVAE.latent_loss(vae_out, 1.0)
 
     print(hVAE.encoder.get_single_ch_conv_summary())
     print(hVAE.encoder.get_latent_cells_summaries())

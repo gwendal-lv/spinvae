@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.utils
 
 
 # ================= Conv, act and norm blocks (including res blocks) supporting the w_style input arg =============
@@ -416,7 +417,8 @@ class ResBlock3Layers(nn.Module):
 # =============================== Blocks used by ladder encoder/decoder ======================================
 
 class ConvBlock2D(nn.Sequential):
-    def __init__(self, conv: nn.Module, act: Optional[nn.Module] = None, norm: Optional[nn.Module] = None,
+    def __init__(self, conv: nn.Module, act: Optional[nn.Module] = None,
+                 norm: Optional[str] = None,
                  order='nac'):
         """
         An elementary convolutional block, with optional activation and normalisation layers
@@ -424,14 +426,23 @@ class ConvBlock2D(nn.Sequential):
 
         :param conv:
         :param act:
-        :param norm:
+        :param norm: 'bn' for Batch Norm, 'wn' for Weight Norm (hooked to the convolution), or None
         :param order: Defines the ordering of conv, act and norm layers,
             e.g. 'can' is the basic ordering, 'nac' is reversed. String length can be 1 to 3 chars.
         """
         super().__init__()
         if not (1 <= len(order) <= 3):
-            raise ValueError("order argument must contain exactly 3 chars e.g. 'nac' or 'can'")
+            raise ValueError("order argument must contain 1 to 3 chars e.g. 'c', 'ca', 'nac', ...")
+        if norm == 'wn':
+            conv = torch.nn.utils.weight_norm(conv, name="weight")
+            norm = None
+        elif norm == 'bn':
+            # retrieve num of hidden ch for batch norm - we must know if BN is before or after the conv layer
+            norm_before_conv = order.index('n') < order.index('c')  # Will raise exception if 'n' or 'c' cannot be found
+            bn_n_channels = conv.in_channels if norm_before_conv else conv.out_channels
+            norm = nn.BatchNorm2d(bn_n_channels)
         modules_dict = {'c': conv, 'a': act, 'n': norm}
+        # FIXME allow Weight Normalization - not a module
         for module_key in order:
             if modules_dict[module_key] is not None:
                 self.add_module(module_key, modules_dict[module_key])

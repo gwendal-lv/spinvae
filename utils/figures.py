@@ -387,11 +387,12 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     axes[2][0].set(ylabel='$z_K$ samples')
     # mu0 and sigma0: unknown distributions, limit detailed per-component display to exclude outliers
     # zK (supposed to be approx. Standard Gaussian for training data):
-    #     limit display to +/- 4 std (-4std: cumulative distributions < e-4)
+    outlier_limits['sigma'] = (0.0, outlier_limits['sigma'][1])
     for i in [1, 2]:
         axes[0][i].set(ylim=outlier_limits['mu'])
-        axes[1][i].set(ylim=outlier_limits['sigma'])
+        axes[1][i].set(ylim=outlier_limits['sigma'])  # sigma: use fixed scale? (we know what sigma should look like...)
         axes[2][i].set_xticklabels([str(t) for t in data_limited_indices[i-1]])
+    #     limit display to +/- 4 std (-4std: cumulative distributions < e-4)
     axes[2][1].set(xlabel=x_labels[0], ylim=[-4.0, 4.0])
     axes[2][2].set(xlabel=x_labels[1], ylim=[-4.0, 4.0])
     # Target 25 and 75 percentiles as horizontal lines (+/- 0.6745 for standard normal distributions)
@@ -733,11 +734,11 @@ def plot_preset2d_batch_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helpe
 if __name__ == "__main__":
 
     # Latent Metric plot tests - filled with artificial values
-    """
-    dim_z = 10
+    dim_z = 256
     latent_metrics = logs.metrics.LatentMetric(dim_z, 1000)  # dim_z is the 2nd dim in the hidden data member
     for k in ['mu', 'sigma', 'zK']:
         latent_metrics._z[k] = np.random.normal(0.0, 1.0, (1000, dim_z))
+    latent_metrics._z['sigma'] = 1.0 / (1.0 + np.exp(latent_metrics._z['sigma']))
     latent_metrics.next_dataset_index = latent_metrics.dataset_len  # Force values, for testing only
     fig, ax = plot_latent_distributions_stats(latent_metrics)
     from pathlib import Path
@@ -746,9 +747,9 @@ if __name__ == "__main__":
     fig.savefig(svg_file)
     print("SVG file size = {:.1f} M bytes".format(svg_file.stat().st_size / 1000000.0))
     plt.show()
-    """
 
     # Preset errors - from fake batches
+    """
     import config
     _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
     config.update_dynamic_config_params(_model_config, _train_config)
@@ -767,6 +768,7 @@ if __name__ == "__main__":
     fake_v_in = torch.cat([torch.unsqueeze(v, dim=0) for v in fake_v_in])
     _fig, _ax = plot_preset2d_batch_error(fake_v_out, fake_v_in, _ds.preset_indexes_helper)
     plt.show()
+    """
 
     a = 0
 

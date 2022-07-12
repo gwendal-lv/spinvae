@@ -24,7 +24,8 @@ class LadderDecoder(LadderBase):
                  preset_numerical_proba_distribution: Optional[str] = None,
                  preset_helper: Optional[Preset2dHelper] = None,
                  preset_embedding: Optional[PresetEmbedding] = None,
-                 preset_dropout_p=0.0, preset_label_smoothing=0.0, preset_use_cross_entropy_weights=False):
+                 preset_internal_dropout_p=0.0, preset_cat_dropout_p=0.0,
+                 preset_label_smoothing=0.0, preset_use_cross_entropy_weights=False):
         # TODO doc
         super().__init__(conv_arch, latent_arch)
         self.n_latent_levels = len(latent_tensors_shapes)
@@ -85,31 +86,31 @@ class LadderDecoder(LadderBase):
                     #  HxW in the encoder and this decoder. Output will be a bit too big but can be cropped.
                     conv = nn.ConvTranspose2d(blk_in_ch, blk_hid_ch, (4, 4), 2, 2, (1, 1))
                     residuals_path.add_module('stridedT', ConvBlock2D(
-                        conv, self._get_conv_act(), self._get_conv_norm(blk_in_ch), 'nac'))
+                        conv, self._get_conv_act(), self._get_conv_norm(), 'nac'))
                     # Usual convs are applied after upsampling (less parameters)
                     for j in range(self.single_ch_conv_arch['n_layers_per_block'] - 1):
                         if j == 0 and conv_args['att'] and (2 <= i_blk <= 4):  # attention costs a lot of GPU RAM
                             self_att = SelfAttentionConv2D(blk_hid_ch, position_encoding=True)
                             residuals_path.add_module('self_att', ConvBlock2D(
-                                self_att, None, self._get_conv_norm(blk_hid_ch), 'nc'))
+                                self_att, None, self._get_conv_norm(), 'nc'))
                         elif conv_args['depsep5x5']:  # Structure close to NVAE (NeurIPS 2020)
                             depth_sep_ch = blk_hid_ch * 2  # 3x channels expansion costs a lot of GPU RAM
                             sub_conv_block = nn.Sequential()
                             conv = nn.Conv2d(blk_hid_ch, depth_sep_ch, (1, 1))
                             sub_conv_block.add_module('more_ch_' + str(j), ConvBlock2D(
-                                conv, None, self._get_conv_norm(blk_hid_ch), 'nc'))
+                                conv, None, self._get_conv_norm(), 'nc'))
                             conv = nn.Conv2d(depth_sep_ch, depth_sep_ch, (5, 5), 1, 2, groups=depth_sep_ch)
                             sub_conv_block.add_module('depthsep_' + str(j), ConvBlock2D(
-                                conv, self._get_conv_act(), self._get_conv_norm(depth_sep_ch), 'nac'))
+                                conv, self._get_conv_act(), self._get_conv_norm(), 'nac'))
                             conv = nn.Conv2d(depth_sep_ch, blk_hid_ch, (1, 1))
                             sub_conv_block.add_module('less_ch_' + str(j), ConvBlock2D(
-                                conv, self._get_conv_act(), self._get_conv_norm(depth_sep_ch), 'nac'))
+                                conv, self._get_conv_act(), self._get_conv_norm(), 'nac'))
                             # As this module contains 3 convs, we use it as residuals not to impair gradient backprop
                             residuals_path.add_module('depsep5x5_' + str(j), ResBlockBase(sub_conv_block))
                         else:
                             conv = nn.Conv2d(blk_hid_ch, blk_hid_ch, (3, 3), 1, 1)
                             residuals_path.add_module('conv', ConvBlock2D(
-                                conv, self._get_conv_act(), self._get_conv_norm(blk_hid_ch), 'nac'))
+                                conv, self._get_conv_act(), self._get_conv_norm(), 'nac'))
                 else:  # last block: conv only, wider 5x5 kernel
                     residuals_path.add_module('stridedT', ConvBlock2D(
                         nn.ConvTranspose2d(blk_in_ch, blk_out_ch, (5, 5), 2, 2, 0), None, None, 'c'))
@@ -188,8 +189,8 @@ class LadderDecoder(LadderBase):
                 preset_numerical_proba_distribution,
                 preset_helper,
                 preset_embedding,
-                dropout_p=preset_dropout_p, label_smoothing=preset_label_smoothing,
-                use_cross_entropy_weights=preset_use_cross_entropy_weights
+                internal_dropout_p=preset_internal_dropout_p, cat_dropout_p=preset_cat_dropout_p,
+                label_smoothing=preset_label_smoothing, use_cross_entropy_weights=preset_use_cross_entropy_weights
             )
         else:
             self.preset_decoder = None

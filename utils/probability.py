@@ -45,8 +45,10 @@ def standard_gaussian_dkl(mu, var, reduction='none'):
     Computes the Dkl between a factorized gaussian distribution (given in input args as 2D tensors) and
     the standard gaussian distribution.
 
-    :param reduction: If 'none',
+    :param reduction: If 'none', return a batch of KLDs (1 value / batch item). If 'mean', returns a single
+        batch-averaged KLD value.
     """
+    assert len(mu.shape) == 2 and len(var.shape) == 2, "This method accepts flat (2D) batched tensors only"
     Dkl = 0.5 * torch.sum(var + torch.square(mu) - torch.log(var) - 1.0, dim=1)
     if reduction == 'none':
         return Dkl
@@ -55,6 +57,25 @@ def standard_gaussian_dkl(mu, var, reduction='none'):
     else:
         raise NotImplementedError(reduction)
 
+
+def standard_gaussian_dkl_2d(mu, var, dim=(1, 2, 3), reduction='none'):
+    """
+    Computes the KLD of input feature maps vs. a factorized std gaussian distribution of the same shape.
+
+    :param dim: Dimensions that will be used to retrieve distributions' parameters (e.g. H and W of a feature maps
+        can provide a proba distribution). Dims that are not included
+        indicate independent distributions (e.g. different channels can provide independent distributions).
+    :param reduction: see standard_gaussian_dkl(...)
+    """
+    assert len(mu.shape) == 4 and len(var.shape) == 4, "This method accepts 2D feature maps tensors (4D, w/ batch) only"
+    assert 0 not in dim, "Batch dimension should not be included in the KLD computation (independent batch items)."
+    Dkl = 0.5 * torch.sum(var + torch.square(mu) - torch.log(var) - 1.0, dim=dim)
+    if reduction == 'none':
+        return Dkl
+    elif reduction == 'mean':
+        return torch.mean(Dkl, dim=0)
+    else:
+        raise NotImplementedError(reduction)
 
 class ProbabilityDistribution:
     def __init__(self, mu_activation=torch.nn.Hardtanh(), reduction='mean'):

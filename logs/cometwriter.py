@@ -46,6 +46,7 @@ class CometWriter:
         self.experiment.log_parameter("z_loss", train_config.latent_loss)
         self.experiment.log_parameter("z_beta", train_config.beta)
         self.experiment.log_parameter("z_beta_warmup", train_config.beta_warmup_epochs)
+        self.experiment.log_parameter("z_free_bits", train_config.latent_free_bits)
         self.experiment.log_parameter("params_loss_factor", train_config.params_loss_compensation_factor)
         self.experiment.log_parameter("params_loss_exclude", train_config.params_loss_exclude_useless)
         self.experiment.log_parameter("params_loss_permut", train_config.params_loss_with_permutations)
@@ -64,7 +65,8 @@ class CometWriter:
         self.experiment.log_parameter("LR_sched_period", train_config.scheduler_period)
         self.experiment.log_parameter("weight_decay", train_config.weight_decay)
         self.experiment.log_parameter("AE_FC_dropout", train_config.ae_fc_dropout)
-        self.experiment.log_parameter("preset_dropout", train_config.preset_dropout)
+        self.experiment.log_parameter("preset_cat_drop", train_config.preset_cat_dropout)
+        self.experiment.log_parameter("preset_intern_drop", train_config.preset_internal_dropout)
 
 
     def log_metric_with_context(self, name: str, value):
