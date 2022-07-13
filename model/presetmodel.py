@@ -56,6 +56,8 @@ class PresetEmbedding(nn.Module):
         # Numerical: use a 1d conv with a lot of output channels
         n_numerical_conv_ch = hidden_size * preset_helper.n_param_types
         # FIXME this method uses very similar embeddings for different discrete numerical synth params
+        # TODO try add a learned bias for each param type?
+        #   Or maybe an additionnal global embedding for each param type... (seen in IJCAI19 "T-CVAE story completion")
         self.numerical_embedding_conv = nn.Conv1d(1, n_numerical_conv_ch, 1)
         # This mask will have to be expanded (batch dim to the minibatch size) before being used.
         #  Mask broadcasting behaves in a weird way with pytorch 1.10. It's applied to the first dimensions, not
@@ -130,6 +132,9 @@ class PresetEmbedding(nn.Module):
         embed_out[:, self._matrix_categorical_bool_mask, :] = u_categorical_embeds
         # Numerical:
         u_numerical = u_in[:, self._matrix_numerical_bool_mask, 1:2]  # 3D tensor, not squeezed
+        # FIXME URGENT !
+        #     1) use linear instead of conv
+        #     2) CENTER numerical values?
         u_numerical_unmasked = self.numerical_embedding_conv(u_numerical.transpose(1, 2)).transpose(2, 1)
         u_numerical_embeds = u_numerical_unmasked[self.numerical_embedding_mask.expand(N, -1, -1)]
         # This view is risky... but necessary because self.numerical_embedding_mask leads to a flattened tensor

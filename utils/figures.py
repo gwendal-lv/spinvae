@@ -387,10 +387,10 @@ def plot_latent_distributions_stats(latent_metric: logs.metrics.LatentMetric, fi
     axes[2][0].set(ylabel='$z_K$ samples')
     # mu0 and sigma0: unknown distributions, limit detailed per-component display to exclude outliers
     # zK (supposed to be approx. Standard Gaussian for training data):
-    outlier_limits['sigma'] = (0.0, outlier_limits['sigma'][1])
+    outlier_limits['sigma'] = (0.0, 1.0)  # sigma: use fixed scale (we know what sigma should look like...)
     for i in [1, 2]:
         axes[0][i].set(ylim=outlier_limits['mu'])
-        axes[1][i].set(ylim=outlier_limits['sigma'])  # sigma: use fixed scale? (we know what sigma should look like...)
+        axes[1][i].set(ylim=outlier_limits['sigma'])
         axes[2][i].set_xticklabels([str(t) for t in data_limited_indices[i-1]])
     #     limit display to +/- 4 std (-4std: cumulative distributions < e-4)
     axes[2][1].set(xlabel=x_labels[0], ylim=[-4.0, 4.0])

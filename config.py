@@ -29,9 +29,9 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "hvae"  # experiment base name
-        self.run_name = 'free_bits_2pow-5'  # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.pretrained_VAE_checkpoint = self.logs_root_dir + "/hvae/midi3notes_specladder8x1_res/checkpoint.tar"
+        self.name = "dev"  # experiment base name
+        self.run_name = 'tfm_sched_smp_00'  # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.pretrained_VAE_checkpoint = self.logs_root_dir + "/hvae/8x1_swish_freebits0.125__3notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
         self.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
         # Comet.ml logger (replaces Tensorboard)
@@ -53,9 +53,9 @@ class ModelConfig:
         #    '_big' (small improvements but +50% GPU RAM usage),   '_bigger'
         #    '_res' residual connections after each hidden strided conv layer (up/down sampling layers)
         #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
-        #    '_LN' uses LayerNorm instead of BatchNorm
-        #    '_swish' uses Swish activations (SiLU) instead of LeakyReLU
-        self.vae_main_conv_architecture = 'specladder8x1_res'
+        #    '_ln' uses LayerNorm instead of BatchNorm, '_wn' uses Weight Normalization attached to conv weights
+        #    '_swish' uses Swish activations (SiLU) instead of LeakyReLU (negligible overhead)
+        self.vae_main_conv_architecture = 'specladder8x1_res_swish'
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'conv_1l_1x1' means regular convolution, 1 layer, 1x1 conv kernels
         #       'lstm_2l_3x3' mean ConvLSTM, 2 layers, 3x3 conv kernels
@@ -144,7 +144,7 @@ class ModelConfig:
 # ===================================================================================================================
 class TrainConfig:
     def __init__(self):
-        self.pretrain_audio_only = True  # Should we pre-train the audio+latent parts of the auto-encoder model only?
+        self.pretrain_audio_only = False  # Should we pre-train the audio+latent parts of the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
         # 256 is okay for smaller conv structures - reduce to 64 to fit '_big' models into 24GB GPU RAM
         self.minibatch_size = 64  # reduce to 64 for big models - also smaller N seems to improve VAE perfs...
@@ -193,7 +193,7 @@ class TrainConfig:
         # Our VAE uses 2D feature maps as latent variables, and entire channels seem to collapse
         # (a single pixel collapsing has not been observed). The "free bits" min Dkl constraint is then applied
         # to each latent channel, no to hierarchical latent groups
-        self.latent_free_bits = 0.0  #2 ** -1  # this is a *single-pixel* min KLD value
+        self.latent_free_bits = 0.125  #2 ** -1  # this is a *single-pixel* min KLD value
 
         # - - - Synth parameters losses - - -
         # - General options
@@ -204,6 +204,9 @@ class TrainConfig:
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
         self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
         self.preset_CE_use_weights = False
+        self.preset_sched_sampling_max_p = 1.0  # Probability to use the model's outputs during training (AR decoder)
+        # self.preset_sched_sampling_start_epoch = 40  # TODO IMPLEMENT Required for the embeddings to train properly?
+        self.preset_sched_sampling_warmup_epochs = 80
 
         # ------------------------------------------- Optimizer + scheduler -------------------------------------------
         # Different optimizer parameters can be used for the pre-trained AE and the regression networks

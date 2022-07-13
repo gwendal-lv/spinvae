@@ -193,7 +193,7 @@ class LadderDecoder(LadderBase):
                 label_smoothing=preset_label_smoothing, use_cross_entropy_weights=preset_use_cross_entropy_weights
             )
         else:
-            self.preset_decoder = None
+            self.preset_decoder: Optional[PresetDecoder] = None
 
         # Finally, Python lists must be converted to nn.ModuleList to be properly recognized by PyTorch
         self.single_ch_cells = nn.ModuleList(self.single_ch_cells)

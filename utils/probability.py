@@ -77,6 +77,7 @@ def standard_gaussian_dkl_2d(mu, var, dim=(1, 2, 3), reduction='none'):
     else:
         raise NotImplementedError(reduction)
 
+
 class ProbabilityDistribution:
     def __init__(self, mu_activation=torch.nn.Hardtanh(), reduction='mean'):
         """ Generic class to use decoder outputs as parameters of a probability distribution. """

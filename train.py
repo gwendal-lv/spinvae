@@ -115,42 +115,47 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     # ========== Scalars, metrics, images and audio to be tracked in Tensorboard ==========
     # Some of these metrics might be unused during pre-training
     # Special 'super-metrics', used by 1D scalars or metrics to retrieve stored data. Not directly logged
-    super_metrics = {'LatentMetric/Train': LatentMetric(model_config.dim_z, dataloaders_nb_items['train'],
-                                                        dim_label=train_audio_dataset.available_labels_count),
-                     'LatentMetric/Valid': LatentMetric(model_config.dim_z, dataloaders_nb_items['validation'],
-                                                        dim_label=validation_audio_dataset.available_labels_count),
-                     'RegOutValues/Train': VectorMetric(dataloaders_nb_items['train']),
-                     'RegOutValues/Valid': VectorMetric(dataloaders_nb_items['validation'])}
+    super_metrics = {
+        'LatentMetric/Train': LatentMetric(model_config.dim_z, dataloaders_nb_items['train'],
+                                           dim_label=train_audio_dataset.available_labels_count),
+        'LatentMetric/Valid': LatentMetric(model_config.dim_z, dataloaders_nb_items['validation'],
+                                           dim_label=validation_audio_dataset.available_labels_count),
+        'RegOutValues/Train': VectorMetric(dataloaders_nb_items['train']),
+        'RegOutValues/Valid': VectorMetric(dataloaders_nb_items['validation'])
+    }
     # 1D scalars with a .get() method. All of these will be automatically added to Tensorboard
     scalars = {  # Audio reconstruction negative log prob + monitoring metrics comparable across all models
-               'Audio/LogProbLoss/Train': EpochMetric(), 'Audio/LogProbLoss/Valid': EpochMetric(),
-               'Audio/MSE/Train': EpochMetric(), 'Audio/MSE/Valid': EpochMetric(),
-               # 'AudioLoss/SC/Train': EpochMetric(), 'AudioLoss/SC/Valid': EpochMetric(),  # TODO
-               # Latent-space and VAE losses
-               'Latent/Loss/Train': EpochMetric(), 'Latent/Loss/Valid': EpochMetric(),  # without beta
-               'Latent/BackpropLoss/Train': EpochMetric(), 'Latent/BackpropLoss/Valid': EpochMetric(),
-               'Latent/MMD/Train': EpochMetric(), 'Latent/MMD/Valid': EpochMetric(),
-               'Latent/MaxAbsVal/Train': SimpleMetric(), 'Latent/MaxAbsVal/Valid': SimpleMetric(),
-               'VAELoss/Total/Train': EpochMetric(), 'VAELoss/Total/Valid': EpochMetric(),
-               'VAELoss/Backprop/Train': EpochMetric(), 'VAELoss/Backprop/Valid': EpochMetric(),
-               # Presets (synth controls) losses used for backprop
-               #        + monitoring metrics (numerical L1 loss, categorical accuracy)
-               'Preset/NLL/Total/Train': EpochMetric(), 'Preset/NLL/Total/Valid': EpochMetric(),
-               'Preset/NLL/Numerical/Train': EpochMetric(), 'Preset/NLL/Numerical/Valid': EpochMetric(),
-               'Preset/NLL/CatCE/Train': EpochMetric(), 'Preset/NLL/CatCE/Valid': EpochMetric(),
-               #'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
-               'Preset/L1error/Train': EpochMetric(), 'Preset/L1error/Valid': EpochMetric(),  # FIXME rename QError
-               'Preset/Accuracy/Train': EpochMetric(), 'Preset/Accuracy/Valid': EpochMetric(),
-               # Other misc. metrics
-               'Sched/LRwarmup': LinearDynamicParam(
-                   train_config.lr_warmup_start_factor, 1.0,
-                   end_epoch=train_config.lr_warmup_epochs, current_epoch=train_config.start_epoch),
-               'Sched/AttGamma': LinearDynamicParam(
-                   0.0, model_config.attention_gamma,
-                   end_epoch=(train_config.attention_gamma_warmup_period if pretrain_audio else 0)),
-               'Sched/VAE/beta': LinearDynamicParam(train_config.beta_start_value, train_config.beta,
-                                                    end_epoch=train_config.beta_warmup_epochs,
-                                                    current_epoch=train_config.start_epoch) }
+        'Audio/LogProbLoss/Train': EpochMetric(), 'Audio/LogProbLoss/Valid': EpochMetric(),
+        'Audio/MSE/Train': EpochMetric(), 'Audio/MSE/Valid': EpochMetric(),
+        # 'AudioLoss/SC/Train': EpochMetric(), 'AudioLoss/SC/Valid': EpochMetric(),  # TODO
+        # Latent-space and VAE losses
+        'Latent/Loss/Train': EpochMetric(), 'Latent/Loss/Valid': EpochMetric(),  # without beta
+        'Latent/BackpropLoss/Train': EpochMetric(), 'Latent/BackpropLoss/Valid': EpochMetric(),
+        'Latent/MMD/Train': EpochMetric(), 'Latent/MMD/Valid': EpochMetric(),
+        'Latent/MaxAbsVal/Train': SimpleMetric(), 'Latent/MaxAbsVal/Valid': SimpleMetric(),
+        'VAELoss/Total/Train': EpochMetric(), 'VAELoss/Total/Valid': EpochMetric(),
+        'VAELoss/Backprop/Train': EpochMetric(), 'VAELoss/Backprop/Valid': EpochMetric(),
+        # Presets (synth controls) losses used for backprop
+        #        + monitoring metrics (numerical L1 loss, categorical accuracy)
+        'Preset/NLL/Total/Train': EpochMetric(), 'Preset/NLL/Total/Valid': EpochMetric(),
+        'Preset/NLL/Numerical/Train': EpochMetric(), 'Preset/NLL/Numerical/Valid': EpochMetric(),
+        'Preset/NLL/CatCE/Train': EpochMetric(), 'Preset/NLL/CatCE/Valid': EpochMetric(),
+        #'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
+        'Preset/L1error/Train': EpochMetric(), 'Preset/L1error/Valid': EpochMetric(),  # FIXME rename QError
+        'Preset/Accuracy/Train': EpochMetric(), 'Preset/Accuracy/Valid': EpochMetric(),
+        # 'Dynamic' scheduling hyper-params
+        'Sched/LRwarmup': LinearDynamicParam(
+            train_config.lr_warmup_start_factor, 1.0,
+            end_epoch=train_config.lr_warmup_epochs, current_epoch=train_config.start_epoch),
+        'Sched/AttGamma': LinearDynamicParam(
+            0.0, model_config.attention_gamma,
+            end_epoch=(train_config.attention_gamma_warmup_period if pretrain_audio else 0)),
+        'Sched/VAE/beta': LinearDynamicParam(train_config.beta_start_value, train_config.beta,
+                                             end_epoch=train_config.beta_warmup_epochs,
+                                             current_epoch=train_config.start_epoch),
+        'Sched/PresetDec/SamplingP': LinearDynamicParam(
+            0.0, train_config.preset_sched_sampling_max_p, end_epoch=train_config.preset_sched_sampling_warmup_epochs)
+    }
     for k in ae_model.trained_param_group_names:
         scalars['Sched/{}/LR'.format(k)] = SimpleMetric(train_config.initial_learning_rate[k])
     # All hparams are supposed to be set (e.g. automatic dim_z) at this point, and can be logged
@@ -170,6 +175,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         if epoch <= train_config.lr_warmup_epochs:  # LR warmups bypass the schedulers during first epochs
             ae_model.set_warmup_lr_factor(scalars['Sched/LRwarmup'].get(epoch))
         # ae_model.set_attention_gamma(scalars['Sched/AttGamma'].get(epoch))  # FIXME re-activate after implemented
+        ae_model.set_preset_decoder_scheduled_sampling_p(scalars['Sched/PresetDec/SamplingP'].get(epoch))
         ae_model.beta_warmup_ongoing = not scalars['Sched/VAE/beta'].has_reached_final_value
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =

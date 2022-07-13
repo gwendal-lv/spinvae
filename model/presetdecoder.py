@@ -1,4 +1,4 @@
-from typing import List, Sequence
+from typing import List, Sequence, Optional
 
 import numpy as np
 import torch
@@ -76,7 +76,7 @@ class PresetDecoder(nn.Module):
         elif self.arch['name'] == 'tfm':  # Transformer
             self.child_decoder = TransformerDecoder(self)  # TODO args: n_head, ...
         else:
-            self.child_decoder = None
+            self.child_decoder: Optional[ChildDecoderBase] = None
             raise NotImplementedError("Preset architecture {} not implemented".format(self.arch['name']))
 
     def _move_masks_to(self, device):
@@ -159,21 +159,26 @@ class ChildDecoderBase(nn.Module):
         self.seq_categorical_items_bool_mask = parent_dec.seq_categorical_items_bool_mask
         self.is_type_numerical = self.preset_helper.is_type_numerical
 
+        self.scheduled_sampling_p = 0.0  # Probability to use own output (corresponds to 1.0 - teacher_forcing_p)
+
     @staticmethod
     def flatten_z_multi_level(z_multi_level):
         return torch.cat([z.flatten(start_dim=1) for z in z_multi_level], dim=1)
 
-    def compute_full_sequence_samples_and_losses(self, u_hidden, u_target):
+    def compute_full_sequence_samples_and_losses(self, u_hidden, u_target, sample_only=False):
         """
-         Compute parameters of probability distributions, compute NLLs (all at once) ----------
-        At this point, u_hidden is the hidden sequence representation of the preset - shape N x L x Hembed
+         Compute parameters of probability distributions, compute NLLs (all at once)
+
+        :param u_hidden: the hidden sequence representation of the preset - shape N x L x Hembed
+        :param sample_only: If True, the NLLs won't be computed
         """
         u_hidden = u_hidden.transpose(2, 1)  # TODO DOC: why? for convs?
         u_out = self.preset_helper.get_null_learnable_preset(u_target.shape[0]).to(u_target.device)
         # --- Categorical distribution(s) ---
         u_categorical_logits, u_categorical_nll, u_categorical_samples = self.categorical_module.forward_full_sequence(
             u_hidden[:, :, self.seq_categorical_items_bool_mask],
-            u_target[:, self.seq_categorical_items_bool_mask, 0]
+            u_target[:, self.seq_categorical_items_bool_mask, 0],
+            sample_only=sample_only
         )
         u_out[:, self.seq_categorical_items_bool_mask, 0] = u_categorical_samples.float()
         # --- Numerical distribution (s) ---
@@ -182,13 +187,16 @@ class ChildDecoderBase(nn.Module):
             u_hidden[:, :, self.seq_numerical_items_bool_mask]
         )
         numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
-        # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
-        u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
-            numerical_distrib_params,
-            u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
-        ))
-        u_numerical_samples = torch.squeeze(
-            self.numerical_distrib.sample(numerical_distrib_params))  # FIXME set squeeze dim (not to squeeze batch dim)
+        if not sample_only:
+            # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
+            u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
+                numerical_distrib_params,
+                u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
+            ))
+        else:
+            u_numerical_nll: Optional[torch.Tensor] = None
+        # Squeeze singleton "channel" dimension
+        u_numerical_samples = torch.squeeze(self.numerical_distrib.sample(numerical_distrib_params), dim=1)
         u_out[:, self.seq_numerical_items_bool_mask, 1] = u_numerical_samples
 
         return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
@@ -342,6 +350,7 @@ class RnnDecoder(ChildDecoderBase):
 
             # Compute next embedding
             if self.training and True:  # TODO teacher forcing proba
+                warnings.warn("Scheduled sampling not implemented")
                 input_embed = self.embedding.forward_single_token(u_target[:, t:t+1, :])
             else:  # Eval or no teacher forcing: use the net's own output
                 input_embed = self.embedding.forward_single_token(u_out[:, t:t+1, :])  # expected in shape: N x 1 x 3
@@ -366,14 +375,9 @@ class TransformerDecoder(ChildDecoderBase):
         super().__init__(parent_dec)
         self.n_head = n_head
 
-        # FIXME DEPRECATED Mlp + conv to create a (big) memory from the small latent space
-        #    The MLP is applied to the flattened z (channel 0), and computes approx. 1000 new values which are reshaped
-        #    into other latent channels. A 1d conv then increases the number of channels to obtain the memory matrix.
-        self.n_mlp_out_reshaped_ch = max(1000 // self.seq_len, 1)
-        mlp_out_features = self.seq_len * self.n_mlp_out_reshaped_ch
-        assert self.dim_z < self.hidden_size  # Future versions: they should be equal
-        self.input_memory_linear = nn.Linear(self.dim_z, self.hidden_size - self.dim_z)
-        self.input_memory_conv = nn.Conv1d(self.hidden_size, self.hidden_size, 1)
+        assert self.dim_z == self.hidden_size  # Future versions: dim_z could be a multiple of hidden_size
+        # TODO maybe use an MLP to get a few more memory tokens? Currently z is directly used as single-token memory
+        # self.input_memory_linear = nn.Linear(self.dim_z, self.hidden_size)  # TODO and maybe gated
 
         # Transformer decoder
         # TODO maybe inherit TransformerDecoderLayer and override dropout3 (the last one, may impair regression)
@@ -383,38 +387,17 @@ class TransformerDecoder(ChildDecoderBase):
         )
         self.tfm = nn.TransformerDecoder(tfm_layer, self.n_layers)  # opt norm: between blocks? (default: None)
         self.subsequent_mask = nn.Transformer.generate_square_subsequent_mask(self.seq_len)
-        # TODO reverse
 
     def forward(self, z_multi_level, u_target):
         N, device = u_target.shape[0], u_target.device  # minibatch size, current device
         # Build memory from z
         z_flat = self.flatten_z_multi_level(z_multi_level)
-        """
-        memory_in = self.input_memory_mlp(z_flat)  # no activation (sampled latent values are not activated)
-        # Sequence dimension last, for convs (will be transposed later) FIXME DON'T TRANSPOSE, USE LINEAR INSTEAD
-        z_flat = z_flat.view(N, -1, self.seq_len)
-        memory_in = memory_in.view(N, self.n_mlp_out_reshaped_ch, self.seq_len)
-        # (((TODO '_latskipco' architecture argument)))
-        # FIXME this forces latent noise to be fed to the keys and queries - we should let the model decide whether
-        #    it needs latent noise or not
-        #    and maybe gated conv???? everything is layer-normed... so small values should not be an issue
-        memory_in = torch.cat((z_flat, memory_in), dim=1)
-        # Expand the memory values such that they can be used as residuals
-        # FIXME this also forces all input noise to be propagated into the transformer's "linear" K, V
-        n_repeats = int(np.ceil(self.hidden_size / memory_in.shape[1]))
-        memory_in = torch.repeat_interleave(memory_in, n_repeats, dim=1, output_size=n_repeats*memory_in.shape[1])
-        memory_in = memory_in[:, 0:self.hidden_size, :]  # Discard extra embedding dimensions (probable after repeat)
-        # Residual conv - transpose to set sequence dim last
-        # FIXME DON'T USE CONVs - linear layers are applied to the last dim only
-        memory_in = (memory_in + self.input_memory_conv(memory_in)).transpose(1, 2)
-        """
         # Very simple memory: 1-token sequence (FIXME use latent space of size hidden_dim not to use this linear)
-        memory_in = torch.cat((z_flat, self.input_memory_linear(z_flat)), dim=-1)
-        memory_in = torch.unsqueeze(memory_in, dim=1)
+        memory_in = torch.unsqueeze(z_flat, dim=1)
 
         ar_forward_mask = self.subsequent_mask.to(device)
         # Different training and eval procedures: parallel training, sequential evaluation
-        if self.training:  # TODO at some point, scheduled sampling for transformers? (2+ passes)
+        if self.training:
             # Get embeddings w/ start token, discard the last token
             u_target_embeds = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]
             # Some details about PyTorch's standard Transformer decoding layers and modules:
@@ -427,10 +410,34 @@ class TransformerDecoder(ChildDecoderBase):
             #       the decoder's own Wv and Wk matrices.
             #    -> the second mha layer computes Q, K, V from x, memory, memory
             #       (attention mask: memory_mask, don't use any mask to use all information from the input seq)
-            # FIXME: the transformer always takes the target as input
-            tfm_out = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
+
+            # Training might require 2 (or more) passes if we follow a scheduled sampling procedure.
+            # Don't backprop the first pass
+            #    NeurIPS15, for RNNs: (Sequential) Scheduled Sampling https://arxiv.org/abs/1506.03099?context=cs
+            #    arxiv19 (ICLR20 rejected) Parallel Scheduled Sampling   https://arxiv.org/abs/1906.04331
+            #    ACL student workshop Sched Sampling for Transformers https://arxiv.org/abs/1906.07651
+            if self.scheduled_sampling_p > 0.0:
+                with torch.no_grad():  # 1st pass without gradient
+                    tfm_out_hidden = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
+                    # we need to sample from tfm_out (which contains hidden values only), but don't need NLLs
+                    out_tokens_1st_pass = self.compute_full_sequence_samples_and_losses(
+                        tfm_out_hidden, u_target, sample_only=True)[0]  # keep u_out only
+                    # Build new random partially-AR input
+                    token_feedback_mask = torch.empty(out_tokens_1st_pass.shape[0:2], dtype=torch.bool, device=device)
+                    token_feedback_mask.bernoulli_(self.scheduled_sampling_p)
+                    sched_sampling_tokens = u_target.clone()
+                    # Mask is 'broadcast' to the first dimensions
+                    sched_sampling_tokens[token_feedback_mask] = out_tokens_1st_pass[token_feedback_mask]
+                    in_embeds_2nd_pass = self.embedding(sched_sampling_tokens, start_token=True)[:, 0:self.seq_len, :]
+                # 2nd pass with gradient
+                tfm_out_hidden = self.tfm(in_embeds_2nd_pass, memory_in, tgt_mask=ar_forward_mask)
+            # No scheduled sampling: Single pass w/ gradients
+            else:
+                # TODO allow non-AR transformer (pos encoding input only)
+                tfm_out_hidden = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
+
             # Compute logits and losses - all at once (shared with the MLP decoder)
-            return self.compute_full_sequence_samples_and_losses(tfm_out, u_target)
+            return self.compute_full_sequence_samples_and_losses(tfm_out_hidden, u_target)
 
         else:  # Eval mode - AR forward inference
             # Prepare data structures to store all results (will be filled token-by-token)
@@ -444,15 +451,15 @@ class TransformerDecoder(ChildDecoderBase):
             for t in range(self.seq_len):
                 # use the TFM on a reduced set of input embeds
                 #  Sub-optimal (default pytorch) implementation: we'll recompute the same Q, K, V multiple times....
-                tfm_out = self.tfm(
+                tfm_out_hidden = self.tfm(
                     u_input_feedback_embeds[:, 0:t+1, :],
                     memory_in[:, 0:t+1, :],
                     tgt_mask=ar_forward_mask[0:t+1, 0:t+1]
                 )
                 u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx \
                     = self.compute_single_token_sample_and_loss(
-                    tfm_out[:, t:t+1, :], u_target[:, t:t + 1, :],
-                    u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
+                        tfm_out_hidden[:, t:t+1, :], u_target[:, t:t + 1, :],
+                        u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
                 )
                 # add the next embedding to its (previously computed) positional embedding
                 next_embed = self.embedding.forward_single_token(u_out[:, t:t + 1, :])  # expected in shape: N x 1 x 3
@@ -509,12 +516,13 @@ class MultiCardinalCategories(nn.Module):
     def forward(self):
         raise NotImplementedError("Use forward_full_sequence or forward_item.")
 
-    def forward_full_sequence(self, u_categorical_last_hidden, u_target: torch.Tensor):
+    def forward_full_sequence(self, u_categorical_last_hidden, u_target: torch.Tensor, sample_only=False):
         """
 
         :param u_categorical_last_hidden: Tensor of shape N x hidden_size x Lc
             where Lc is the total number of categorical output variables (synth params)
         :param u_target: target tensor, shape N x Lc
+        :param sample_only: If True, don't compute the cross-entropy (NLL)
         :return: out_logits (dict, different shapes),
                     out_ce (shape N x Lc) (is a NLL),
                     samples_categories (shape N x Lc)
@@ -528,17 +536,18 @@ class MultiCardinalCategories(nn.Module):
             mask = self.preset_helper.categorical_groups_submatrix_bool_masks[card]
             logits = module(u_categorical_last_hidden[:, :, mask])
             # logits is the output of a conv-like module, so the sequence dim is dim=2, and
-            # class probabilities are dim=1 (which is expected when calling F.cross_entropy
+            # class probabilities are dim=1 (which is expected when calling F.cross_entropy)
             sampled_categories[:, mask] = torch.argmax(logits, dim=1, keepdim=False)
-            # Don't turn off label smoothing during validation (we don't want validation over-confidence either)
-            # However, we don't use the (training) weights during validation
-            weights = self.get_ce_weights(card, u_target.device)
-            out_ce[:, mask] = F.cross_entropy(
-                logits, u_target[:, mask],
-                reduction='none', label_smoothing=self.label_smoothing, weight=weights
-            )
+            if not sample_only:
+                # Don't turn off label smoothing during validation (we don't want validation over-confidence either)
+                # However, during validation, we should use the training weights only
+                weights = self.get_ce_weights(card, u_target.device)
+                out_ce[:, mask] = F.cross_entropy(
+                    logits, u_target[:, mask],
+                    reduction='none', label_smoothing=self.label_smoothing, weight=weights
+                )
             out_logits[card] = logits
-        return out_logits, out_ce, sampled_categories
+        return out_logits, out_ce if not sample_only else None, sampled_categories
 
     def forward_single_token(self, u_token_hidden, u_target_classes, type_class: int):
         """

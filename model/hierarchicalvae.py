@@ -294,6 +294,10 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         x_data_dims = np.prod(np.asarray(x_shape[1:]))  # C spectrograms of size H x W
         return audio_log_prob_loss * x_data_dims + ae_out.z_loss
 
+    def set_preset_decoder_scheduled_sampling_p(self, p: float):
+        if self.decoder.preset_decoder is not None:  # Does not send a warning if preset decoder does not exist
+            self.decoder.preset_decoder.child_decoder.scheduled_sampling_p = p
+
     def get_detailed_summary(self):
         sep_str = '************************************************************************************************\n'
         summary = sep_str + '********** ENCODER audio single-channel conv **********\n' + sep_str
@@ -353,7 +357,7 @@ if __name__ == "__main__":
     _model_config.approx_requested_dim_z = 256
     _model_config.vae_preset_architecture = 'tfm_3l'
 
-    _train_config.pretrain_audio_only = True
+    _train_config.pretrain_audio_only = False
     _train_config.minibatch_size = 16
     _train_config.preset_cat_dropout = 0.12
     _train_config.preset_CE_label_smoothing = 0.13
@@ -369,6 +373,7 @@ if __name__ == "__main__":
 
     hVAE = HierarchicalVAE(_model_config, _train_config, _preset_helper)
     hVAE.train()
+    hVAE.set_preset_decoder_scheduled_sampling_p(0.3)
     #hVAE.eval()  # FIXME remove
     vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size), _dummy_preset)
     vae_out = hVAE.parse_outputs(vae_out)
