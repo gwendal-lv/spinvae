@@ -62,9 +62,9 @@ class PresetDecoder(nn.Module):
             )
         else:
             raise NotImplementedError()
-        self.numerical_distrib_conv1d = nn.Conv1d(
-            self.hidden_size, self.numerical_distrib.num_parameters, 1, bias=False
-        )
+        # Gaussian means outputs in [0,1] -> TODO need bias?
+        # DMoL will also require biases for scales
+        self.numerical_distrib_linear = nn.Linear(self.hidden_size, self.numerical_distrib.num_parameters, bias=True)
 
         # A) Build the main network (uses some self. attributes)
         if self.arch['name'] == 'mlp':
@@ -153,7 +153,7 @@ class ChildDecoderBase(nn.Module):
         self._dropout_p = dropout_p
 
         self.categorical_module = parent_dec.categorical_module
-        self.numerical_distrib_conv1d = parent_dec.numerical_distrib_conv1d
+        self.numerical_distrib_linear = parent_dec.numerical_distrib_linear
         self.numerical_distrib = parent_dec.numerical_distrib
         self.seq_numerical_items_bool_mask = parent_dec.seq_numerical_items_bool_mask
         self.seq_categorical_items_bool_mask = parent_dec.seq_categorical_items_bool_mask
@@ -172,26 +172,24 @@ class ChildDecoderBase(nn.Module):
         :param u_hidden: the hidden sequence representation of the preset - shape N x L x Hembed
         :param sample_only: If True, the NLLs won't be computed
         """
-        u_hidden = u_hidden.transpose(2, 1)  # TODO DOC: why? for convs?
         u_out = self.preset_helper.get_null_learnable_preset(u_target.shape[0]).to(u_target.device)
         # --- Categorical distribution(s) ---
         u_categorical_logits, u_categorical_nll, u_categorical_samples = self.categorical_module.forward_full_sequence(
-            u_hidden[:, :, self.seq_categorical_items_bool_mask],
+            u_hidden[:, self.seq_categorical_items_bool_mask, :].transpose(2, 1),  # FIXME seq dim should NOT be last
             u_target[:, self.seq_categorical_items_bool_mask, 0],
             sample_only=sample_only
         )
         u_out[:, self.seq_categorical_items_bool_mask, 0] = u_categorical_samples.float()
         # --- Numerical distribution (s) ---
         # FIXME different distributions for parameters w/ a different cardinal
-        numerical_distrib_params = self.numerical_distrib_conv1d(
-            u_hidden[:, :, self.seq_numerical_items_bool_mask]
-        )
-        numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
+        numerical_distrib_params = self.numerical_distrib_linear(u_hidden[:, self.seq_numerical_items_bool_mask, :])
+        # Set sequence dim last for the probability distribution (channels: distrib params)
+        numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params.transpose(2, 1))
         if not sample_only:
             # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
             u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
                 numerical_distrib_params,
-                u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)  # Set sequence dim last
+                u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)
             ))
         else:
             u_numerical_nll: Optional[torch.Tensor] = None
@@ -226,8 +224,9 @@ class ChildDecoderBase(nn.Module):
         #    we could compute NLLs only once at the end, but this section should be run with no_grad() context
         #    (optimization left for future works)
         if self.is_type_numerical[type_class]:
-            # The conv requires seq dim to be last FIXME different distribs for different discrete cards
-            numerical_distrib_params = self.numerical_distrib_conv1d(token_hidden.transpose(1, 2))
+            # All distributions requires seq dim to be last (each token corresponds to "a pixel")
+            #    FIXME different distribs for different discrete cards
+            numerical_distrib_params = self.numerical_distrib_linear(token_hidden).transpose(1, 2)
             numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
             samples = self.numerical_distrib.sample(numerical_distrib_params).view((N,))
             u_out[:, t, 1] = samples

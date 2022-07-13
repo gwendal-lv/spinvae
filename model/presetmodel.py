@@ -48,17 +48,18 @@ class PresetEmbedding(nn.Module):
         # Currently no max norm is implemented (categorical or "numerical" embeddings)
         #     We rely on weight decay (and layer norm?) to prevent exploding values
 
-        # is type numerical - to be able to retrieve the embedding inside forward_single_step(...)
+        # is type numerical, array - to be able to retrieve the embedding inside forward_single_step(...)
         self.is_type_numerical = self.preset_helper.is_type_numerical
 
         # TODO ctor arg to use "naive basic" transforms, identical for all synth params (interesting experiment)
 
-        # Numerical: use a 1d conv with a lot of output channels
+        # Numerical: use a 1d conv with a lot of output channels (hidden_size for each param type)
         n_numerical_conv_ch = hidden_size * preset_helper.n_param_types
-        # FIXME this method uses very similar embeddings for different discrete numerical synth params
+        # FIXME this method uses identical embeddings for different discrete numerical synth params (of the same type)
         # TODO try add a learned bias for each param type?
-        #   Or maybe an additionnal global embedding for each param type... (seen in IJCAI19 "T-CVAE story completion")
-        self.numerical_embedding_conv = nn.Conv1d(1, n_numerical_conv_ch, 1)
+        #    Or maybe an additionnal global embedding for each param type... (seen in IJCAI19 "T-CVAE story completion")
+        self._numerical_embedding_linear = nn.Linear(1, n_numerical_conv_ch, bias=False)  # use "manual" bias instead
+        self.numerical_embedding_manual_center = True
         # This mask will have to be expanded (batch dim to the minibatch size) before being used.
         #  Mask broadcasting behaves in a weird way with pytorch 1.10. It's applied to the first dimensions, not
         #  to the last (trailing) dimensions as we could expect https://pytorch.org/docs/stable/notes/broadcasting.html
@@ -74,7 +75,19 @@ class PresetEmbedding(nn.Module):
         # Most embeddings values will never be used, but the embedding index can be obtained very easily using
         # a simple product (synth param type * class index)
         # FIXME don't use so much unnecessary embeddings
-        n_categorical_embeddings = preset_helper.max_cat_classes * preset_helper.n_param_types
+        n_easy_indices = preset_helper.max_cat_classes * preset_helper.n_param_types
+        n_categorical_embeddings = 0
+        # At index preset_helper.max_cat_classes*param_type + cat_value,
+        #     the value is the actual embedding value
+        self.categorical_embed_easy_index = torch.ones((n_easy_indices, ), dtype=torch.long) * -1
+        for param_type_idx in range(preset_helper.n_param_types):
+            if not preset_helper.is_type_numerical[param_type_idx]:
+                start_easy_idx = preset_helper.max_cat_classes * param_type_idx
+                card = preset_helper.param_type_to_cardinality[param_type_idx]
+                for i in range(card):
+                    self.categorical_embed_easy_index[start_easy_idx+i] = n_categorical_embeddings
+                    n_categorical_embeddings += 1
+        # TODO double-check indexing (with repeats)
         self.categorical_embedding = nn.Embedding(n_categorical_embeddings, hidden_size, max_norm=None)
 
         # Save other masks - they are will be moved to the GPU
@@ -94,10 +107,16 @@ class PresetEmbedding(nn.Module):
     def _n_num_params(self):
         return self.preset_helper.n_learnable_numerical_params
 
+    def numerical_embedding_linear(self, numerical_values: torch.Tensor):
+        if self.numerical_embedding_manual_center:  # Assume input values in [0.0, 1.0]
+            numerical_values = 2.0 * (numerical_values - 0.5)
+        return self._numerical_embedding_linear(numerical_values)
+
     def _get_categorical_embed_idx(self, u_categorical_only: torch.Tensor):
-        return torch.round(
+        big_index = torch.round(
             u_categorical_only[:, :, 2] * self.preset_helper.max_cat_classes + u_categorical_only[:, :, 0]
         ).long()
+        return self.categorical_embed_easy_index[big_index]  # Keeps big_index's shape
 
     def _move_masks_and_embeds_to(self, device):
         if self.numerical_embedding_mask.device != device:
@@ -106,9 +125,10 @@ class PresetEmbedding(nn.Module):
             self._matrix_numerical_bool_mask = self._matrix_numerical_bool_mask.to(device)
             self._matrix_categorical_bool_mask = self._matrix_categorical_bool_mask.to(device)
             self.pos_embed_L_plus_2 = self.pos_embed_L_plus_2.to(device)
+            self.categorical_embed_easy_index = self.categorical_embed_easy_index.to(device)
 
     def get_start_token(self, device, batch_dim=False):
-        if batch_dim:
+        if batch_dim:  # FIXME start-token -embed (is the LAST)
             return torch.zeros((1, 1, self.hidden_size), device=device)
         else:
             return torch.zeros((1, self.hidden_size), device=device)
@@ -132,10 +152,7 @@ class PresetEmbedding(nn.Module):
         embed_out[:, self._matrix_categorical_bool_mask, :] = u_categorical_embeds
         # Numerical:
         u_numerical = u_in[:, self._matrix_numerical_bool_mask, 1:2]  # 3D tensor, not squeezed
-        # FIXME URGENT !
-        #     1) use linear instead of conv
-        #     2) CENTER numerical values?
-        u_numerical_unmasked = self.numerical_embedding_conv(u_numerical.transpose(1, 2)).transpose(2, 1)
+        u_numerical_unmasked = self.numerical_embedding_linear(u_numerical)
         u_numerical_embeds = u_numerical_unmasked[self.numerical_embedding_mask.expand(N, -1, -1)]
         # This view is risky... but necessary because self.numerical_embedding_mask leads to a flattened tensor
         #   seems to work properly w/ pytorch 1.10, let's hope an update won't break the current behavior
@@ -156,9 +173,10 @@ class PresetEmbedding(nn.Module):
         """ Returns the embedding (shape N x 1 x hidden_size) of a single-step input element (shape N x 1 x 3).
         This method is NOT able to add any positional embedding - it has to be done outside of this method. """
         assert u_single_step.shape[1] == 1
+        self._move_masks_and_embeds_to(u_single_step.device)
         type_class = int(u_single_step[0, 0, 2].item())  # Types (~= positions) are the same for all items from a batch
         if self.is_type_numerical[type_class]:  # Numerical type
-            embed = self.numerical_embedding_conv(u_single_step[:, :, 1:2].transpose(1, 2)).transpose(2, 1)
+            embed = self.numerical_embedding_linear(u_single_step[:, :, 1:2])
             # We can use the known range instead of using a mask
             return embed[:, :, (type_class * self.hidden_size): ((type_class + 1) * self.hidden_size)]
         else:  # Categorical type
