@@ -9,7 +9,7 @@ from torch.nn import functional as F
 
 from data.preset2d import Preset2dHelper
 from model.presetmodel import parse_preset_model_architecture, get_act, PresetEmbedding
-from utils.probability import GaussianUnitVariance
+from utils.probability import GaussianUnitVariance, DiscretizedLogisticMixture
 
 
 
@@ -60,10 +60,17 @@ class PresetDecoder(nn.Module):
             self.numerical_distrib = GaussianUnitVariance(
                 mu_activation=nn.Hardtanh(0.0, 1.0), reduction='none'
             )
+        elif numerical_proba_distribution.startswith("logistic_mixt"):
+            numerical_proba_distribution = numerical_proba_distribution.replace("logistic_mixt", "")
+            n_mix_components = int(numerical_proba_distribution[0])
+            prob_mass_leakage = numerical_proba_distribution.endswith('_leak')
+            self.numerical_distrib = DiscretizedLogisticMixture(
+                n_mix_components, reduction='none', prob_mass_leakage=prob_mass_leakage)
         else:
-            raise NotImplementedError()
-        # Gaussian means outputs in [0,1] -> TODO need bias?
-        # DMoL will also require biases for scales
+            raise NotImplementedError("Unknown distribution '{}'".format(numerical_proba_distribution))
+        # Bias seems appropriate to get means in [0, 1], also to get small scales for mixt of discretized logistics
+        #   (will be useless, however, for mixture weights which are to be softmaxed)
+        # TODO use a bigger linear, and mask outputs? (to have one linear / token?)
         self.numerical_distrib_linear = nn.Linear(self.hidden_size, self.numerical_distrib.num_parameters, bias=True)
 
         # A) Build the main network (uses some self. attributes)
@@ -153,10 +160,13 @@ class ChildDecoderBase(nn.Module):
         self._dropout_p = dropout_p
 
         self.categorical_module = parent_dec.categorical_module
+        self.seq_categorical_items_bool_mask = parent_dec.seq_categorical_items_bool_mask
+
         self.numerical_distrib_linear = parent_dec.numerical_distrib_linear
         self.numerical_distrib = parent_dec.numerical_distrib
         self.seq_numerical_items_bool_mask = parent_dec.seq_numerical_items_bool_mask
-        self.seq_categorical_items_bool_mask = parent_dec.seq_categorical_items_bool_mask
+        # Discretized logistics require to know the cardinal of the set of values for each token
+        self._numerical_tokens_card = torch.tensor(self.preset_helper.matrix_numerical_rows_card, dtype=torch.long)
         self.is_type_numerical = self.preset_helper.is_type_numerical
 
         self.scheduled_sampling_p = 0.0  # Probability to use own output (corresponds to 1.0 - teacher_forcing_p)
@@ -164,6 +174,15 @@ class ChildDecoderBase(nn.Module):
     @staticmethod
     def flatten_z_multi_level(z_multi_level):
         return torch.cat([z.flatten(start_dim=1) for z in z_multi_level], dim=1)
+
+    def get_numerical_tokens_card(self, device):
+        if self._numerical_tokens_card.device != device:
+            self._numerical_tokens_card = self._numerical_tokens_card.to(device)
+        return self._numerical_tokens_card
+
+    def get_expanded_numerical_tokens_card(self, batch_size: int, device):
+        numerical_tokens_card = self.get_numerical_tokens_card(device)
+        return numerical_tokens_card.view(1, 1, numerical_tokens_card.shape[0]).expand(batch_size, 1, -1)
 
     def compute_full_sequence_samples_and_losses(self, u_hidden, u_target, sample_only=False):
         """
@@ -181,7 +200,8 @@ class ChildDecoderBase(nn.Module):
         )
         u_out[:, self.seq_categorical_items_bool_mask, 0] = u_categorical_samples.float()
         # --- Numerical distribution (s) ---
-        # FIXME different distributions for parameters w/ a different cardinal
+        # FIXME different distributions for parameters w/ a different cardinal??
+        #    Gaussian does not care, Discretized Logistics will handle the cardinal
         numerical_distrib_params = self.numerical_distrib_linear(u_hidden[:, self.seq_numerical_items_bool_mask, :])
         # Set sequence dim last for the probability distribution (channels: distrib params)
         numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params.transpose(2, 1))
@@ -189,12 +209,16 @@ class ChildDecoderBase(nn.Module):
             # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
             u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
                 numerical_distrib_params,
-                u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1)
+                u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1),
+                self.get_expanded_numerical_tokens_card(u_target.shape[0], u_target.device)  # for discrete logistics
             ))
         else:
             u_numerical_nll: Optional[torch.Tensor] = None
-        # Squeeze singleton "channel" dimension
-        u_numerical_samples = torch.squeeze(self.numerical_distrib.sample(numerical_distrib_params), dim=1)
+        with torch.no_grad():
+            u_numerical_samples = self.numerical_distrib.get_mode(
+                numerical_distrib_params, self.get_numerical_tokens_card(u_target.device))
+            # Squeeze singleton "channel" dimension
+            u_numerical_samples = torch.squeeze(u_numerical_samples, dim=1)
         u_out[:, self.seq_numerical_items_bool_mask, 1] = u_numerical_samples
 
         return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
@@ -217,7 +241,7 @@ class ChildDecoderBase(nn.Module):
         :param token_hidden: (N x 1 x hidden_size) output from the last hidden layer
         :param target_token: (N x 1 x 3) target
         """
-        N = token_hidden.shape[0]
+        N, device = token_hidden.shape[0], token_hidden.device
         t = categorical_idx + numerical_idx
         type_class = int(target_token[0, 0, 2].item())
         # compute NLLs and sample (and embed the sample)  TODO no_grad, no NLL
@@ -228,10 +252,17 @@ class ChildDecoderBase(nn.Module):
             #    FIXME different distribs for different discrete cards
             numerical_distrib_params = self.numerical_distrib_linear(token_hidden).transpose(1, 2)
             numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params)
-            samples = self.numerical_distrib.sample(numerical_distrib_params).view((N,))
+            with torch.no_grad():
+                samples = self.numerical_distrib.get_mode(
+                    numerical_distrib_params,
+                    self.get_numerical_tokens_card(device)[numerical_idx:numerical_idx+1]  # unsqueezed tensor
+                ).view((N,))
             u_out[:, t, 1] = samples
             u_numerical_nll[:, numerical_idx] = self.numerical_distrib.NLL(
-                numerical_distrib_params, target_token[:, :, 1:2].transpose(2, 1)).view((N,))
+                numerical_distrib_params,
+                target_token[:, :, 1:2].transpose(2, 1),
+                self.get_expanded_numerical_tokens_card(N, device)[:, :, numerical_idx:numerical_idx+1]
+            ).view((N,))
             numerical_idx += 1
         else:
             logits, ce_nll, samples = self.categorical_module.forward_single_token(
@@ -258,6 +289,8 @@ class MlpDecoder(ChildDecoderBase):
         # self.hidden_size is NOT the number of hidden neurons in this MLP (it's the feature vector size, for
         #  recurrent networks only - not applicable to this MLP).
         self.seq_hidden_dim = self.hidden_size
+        if self.arch_args['ff']:
+            warnings.warn("Useless '_ff' arch arg: MLP decoder is always feed-forward.")
 
         self.mlp = nn.Sequential()
         n_pre_out_features = self.seq_len * (mlp_hidden_features // self.seq_len)
@@ -313,6 +346,8 @@ class RnnDecoder(ChildDecoderBase):
         # TODO LSTM with attention?
         self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, self.n_layers, batch_first=True)
         if self._dropout_p > 0.0:
+            raise NotImplementedError()
+        if self.arch_args['ff']:
             raise NotImplementedError()
 
     def forward(self, z_multi_level, u_target):
@@ -373,6 +408,7 @@ class TransformerDecoder(ChildDecoderBase):
         """
         super().__init__(parent_dec)
         self.n_head = n_head
+        self.autoregressive = not self.arch_args['ff']
 
         assert self.dim_z == self.hidden_size  # Future versions: dim_z could be a multiple of hidden_size
         # TODO maybe use an MLP to get a few more memory tokens? Currently z is directly used as single-token memory
@@ -396,9 +432,17 @@ class TransformerDecoder(ChildDecoderBase):
 
         ar_forward_mask = self.subsequent_mask.to(device)
         # Different training and eval procedures: parallel training, sequential evaluation
-        if self.training:
-            # Get embeddings w/ start token, discard the last token
-            u_target_embeds = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]
+        #   (however if non-AR: we always use the "training" parallel procedure, even for validation)
+        if self.training or not self.autoregressive:
+            # Get embeddings (shifted right) w/ start token, discard the last token
+            if self.autoregressive:
+                u_target_embeds = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]
+            else:  # non-AR transformer: pos encoding input only
+                u_target_embeds = torch.unsqueeze(self.embedding.pos_embed_L.to(device), dim=0)  # Add batch dimension
+                u_target_embeds = u_target_embeds.expand(N, -1, -1)
+                if self.scheduled_sampling_p > 0.0:
+                    warnings.warn("Scheduled sampling probability > 0.0 can't be applied w/ this non-AR decoder.")
+
             # Some details about PyTorch's standard Transformer decoding layers and modules:
             #     (see torch/nn/modules/transformer.py, line 460 for pytorch 1.10)
             # Target data corresponds to the decoder's input embeddings (i.e. the target in teacher-forcing training)
@@ -415,7 +459,7 @@ class TransformerDecoder(ChildDecoderBase):
             #    NeurIPS15, for RNNs: (Sequential) Scheduled Sampling https://arxiv.org/abs/1506.03099?context=cs
             #    arxiv19 (ICLR20 rejected) Parallel Scheduled Sampling   https://arxiv.org/abs/1906.04331
             #    ACL student workshop Sched Sampling for Transformers https://arxiv.org/abs/1906.07651
-            if self.scheduled_sampling_p > 0.0:
+            if self.scheduled_sampling_p > 0.0 and self.autoregressive:
                 with torch.no_grad():  # 1st pass without gradient
                     tfm_out_hidden = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
                     # we need to sample from tfm_out (which contains hidden values only), but don't need NLLs
@@ -430,9 +474,8 @@ class TransformerDecoder(ChildDecoderBase):
                     in_embeds_2nd_pass = self.embedding(sched_sampling_tokens, start_token=True)[:, 0:self.seq_len, :]
                 # 2nd pass with gradient
                 tfm_out_hidden = self.tfm(in_embeds_2nd_pass, memory_in, tgt_mask=ar_forward_mask)
-            # No scheduled sampling: Single pass w/ gradients
+            # No scheduled sampling (or non-AR): Single pass w/ gradients
             else:
-                # TODO allow non-AR transformer (pos encoding input only)
                 tfm_out_hidden = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
 
             # Compute logits and losses - all at once (shared with the MLP decoder)

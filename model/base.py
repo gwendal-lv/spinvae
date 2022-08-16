@@ -209,7 +209,7 @@ class TrainableMultiGroupModel(nn.Module):
         for k in self.trained_param_group_names:
             self._optimizers[k].step()
 
-    def schedulers_step(self, loss_values: Dict[str, float]):
+    def schedulers_step(self, loss_values: Optional[Dict[str, float]] = None):
         for k in self.trained_param_group_names:
             if isinstance(self._schedulers[k], torch.optim.lr_scheduler.ReduceLROnPlateau):
                 self._schedulers[k].step(loss_values[k])

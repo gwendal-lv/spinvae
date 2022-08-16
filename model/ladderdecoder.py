@@ -238,7 +238,7 @@ class LadderDecoder(LadderBase):
         # Apply activations
         audio_prob_parameters = [self.audio_proba_distribution.apply_activations(x) for x in audio_prob_parameters]
         # Sample from the probability distribution should always be fast and easy (even for mixture models)
-        audio_x_sampled = [self.audio_proba_distribution.sample(x) for x in audio_prob_parameters]
+        audio_x_sampled = [self.audio_proba_distribution.get_mode(x) for x in audio_prob_parameters]
 
         # ---------- Preset decoder ----------
         if self.preset_decoder is not None and u_target is not None:

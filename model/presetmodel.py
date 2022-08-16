@@ -19,6 +19,7 @@ def parse_preset_model_architecture(full_architecture: str):
         'ln': False,  # Layer-Norm
         'elu': False,
         'swish': False,
+        'ff': False,  # feed-forward (non-autoregressive) - for RNN, Transformers only
         # 'gated': False,  # (Self-)gating ("light attention") mechanisms can be added to some architectures
         # 'att': False,  # SAGAN-like self-attention
     }

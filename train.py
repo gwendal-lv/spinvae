@@ -179,6 +179,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         ae_model.beta_warmup_ongoing = not scalars['Sched/VAE/beta'].has_reached_final_value
 
         # = = = = = Train all mini-batches (optional profiling) = = = = =
+        #torch.autograd.set_detect_anomaly(True)  # FIXME
         # when profiling is disabled: true no-op context manager, and prof is None
         with optional_profiler.get_prof(epoch) as prof:  # TODO use comet context if available
             ae_model_parallel.train()
@@ -188,9 +189,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
                 # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
                 ae_model.optimizers_zero_grad()
-                ae_out = ae_model_parallel(x_in, v_in, uid, notes)  # TODO auto-encode presets
+                ae_out = ae_model_parallel(x_in, v_in, uid, notes)
                 ae_out = ae_model.parse_outputs(ae_out)
-                # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
                 # reg_model.precompute_u_out_with_symmetries(v_out)   # FIXME pre-compute permutations
                 super_metrics['LatentMetric/Train'].append_hierarchical_latent(ae_out, label)
                 # Losses (computed on 1 GPU using the non-parallel original model instance)
@@ -232,50 +232,48 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         scalars['Latent/MaxAbsVal/Train'].set(np.abs(super_metrics['LatentMetric/Train'].get_z('zK')).max())
 
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
-        with torch.no_grad():  # TODO use comet context if available
-            ae_model_parallel.eval()  # BN stops running estimates
-            v_out_backup, v_in_backup = [], []  # Params inference error (Comet/Tensorboard plot)
-            i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
-            for i, minibatch in enumerate(dataloader['validation']):
-                x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
-                # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
-                ae_out = ae_model_parallel(x_in, v_in, uid, notes)  # TODO auto-encode presets
-                ae_out = ae_model.parse_outputs(ae_out)
-                # v_out = reg_model_parallel(ae_out.z_sampled[0])  # FIXME don't use reg_model anymore
-                # reg_model.precompute_u_out_with_symmetries(v_out)  # FIXME pre-compute permutations
-                super_metrics['LatentMetric/Valid'].append_hierarchical_latent(ae_out, label)
-                audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
-                scalars['Audio/LogProbLoss/Valid'].append(audio_log_prob_loss)
-                lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
-                scalars['Latent/Loss/Valid'].append(lat_loss)
-                scalars['Latent/BackpropLoss/Valid'].append(lat_backprop_loss)
-                scalars['Audio/MSE/Valid'].append(F.mse_loss(ae_out.x_sampled, x_in))
-                scalars['Latent/MMD/Valid'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
-                if not pretrain_audio:
-                    u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
-                    preset_loss = u_categorical_nll + u_numerical_nll
-                    scalars['Preset/NLL/Total/Valid'].append(preset_loss)
-                    preset_loss *= train_config.params_loss_compensation_factor
-                    scalars['Preset/NLL/Numerical/Valid'].append(u_numerical_nll)
-                    scalars['Preset/NLL/CatCE/Valid'].append(u_categorical_nll)
-                    scalars['Preset/Accuracy/Valid'].append(ae_out.u_accuracy.mean())
-                    scalars['Preset/L1error/Valid'].append(ae_out.u_l1_error.mean())
-                scalars['VAELoss/Total/Valid'].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
-                scalars['VAELoss/Backprop/Valid'].append(audio_log_prob_loss + lat_backprop_loss)
-                # Validation plots
-                if logger.should_plot:
-                    v_in_backup.append(v_in)  # Full-batch error storage - will be used later
-                    v_out_backup.append(ae_out.u_out)
-                    if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
-                        logger.plot_spectrograms(x_in, ae_out.x_sampled, uid, notes, validation_audio_dataset)
-                        logger.plot_decoder_interpolation(
-                            ae_model, ae_model.flatten_latent_values(ae_out.z_sampled),
-                            uid, validation_audio_dataset, audio_channel=model_config.main_midi_note_index)
-        scalars['Latent/MaxAbsVal/Valid'].set(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
+        if logger.should_validate:  # don't always compute validation (very long w/ transformer AR decoders)
+            with torch.no_grad():
+                ae_model_parallel.eval()  # BN stops running estimates, Transformers use AR eval mode
+                v_out_backup, v_in_backup = [], []  # Params inference error (Comet/Tensorboard plot)
+                i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
+                for i, minibatch in enumerate(dataloader['validation']):
+                    x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
+                    # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
+                    ae_out = ae_model_parallel(x_in, v_in, uid, notes)
+                    ae_out = ae_model.parse_outputs(ae_out)
+                    # reg_model.precompute_u_out_with_symmetries(v_out)  # FIXME pre-compute permutations
+                    super_metrics['LatentMetric/Valid'].append_hierarchical_latent(ae_out, label)
+                    audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
+                    scalars['Audio/LogProbLoss/Valid'].append(audio_log_prob_loss)
+                    lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
+                    scalars['Latent/Loss/Valid'].append(lat_loss)
+                    scalars['Latent/BackpropLoss/Valid'].append(lat_backprop_loss)
+                    scalars['Audio/MSE/Valid'].append(F.mse_loss(ae_out.x_sampled, x_in))
+                    scalars['Latent/MMD/Valid'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
+                    if not pretrain_audio:
+                        u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
+                        preset_loss = u_categorical_nll + u_numerical_nll
+                        scalars['Preset/NLL/Total/Valid'].append(preset_loss)
+                        preset_loss *= train_config.params_loss_compensation_factor
+                        scalars['Preset/NLL/Numerical/Valid'].append(u_numerical_nll)
+                        scalars['Preset/NLL/CatCE/Valid'].append(u_categorical_nll)
+                        scalars['Preset/Accuracy/Valid'].append(ae_out.u_accuracy.mean())
+                        scalars['Preset/L1error/Valid'].append(ae_out.u_l1_error.mean())
+                    scalars['VAELoss/Total/Valid'].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
+                    scalars['VAELoss/Backprop/Valid'].append(audio_log_prob_loss + lat_backprop_loss)
+                    # Validation plots
+                    if logger.should_plot:
+                        v_in_backup.append(v_in)  # Full-batch error storage - will be used later
+                        v_out_backup.append(ae_out.u_out)
+                        if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
+                            logger.plot_spectrograms(x_in, ae_out.x_sampled, uid, notes, validation_audio_dataset)
+                            logger.plot_decoder_interpolation(
+                                ae_model, ae_model.flatten_latent_values(ae_out.z_sampled),
+                                uid, validation_audio_dataset, audio_channel=model_config.main_midi_note_index)
+            scalars['Latent/MaxAbsVal/Valid'].set(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
 
-        # Dynamic LR scheduling depends on validation performance. Losses for plateau-detection are chosen in config.py
-        ae_model.schedulers_step(
-            {k: scalars[train_config.scheduler_losses[k] + '/Valid'].get() for k in ae_model.trained_param_group_names})
+        ae_model.schedulers_step()
         for k in ae_model.trained_param_group_names:
             scalars['Sched/' + k + '/LR'].set(ae_model.get_group_lr(k))
         # Possible early stop if reg model is not learning anything anymore
@@ -283,7 +281,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         early_stop = False  # FIXME re-implement early stop
 
         # = = = = = Epoch logs (scalars/sounds/images + updated metrics) = = = = =
-        logger.add_scalars(scalars)  # Some scalars might not be added (e.g. during pretrain)
+        logger.add_scalars(scalars)  # Some scalars might not be added (e.g. during pretrain, if no validation, ...)
         if logger.should_plot or early_stop:
             logger.plot_stats__threaded(super_metrics, ae_model, validation_audio_dataset)  # non-blocking
             # TODO also thread this one (30s plot... !!!!)

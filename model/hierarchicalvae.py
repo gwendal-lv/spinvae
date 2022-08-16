@@ -355,7 +355,8 @@ if __name__ == "__main__":
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 1
     _model_config.approx_requested_dim_z = 256
-    _model_config.vae_preset_architecture = 'tfm_3l'
+    _model_config.vae_preset_architecture = 'tfm_2l'
+    _model_config.preset_decoder_numerical_distribution = "logistic_mixt3"
 
     _train_config.pretrain_audio_only = False
     _train_config.minibatch_size = 16
@@ -374,7 +375,7 @@ if __name__ == "__main__":
     hVAE = HierarchicalVAE(_model_config, _train_config, _preset_helper)
     hVAE.train()
     hVAE.set_preset_decoder_scheduled_sampling_p(0.3)
-    #hVAE.eval()  # FIXME remove
+    # hVAE.eval()  # FIXME remove
     vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size), _dummy_preset)
     vae_out = hVAE.parse_outputs(vae_out)
     lat_loss, lat_backprop_loss = hVAE.latent_loss(vae_out, 1.0)

@@ -220,6 +220,13 @@ class RunLogger:
             self.comet.experiment.set_step(self.current_step)  # To ensure step actualisation for epoch 0
 
     @property
+    def should_validate(self):
+        # validate periodically, also if should_plot, and at last epoch
+        return (self.current_epoch % self.train_config.validate_period) == 0 \
+               or (self.current_epoch == (self.train_config.n_epochs - 1))\
+               or self.should_plot
+
+    @property
     def should_plot(self):
         """ Returns whether this epoch should be plotted (costs a lot of CPU and disk space) or not. """
         return (self.current_epoch % self.train_config.plot_period == 0) \
@@ -267,7 +274,12 @@ class RunLogger:
             if (self.train_config.pretrain_audio_only and (k.startswith('Controls') or k.startswith('Sched/Controls'))) \
                     or (k.startswith('LatCorr/zK') and self.model_config.latent_flow_arch is None):
                 pass
-            else:  # ok, we can log this
+            # if we did not perform validation: don't log (no new value, EpochMetrics would raise an Error anyway
+            # because their buffer are empty)
+            elif not self.should_validate and 'valid' in k.lower():
+                pass
+            # otherwise: ok, we can log this
+            else:
                 try:
                     scalar_value = s.get()  # .get might raise except if empty/unused scalar
                 except ValueError:  # unused scalars with buffer (e.g. during pretrain) will raise that exception

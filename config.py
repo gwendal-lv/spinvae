@@ -29,9 +29,11 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "dev"  # experiment base name
-        self.run_name = 'tfm_sched_smp_00'  # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.pretrained_VAE_checkpoint = self.logs_root_dir + "/hvae/8x1_swish_freebits0.125__3notes_dimz256/checkpoint.tar"
+        self.name = "hvae"  # experiment base name
+        # experiment run: different hyperparams, optimizer, etc... for a given exp
+        self.run_name = 'discr_logist_schedsmp0.8_logsumpexp_prob__01'
+        self.pretrained_VAE_checkpoint = \
+            self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
         self.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
         # Comet.ml logger (replaces Tensorboard)
@@ -75,12 +77,13 @@ class ModelConfig:
         self.attention_gamma = 1.0  # Amount of self-attention added to (some) usual convolutional outputs
         # Preset encoder/decoder architecture
         # TODO description (base + options)
-        self.vae_preset_architecture = 'tfm_3l'
+        #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
+        self.vae_preset_architecture = 'tfm_6l'
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values.
         # (categorical variables always use a softmaxed categorical distribution)
-        self.preset_decoder_numerical_distribution = 'gaussian_unitvariance'
+        self.preset_decoder_numerical_distribution = 'logistic_mixt3'
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector
@@ -114,9 +117,10 @@ class ModelConfig:
         self.required_dataset_midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
         # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
         # self.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
+        self.midi_notes = ((41, 75), (48, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 6 notes
         # self.midi_notes = ((41, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 5 notes
-        self.midi_notes = ((41, 75), (56, 75), (56, 127))  # 3 notes (faster training)
-        self.main_midi_note_index = 1 if len(self.midi_notes) <= 3 else 2  # 56, 75
+        # self.midi_notes = ((41, 75), (56, 75), (56, 127))  # 3 notes (faster training)
+        self.main_midi_note_index = len(self.midi_notes) // 2  # 56, 75
         self.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
         # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
         # dataset size is increased (6x bigger with 6 MIDI notes) -> warmup and patience epochs must be scaled
@@ -147,14 +151,14 @@ class TrainConfig:
         self.pretrain_audio_only = False  # Should we pre-train the audio+latent parts of the auto-encoder model only?
         self.start_datetime = datetime.datetime.now().isoformat()
         # 256 is okay for smaller conv structures - reduce to 64 to fit '_big' models into 24GB GPU RAM
-        self.minibatch_size = 64  # reduce to 64 for big models - also smaller N seems to improve VAE perfs...
+        self.minibatch_size = 64  # reduce for big models - also smaller N seems to improve VAE pretraining perfs...
         self.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
         self.test_holdout_proportion = 0.1  # This can be reduced without mixing the train and test subsets
         self.k_folds = 9  # 10% for validation set, 80% for training
         self.current_k_fold = 0  # k-folds are not used anymore, but we'll keep the training/validation/test splits
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load the last saved checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
-        self.n_epochs = 170  # See update_dynamic_config_params().
+        self.n_epochs = 220  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -177,7 +181,7 @@ class TrainConfig:
         # coordinate always 'has' the same amount of regularization
         self.normalize_latent_loss = False
         # Here, beta = beta_vae / Dx in the beta-VAE formulation (ICLR 2017)
-        # where Dx is the input dimensionality (257 * 251 = 64 507 for 1 spectogram)
+        # where Dx is the input dimensionality (257 * 251 = 64 507 for 1 spectrogram)
         # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
         #            ELBO loss is obtained by using beta = 1.55 e-5 (for 1 spectrogram)
         self.beta = 1.6e-5  # FIXME With 6 specs, this corresponds to beta=6
@@ -193,7 +197,8 @@ class TrainConfig:
         # Our VAE uses 2D feature maps as latent variables, and entire channels seem to collapse
         # (a single pixel collapsing has not been observed). The "free bits" min Dkl constraint is then applied
         # to each latent channel, no to hierarchical latent groups
-        self.latent_free_bits = 0.125  #2 ** -1  # this is a *single-pixel* min KLD value
+        # TODO increase? collapse during fine-tuning   TODO upaate doc
+        self.latent_free_bits = 0.250  # this is a *single-pixel* min KLD value
 
         # - - - Synth parameters losses - - -
         # - General options
@@ -204,9 +209,9 @@ class TrainConfig:
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
         self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
         self.preset_CE_use_weights = False
-        self.preset_sched_sampling_max_p = 1.0  # Probability to use the model's outputs during training (AR decoder)
+        self.preset_sched_sampling_max_p = 0.8  # FIXME 0.8??? Probability to use the model's outputs during training (AR decoder)
         # self.preset_sched_sampling_start_epoch = 40  # TODO IMPLEMENT Required for the embeddings to train properly?
-        self.preset_sched_sampling_warmup_epochs = 80
+        self.preset_sched_sampling_warmup_epochs = 100
 
         # ------------------------------------------- Optimizer + scheduler -------------------------------------------
         # Different optimizer parameters can be used for the pre-trained AE and the regression networks
@@ -226,9 +231,6 @@ class TrainConfig:
         self.scheduler_lr_factor = 0.2
         # - - - StepLR scheduler options - - -
         self.scheduler_period = 50  # resnets train quite fast
-        # - - - ReduceLROnPlateau scheduler options - - -
-        self.scheduler_losses = {
-            'audio': 'VAELoss/Backprop', 'latent': 'VAELoss/Backprop', 'preset': 'Preset/NLL/Total' }
         # Set a longer patience with smaller datasets and quite unstable trains
         # See update_dynamic_config_params(). 16k samples dataset:  set to 10
         self.scheduler_patience = 20
@@ -249,6 +251,7 @@ class TrainConfig:
         self.preset_internal_dropout = 0.0
 
         # -------------------------------------------- Logs, figures, ... ---------------------------------------------
+        self.validate_period = 5  # Period between validations (very long w/ autoregressive transformers)
         self.plot_period = 20   # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
         self.large_plots_min_period = 100  # Min num of epochs between plots (e.g. embeddings, approx. 80MB .tsv files)
         self.plot_epoch_0 = False
