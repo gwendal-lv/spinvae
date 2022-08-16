@@ -410,7 +410,9 @@ class TransformerDecoder(ChildDecoderBase):
         self.n_head = n_head
         self.autoregressive = not self.arch_args['ff']
 
-        assert self.dim_z == self.hidden_size  # Future versions: dim_z could be a multiple of hidden_size
+        assert self.dim_z % self.hidden_size == 0  # This requirement might be removed in future versions (mem MLP?)
+        self.n_memory_tokens = self.dim_z // self.hidden_size
+
         # TODO maybe use an MLP to get a few more memory tokens? Currently z is directly used as single-token memory
         # self.input_memory_linear = nn.Linear(self.dim_z, self.hidden_size)  # TODO and maybe gated
 
@@ -427,17 +429,21 @@ class TransformerDecoder(ChildDecoderBase):
         N, device = u_target.shape[0], u_target.device  # minibatch size, current device
         # Build memory from z
         z_flat = self.flatten_z_multi_level(z_multi_level)
-        # Very simple memory: 1-token sequence (FIXME use latent space of size hidden_dim not to use this linear)
-        memory_in = torch.unsqueeze(z_flat, dim=1)
+        # FIXME Very simple memory: 1-token sequence (FIXME use latent space of size hidden_dim not to use this linear)
+        #  Build memory token(s)
+        #     - ICCV21 "3D human motion transformer VAE" seems to use the raw latent vector as a single memory token
+        #          https://github.com/Mathux/ACTOR
+        memory_in = z_flat.view(N, self.n_memory_tokens, self.hidden_size)
 
         ar_forward_mask = self.subsequent_mask.to(device)
         # Different training and eval procedures: parallel training, sequential evaluation
         #   (however if non-AR: we always use the "training" parallel procedure, even for validation)
         if self.training or not self.autoregressive:
-            # Get embeddings (shifted right) w/ start token, discard the last token
+            # Usual AR transformer: Get embeddings (shifted right) w/ start token, discard the last token
             if self.autoregressive:
                 u_target_embeds = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]
-            else:  # non-AR transformer: pos encoding input only
+            # non-AR transformer: pos encoding input only
+            else:
                 u_target_embeds = torch.unsqueeze(self.embedding.pos_embed_L.to(device), dim=0)  # Add batch dimension
                 u_target_embeds = u_target_embeds.expand(N, -1, -1)
                 if self.scheduled_sampling_p > 0.0:
@@ -476,12 +482,14 @@ class TransformerDecoder(ChildDecoderBase):
                 tfm_out_hidden = self.tfm(in_embeds_2nd_pass, memory_in, tgt_mask=ar_forward_mask)
             # No scheduled sampling (or non-AR): Single pass w/ gradients
             else:
-                tfm_out_hidden = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
+                # Don't use mask for feed-forward (non-AR) transformer (because input is pos encodings only)
+                tfm_out_hidden = self.tfm(u_target_embeds, memory_in,
+                                          tgt_mask=(ar_forward_mask if self.autoregressive else None))
 
             # Compute logits and losses - all at once (shared with the MLP decoder)
             return self.compute_full_sequence_samples_and_losses(tfm_out_hidden, u_target)
 
-        else:  # Eval mode - AR forward inference
+        else:  # Eval mode - AR forward inference (feed-forward, non-AR case is handled in the previous 'if' block)
             # Prepare data structures to store all results (will be filled token-by-token)
             u_out, u_categorical_nll, u_numerical_nll = self.get_init_u_out_and_nlls(N, device)
             numerical_idx, categorical_idx = 0, 0

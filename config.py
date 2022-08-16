@@ -29,11 +29,11 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "hvae"  # experiment base name
+        self.name = "tfm"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'discr_logist_schedsmp0.8_logsumpexp_prob__01'
+        self.run_name = 'tfm_heads8_mem128x2'
         self.pretrained_VAE_checkpoint = \
-            self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
+            self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
         self.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
         # Comet.ml logger (replaces Tensorboard)
@@ -78,7 +78,7 @@ class ModelConfig:
         # Preset encoder/decoder architecture
         # TODO description (base + options)
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
-        self.vae_preset_architecture = 'tfm_6l'
+        self.vae_preset_architecture = 'tfm_3l'  # tfm_6l
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values.
@@ -117,9 +117,9 @@ class ModelConfig:
         self.required_dataset_midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
         # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
         # self.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
-        self.midi_notes = ((41, 75), (48, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 6 notes
+        # self.midi_notes = ((41, 75), (48, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 6 notes
         # self.midi_notes = ((41, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 5 notes
-        # self.midi_notes = ((41, 75), (56, 75), (56, 127))  # 3 notes (faster training)
+        self.midi_notes = ((41, 75), (56, 75), (56, 127))  # 3 notes (faster training)
         self.main_midi_note_index = len(self.midi_notes) // 2  # 56, 75
         self.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
         # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
@@ -158,7 +158,7 @@ class TrainConfig:
         self.current_k_fold = 0  # k-folds are not used anymore, but we'll keep the training/validation/test splits
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load the last saved checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
-        self.n_epochs = 220  # See update_dynamic_config_params().
+        self.n_epochs = 200  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -203,8 +203,8 @@ class TrainConfig:
         # - - - Synth parameters losses - - -
         # - General options
         self.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
-        self.params_loss_compensation_factor = 0.5  # because MSE loss of the VAE is much lower (approx. 1e-2)
-        self.params_loss_exclude_useless = True  # if True, sets to the 0.0 the loss related to 0-volume oscillators
+        self.params_loss_compensation_factor = 0.5  # FIXME because MSE loss of the VAE is much lower (approx. 1e-2)
+        self.params_loss_exclude_useless = True  # FIXME REUSE if True, sets to the 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
         self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
@@ -222,15 +222,15 @@ class TrainConfig:
         # LR decreased if non-normalized losses (which are expected to be 9e4 times bigger with a 257x347 spectrogram)
         # e-9 LR with e+4 (non-normalized) loss does not allow any train (vanishing grad?)
         self.initial_learning_rate = {'audio': 2e-4, 'latent': 2e-4, 'preset': 2e-4}
-        # FIXME RESET TO 1e-1
+        # FIXME RESET TO 1e-1?
         self.initial_audio_latent_lr_factor_after_pretrain = 1.0  # audio-related LR reduced after pre-train
         # Learning rate warmup (see https://arxiv.org/abs/1706.02677). Same warmup period for all schedulers.
         self.lr_warmup_epochs = 20  # Will be decreased /2 during pre-training (stable CNN structure)
         self.lr_warmup_start_factor = 0.05  # Will be increased 2x during pre-training
         self.scheduler_name = 'StepLR'  # can use ReduceLROnPlateau during pre-train (stable CNN), StepLR for reg model
-        self.scheduler_lr_factor = 0.2
+        self.scheduler_lr_factor = 0.4
         # - - - StepLR scheduler options - - -
-        self.scheduler_period = 50  # resnets train quite fast
+        self.scheduler_period = 75  # resnets train quite fast
         # Set a longer patience with smaller datasets and quite unstable trains
         # See update_dynamic_config_params(). 16k samples dataset:  set to 10
         self.scheduler_patience = 20
