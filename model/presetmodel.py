@@ -20,6 +20,7 @@ def parse_preset_model_architecture(full_architecture: str):
         'elu': False,
         'swish': False,
         'ff': False,  # feed-forward (non-autoregressive) - for RNN, Transformers only
+        'memmlp': False,  # Transformer decoder only: uses an (res-)MLP to double the number of memory tokens
         # 'gated': False,  # (Self-)gating ("light attention") mechanisms can be added to some architectures
         # 'att': False,  # SAGAN-like self-attention
     }

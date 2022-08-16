@@ -291,6 +291,10 @@ class MlpDecoder(ChildDecoderBase):
         self.seq_hidden_dim = self.hidden_size
         if self.arch_args['ff']:
             warnings.warn("Useless '_ff' arch arg: MLP decoder is always feed-forward.")
+        if self.arch_args['posenc']:
+            warnings.warn("Cannot use positional embeddings with an MLP network - ignored")
+        if self.arch_args['memmlp']:
+            warnings.warn("'_memmlp' arch arg can be used with a Transformer decoder only - ignored")
 
         self.mlp = nn.Sequential()
         n_pre_out_features = self.seq_len * (mlp_hidden_features // self.seq_len)
@@ -308,11 +312,8 @@ class MlpDecoder(ChildDecoderBase):
             n_out_features = mlp_hidden_features if (l < self.n_layers - 1) else n_pre_out_features
             self.mlp.add_module('fc{}'.format(l), nn.Linear(n_in_features, n_out_features))
 
-        if self.arch_args['posenc']:
-            warnings.warn("Cannot use positional embeddings with an MLP network - ignored")
-
         # Last layer should output a 1d tensor that can be reshaped as a "sequence-like" 2D tensor.
-        #    This would represent an overly huge FC layer.... so it's done in 2 steps (See ReshapeMlpOutput)
+        #    This would represent an overly huge FC layer.... so it's done in 2 steps
         self.in_channels = n_pre_out_features // self.seq_len
         self.conv = nn.Sequential(
             get_act(self.arch_args),
@@ -349,6 +350,8 @@ class RnnDecoder(ChildDecoderBase):
             raise NotImplementedError()
         if self.arch_args['ff']:
             raise NotImplementedError()
+        if self.arch_args['memmlp']:
+            warnings.warn("'_memmlp' arch arg can be used with a Transformer decoder only - ignored")
 
     def forward(self, z_multi_level, u_target):
         N, device = u_target.shape[0], u_target.device
@@ -412,9 +415,15 @@ class TransformerDecoder(ChildDecoderBase):
 
         assert self.dim_z % self.hidden_size == 0  # This requirement might be removed in future versions (mem MLP?)
         self.n_memory_tokens = self.dim_z // self.hidden_size
-
-        # TODO maybe use an MLP to get a few more memory tokens? Currently z is directly used as single-token memory
-        # self.input_memory_linear = nn.Linear(self.dim_z, self.hidden_size)  # TODO and maybe gated
+        # Maybe use an MLP to get a few more memory tokens? Otherwise z is directly used as single-token memory
+        if self.arch_args['memmlp']:
+            self.input_memory_mlp = nn.Sequential(
+                nn.Linear(self.dim_z, self.dim_z),
+                nn.ELU(),
+                nn.Linear(self.dim_z, self.dim_z)
+            )
+        else:
+            self.input_memory_mlp = None
 
         # Transformer decoder
         # TODO maybe inherit TransformerDecoderLayer and override dropout3 (the last one, may impair regression)
@@ -434,6 +443,11 @@ class TransformerDecoder(ChildDecoderBase):
         #     - ICCV21 "3D human motion transformer VAE" seems to use the raw latent vector as a single memory token
         #          https://github.com/Mathux/ACTOR
         memory_in = z_flat.view(N, self.n_memory_tokens, self.hidden_size)
+        # If requested, this MLP will double the number of memory tokens (we'll always use the raw latent token(s))
+        if self.input_memory_mlp is not None:
+            extra_mem_tokens = self.input_memory_mlp(z_flat)  # dim_z output neurons
+            extra_mem_tokens = extra_mem_tokens.view(N, self.n_memory_tokens, self.hidden_size)
+            memory_in = torch.cat((memory_in, extra_mem_tokens), dim=1)
 
         ar_forward_mask = self.subsequent_mask.to(device)
         # Different training and eval procedures: parallel training, sequential evaluation

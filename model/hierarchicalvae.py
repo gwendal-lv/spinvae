@@ -355,7 +355,7 @@ if __name__ == "__main__":
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 1
     _model_config.approx_requested_dim_z = 256
-    _model_config.vae_preset_architecture = 'tfm_2l_ff'
+    _model_config.vae_preset_architecture = 'tfm_2l_ff_memmlp'
     _model_config.preset_hidden_size = 128
     _model_config.preset_decoder_numerical_distribution = "logistic_mixt3"
 

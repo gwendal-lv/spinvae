@@ -29,7 +29,7 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "tfm"  # experiment base name
+        self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
         self.run_name = 'tfm_heads8_mem128x2'
         self.pretrained_VAE_checkpoint = \
@@ -78,7 +78,9 @@ class ModelConfig:
         # Preset encoder/decoder architecture
         # TODO description (base + options)
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
-        self.vae_preset_architecture = 'tfm_3l'  # tfm_6l
+        #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
+        #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
+        self.vae_preset_architecture = 'tfm_3l_memlp'  # tfm_6l
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values.
@@ -158,7 +160,7 @@ class TrainConfig:
         self.current_k_fold = 0  # k-folds are not used anymore, but we'll keep the training/validation/test splits
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load the last saved checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
-        self.n_epochs = 200  # See update_dynamic_config_params().
+        self.n_epochs = 170  # See update_dynamic_config_params().
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
