@@ -9,6 +9,7 @@ from torch.nn import functional as F
 
 from data.preset2d import Preset2dHelper
 from model.presetmodel import parse_preset_model_architecture, get_act, PresetEmbedding
+from synth.dexed import Dexed
 from utils.probability import GaussianUnitVariance, DiscretizedLogisticMixture
 
 
@@ -21,14 +22,12 @@ class PresetDecoder(nn.Module):
                  preset_helper: Preset2dHelper,
                  embedding: PresetEmbedding,
                  internal_dropout_p=0.0, cat_dropout_p=0.0,
-                 label_smoothing=0.0, use_cross_entropy_weights=False):
+                 label_smoothing=0.0, use_cross_entropy_weights=False,
+                 params_loss_exclude_useless=True):
         """
         TODO DOC
         """
         super().__init__()
-
-        # TODO add teacher-forcing input arg (and raise warning if non-sequential network)
-
         self.arch = parse_preset_model_architecture(architecture)
         arch_args = self.arch['args']
         self._latent_tensors_shapes = latent_tensors_shapes
@@ -38,6 +37,8 @@ class PresetDecoder(nn.Module):
         self.preset_helper = preset_helper
         self.embedding = embedding
         self.seq_len = self.preset_helper.n_learnable_params
+        # FIXME this should be a property and should depend on auto-encoding presets, or not
+        self.params_loss_exclude_useless = params_loss_exclude_useless
 
         # Warning: PyTorch broadcasting:
         #   - tensor broadcasting for (basic?) tensor operations requires the *trailing* dimensions to be equal
@@ -115,7 +116,9 @@ class PresetDecoder(nn.Module):
             acc = acc.count_nonzero(dim=1) / acc.shape[1]
 
         # TODO set the NLL of "useless params" (useless as in the target preset) to zero
-        #    DOOOOOooooooo
+        # FIXME don't do this when auto-encoding a preset (only during auto synth prog from audio)
+        if self.params_loss_exclude_useless:
+            u_categorical_nll, u_numerical_nll = self._remove_useless_loss(u_target, u_categorical_nll, u_numerical_nll)
 
         # sum NLLs and divide by total sequence length (num of params) - keep batch dimension (if multi-GPU)
         u_numerical_nll = u_numerical_nll.sum(dim=1) / self.seq_len
@@ -123,6 +126,30 @@ class PresetDecoder(nn.Module):
         return u_out, \
             u_numerical_nll, u_categorical_nll, \
             num_l1_error, acc
+
+    def _remove_useless_loss(self, u_target, u_categorical_nll, u_numerical_nll):
+        """ If a DX7 operator has a null volume, the loss corresponding to parameters of this operator is set to zero.
+        This aims at reducing the amount of noise that is back-propagated into the network.
+        """
+        if self.preset_helper.synth_name.lower() == "dexed":
+            with torch.no_grad():
+                # get index of volume parameters
+                vst_output_level_indices = Dexed.get_op_output_level_indices()
+                # retrieve the matrix of numerical values, get a bool matrix of zero-volume operators
+                target_output_level_rows = [self.preset_helper._vst_idx_to_matrix_row[idx]
+                                            for idx in vst_output_level_indices]
+                target_output_levels = u_target[:, target_output_level_rows, 1].detach().cpu()  # Faster on CPU?
+                is_zero_volume_op = torch.isclose(target_output_levels, torch.zeros_like(target_output_levels))
+                # only check items (batch elements) which have at least 1 null volume
+                zero_volume_batch_indices = torch.nonzero(torch.any(is_zero_volume_op, dim=1)).squeeze(dim=1)
+            for batch_i in zero_volume_batch_indices:
+                zero_volume_ops = torch.nonzero(is_zero_volume_op[batch_i]).squeeze(dim=1)
+                for op_i in zero_volume_ops:  # Apply mask pre-computed by the preset helper instance
+                    u_categorical_nll[batch_i, self.preset_helper.dexed_operators_categorical_bool_masks[op_i]] = 0.0
+                    u_numerical_nll[batch_i, self.preset_helper.dexed_operators_numerical_bool_masks[op_i]] = 0.0
+        else:
+            raise NotImplementedError("'Useless params' can be identified for Dexed presets only.")
+        return u_categorical_nll, u_numerical_nll
 
     def get_summary(self, device='cpu'):
         device = torch.device(device)
@@ -144,6 +171,7 @@ class PresetDecoder(nn.Module):
             )
         self.train(mode=was_training)
         return summary
+
 
 
 class ChildDecoderBase(nn.Module):

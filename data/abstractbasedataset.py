@@ -110,7 +110,7 @@ class AudioDataset(torch.utils.data.Dataset, ABC):
 
     @property
     @abstractmethod
-    def synth_name(self):
+    def synth_name(self) -> str:
         pass
 
     def __str__(self):

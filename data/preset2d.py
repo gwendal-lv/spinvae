@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from synth.dexed import Dexed
 from .abstractbasedataset import PresetDataset
 
 
@@ -32,6 +33,7 @@ class Preset2dHelper:
         The class also provides masks to perform conversions quicker, to separate num/cat tensor in hidden
         sequence tensors, ...
         """
+        self.synth_name = ds.synth_name
         self.torch_dtype = torch.float
         self._vst_param_learnable_model = ds.vst_param_learnable_model
         self._vst_idx_to_matrix_row = list()
@@ -135,6 +137,32 @@ class Preset2dHelper:
             else:
                 assert self.param_type_to_cardinality[type_class] == card
 
+        # Dexed synth-specific: bool masks to retrieve numerical/categorical rows that correspond to each operator
+        if self.synth_name.lower() == "dexed":
+            self.dexed_operators_categorical_bool_masks = \
+                [torch.zeros((self.n_learnable_categorical_params, ), dtype=torch.bool) for _ in range(6)]
+            self.dexed_operators_numerical_bool_masks = \
+                [torch.zeros((self.n_learnable_numerical_params, ), dtype=torch.bool) for _ in range(6)]
+            operators_vst_indices_groups = Dexed.get_operators_params_indexes_groups()
+            operators_matrix_rows_groups = \
+                [self._vst_idx_to_matrix_row[vst_range.start:vst_range.stop]
+                 for vst_range in operators_vst_indices_groups]
+            # Sub-optimal: for each idx of each group, search if it is numerical or categorical
+            #   and find its "local row" inside the numerical or categorical split matrix
+            for op_i, matrix_rows_group in enumerate(operators_matrix_rows_groups):
+                for matrix_row in matrix_rows_group:
+                    try:
+                        row = self.matrix_numerical_rows.index(matrix_row)
+                        self.dexed_operators_numerical_bool_masks[op_i][row] = True
+                    except ValueError:
+                        pass
+                    try:
+                        row = self.matrix_categorical_rows.index(matrix_row)
+                        self.dexed_operators_categorical_bool_masks[op_i][row] = True
+                    except ValueError:
+                        pass
+        else:
+            self.dexed_operators_categorical_bool_masks, self.dexed_operators_numerical_bool_masks = None, None
 
     @property
     def n_learnable_params(self):
@@ -160,8 +188,6 @@ class Preset2dHelper:
         """ Returns a clone of the pre-filled matrix (learnable preset). """
         return self._pre_filled_matrix.clone()
 
-    # TODO split any tensor into a dict of sub-tensors which have the same cardinality
-
     def get_null_learnable_preset(self, batch_size: Optional[int] = None):
         """
         Returns a null learnable preset (useful to build an output, to retrieve sizes, for debugging, ...).
@@ -180,6 +206,8 @@ class Preset2dHelper:
     @property
     def matrix_categorical_params_names(self):
         return self.vst_params_names[self.vst_categorical_bool_mask]
+
+    #@property
 
     @property
     def pd_df_learnable_preset_debug(self):

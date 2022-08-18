@@ -25,7 +25,8 @@ class LadderDecoder(LadderBase):
                  preset_helper: Optional[Preset2dHelper] = None,
                  preset_embedding: Optional[PresetEmbedding] = None,
                  preset_internal_dropout_p=0.0, preset_cat_dropout_p=0.0,
-                 preset_label_smoothing=0.0, preset_use_cross_entropy_weights=False):
+                 preset_label_smoothing=0.0, preset_use_cross_entropy_weights=False,
+                 preset_params_loss_exclude_useless=False):
         # TODO doc
         super().__init__(conv_arch, latent_arch)
         self.n_latent_levels = len(latent_tensors_shapes)
@@ -190,7 +191,8 @@ class LadderDecoder(LadderBase):
                 preset_helper,
                 preset_embedding,
                 internal_dropout_p=preset_internal_dropout_p, cat_dropout_p=preset_cat_dropout_p,
-                label_smoothing=preset_label_smoothing, use_cross_entropy_weights=preset_use_cross_entropy_weights
+                label_smoothing=preset_label_smoothing, use_cross_entropy_weights=preset_use_cross_entropy_weights,
+                params_loss_exclude_useless=preset_params_loss_exclude_useless
             )
         else:
             self.preset_decoder: Optional[PresetDecoder] = None

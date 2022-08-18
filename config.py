@@ -29,9 +29,9 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "dev"  # experiment base name
+        self.name = "tfm"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'tfm_heads8_mem128x2'
+        self.run_name = 'heads4_memmlp_ff_zeroUselessLoss'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
@@ -80,7 +80,7 @@ class ModelConfig:
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
         #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
         #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
-        self.vae_preset_architecture = 'tfm_3l_memlp'  # tfm_6l
+        self.vae_preset_architecture = 'tfm_6l_memmlp_ff'  # tfm_6l
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values.
@@ -206,7 +206,7 @@ class TrainConfig:
         # - General options
         self.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
         self.params_loss_compensation_factor = 0.5  # FIXME because MSE loss of the VAE is much lower (approx. 1e-2)
-        self.params_loss_exclude_useless = True  # FIXME REUSE if True, sets to the 0.0 the loss related to 0-volume oscillators
+        self.params_loss_exclude_useless = True  # if True, sets to 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
         self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
