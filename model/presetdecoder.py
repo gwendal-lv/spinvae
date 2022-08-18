@@ -114,6 +114,9 @@ class PresetDecoder(nn.Module):
             acc = torch.eq(u_target[:, self.seq_categorical_items_bool_mask, 0].long(), u_categorical_samples)
             acc = acc.count_nonzero(dim=1) / acc.shape[1]
 
+        # TODO set the NLL of "useless params" (useless as in the target preset) to zero
+        #    DOOOOOooooooo
+
         # sum NLLs and divide by total sequence length (num of params) - keep batch dimension (if multi-GPU)
         u_numerical_nll = u_numerical_nll.sum(dim=1) / self.seq_len
         u_categorical_nll = u_categorical_nll.sum(dim=1) / self.seq_len
@@ -135,8 +138,8 @@ class PresetDecoder(nn.Module):
         with torch.no_grad():
             summary = torchinfo.summary(
                 self, input_data=(input_z, input_u), mode=summary_mode,
-                depth=5, verbose=0, device=device,
-                col_names=("input_size", "kernel_size", "output_size", "num_params", "mult_adds"),
+                depth=6, verbose=0, device=device,
+                col_names=("input_size", "output_size", "num_params", "mult_adds"),
                 row_settings=("depth", "var_names")
             )
         self.train(mode=was_training)
@@ -426,10 +429,16 @@ class TransformerDecoder(ChildDecoderBase):
             self.input_memory_mlp = None
 
         # Transformer decoder
-        # TODO maybe inherit TransformerDecoderLayer and override dropout3 (the last one, may impair regression)
+        if self.arch_args['elu'] or self.arch_args['swish']:
+            raise ValueError("Only 'relu' and 'gelu' activations can be used inside a PyTorch Transformer model.")
+        elif self.arch_args['gelu']:
+            tfm_act = 'gelu'
+        else:
+            tfm_act = 'relu'
+        # Final (3rd) dropout could impair regression, but this does not seem to happen in practice
         tfm_layer = nn.TransformerDecoderLayer(
             self.hidden_size, n_head,  # each head's embed dim will be: self.hidden_size // num_heads
-            dim_feedforward=self.hidden_size * 2, batch_first=True, dropout=self._dropout_p,
+            dim_feedforward=self.hidden_size * 4, batch_first=True, dropout=self._dropout_p, activation=tfm_act,
         )
         self.tfm = nn.TransformerDecoder(tfm_layer, self.n_layers)  # opt norm: between blocks? (default: None)
         self.subsequent_mask = nn.Transformer.generate_square_subsequent_mask(self.seq_len)
