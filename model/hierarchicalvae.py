@@ -364,6 +364,7 @@ if __name__ == "__main__":
     _train_config.minibatch_size = 16
     _train_config.preset_cat_dropout = 0.12
     _train_config.preset_CE_label_smoothing = 0.13
+    _train_config.preset_internal_dropout = 0.05
     _train_config.preset_sched_sampling_max_p = 0.0
 
     config.update_dynamic_config_params(_model_config, _train_config)

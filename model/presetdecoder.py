@@ -78,11 +78,11 @@ class PresetDecoder(nn.Module):
         if self.arch['name'] == 'mlp':
             # Feed-forward decoder
             # MLP is mostly used as a baseline/debugging model - so it uses its own quite big 2048 hidden dim
-            self.child_decoder = MlpDecoder(self, mlp_hidden_features=2048)
+            self.child_decoder = MlpDecoder(self, mlp_hidden_features=2048, dropout_p=internal_dropout_p)
         elif self.arch['name'] in ['lstm', 'gru']:
-            self.child_decoder = RnnDecoder(self, cell_type=self.arch['name'])
+            self.child_decoder = RnnDecoder(self, cell_type=self.arch['name'])  # TODO dropout ctor arg
         elif self.arch['name'] == 'tfm':  # Transformer
-            self.child_decoder = TransformerDecoder(self)  # TODO args: n_head, ...
+            self.child_decoder = TransformerDecoder(self, dropout_p=internal_dropout_p)  # TODO args: n_head, ...
         else:
             self.child_decoder: Optional[ChildDecoderBase] = None
             raise NotImplementedError("Preset architecture {} not implemented".format(self.arch['name']))
@@ -430,17 +430,15 @@ class RnnDecoder(ChildDecoderBase):
 
 
 class TransformerDecoder(ChildDecoderBase):
-    def __init__(self, parent_dec: PresetDecoder, n_head=4):
+    def __init__(self, parent_dec: PresetDecoder, n_head=4, dropout_p=0.0):
         """
         TODO doc
-
-        # TODO ctor args: different ways to build memory embeddings from latent space
 
         TODO AR ctor arg (AR_forward, AR_backward.. BIDIR Transformer?)
                 Bidirectional: won't actually be AR (we'll have different forward/backward predictions,
                 which would to be "merged" somehow - ensembling approach?)
         """
-        super().__init__(parent_dec)
+        super().__init__(parent_dec, dropout_p)
         self.n_head = n_head
         self.autoregressive = not self.arch_args['ff']
 

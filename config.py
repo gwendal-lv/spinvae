@@ -206,7 +206,7 @@ class TrainConfig:
         # - General options
         self.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
         self.params_loss_compensation_factor = 0.5  # FIXME because MSE loss of the VAE is much lower (approx. 1e-2)
-        self.params_loss_exclude_useless = True  # if True, sets to 0.0 the loss related to 0-volume oscillators
+        self.params_loss_exclude_useless = False  # if True, sets to 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
         self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
