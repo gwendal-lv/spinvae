@@ -137,12 +137,14 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
         'VAELoss/Backprop/Train': EpochMetric(), 'VAELoss/Backprop/Valid': EpochMetric(),
         # Presets (synth controls) losses used for backprop
         #        + monitoring metrics (numerical L1 loss, categorical accuracy)
+        # Preset/... correspond to Automatic Synthesizer Programming metrics (preset inferred from audio)
         'Preset/NLL/Total/Train': EpochMetric(), 'Preset/NLL/Total/Valid': EpochMetric(),
         'Preset/NLL/Numerical/Train': EpochMetric(), 'Preset/NLL/Numerical/Valid': EpochMetric(),
         'Preset/NLL/CatCE/Train': EpochMetric(), 'Preset/NLL/CatCE/Valid': EpochMetric(),
         #'Controls/RegulLoss/Train': EpochMetric(), 'Controls/RegulLoss/Valid': EpochMetric(),
         'Preset/L1error/Train': EpochMetric(), 'Preset/L1error/Valid': EpochMetric(),  # FIXME rename QError
         'Preset/Accuracy/Train': EpochMetric(), 'Preset/Accuracy/Valid': EpochMetric(),
+        # TODO PresetAE/... correspond to Preset Auto-Encoding metrics
         # 'Dynamic' scheduling hyper-params
         'Sched/LRwarmup': LinearDynamicParam(
             train_config.lr_warmup_start_factor, 1.0,

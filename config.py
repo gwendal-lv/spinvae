@@ -29,9 +29,9 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "tfm"  # experiment base name
+        self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'heads4_memmlp_ff_zeroUselessLoss'
+        self.run_name = 'preset_AE_00'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
@@ -57,7 +57,7 @@ class ModelConfig:
         #    '_depsep5x5' uses 5x5 depth-separable convolutional layers in each res block (requires at least 8x2)
         #    '_ln' uses LayerNorm instead of BatchNorm, '_wn' uses Weight Normalization attached to conv weights
         #    '_swish' uses Swish activations (SiLU) instead of LeakyReLU (negligible overhead)
-        self.vae_main_conv_architecture = 'specladder8x1_res_swish'
+        self.vae_main_conv_architecture = 'specladder8x1_res_swish'  # should be named "audio" architecture...
         # Network plugged after sequential conv blocks (encoder) or before sequential conv blocks (decoder)
         # E.g.: 'conv_1l_1x1' means regular convolution, 1 layer, 1x1 conv kernels
         #       'lstm_2l_3x3' mean ConvLSTM, 2 layers, 3x3 conv kernels
@@ -70,7 +70,7 @@ class ModelConfig:
         #   2 latent levels allows dim_z close to 100
         #   3 latent levels allows dim_z close to 350
         #   4 latent levels allows dim_z close to 1500
-        self.vae_latent_levels = 1
+        self.vae_latent_levels = 1  # Currently useless, must remain 1
         # Sets the family of decoder output probability distribution p_theta(x|z), e.g. :
         #    - 'gaussian_unitvariance' corresponds to the usual MSE reconstruction loss (up to a constant and factor)
         self.audio_decoder_distribution = 'gaussian_unitvariance'
@@ -80,7 +80,10 @@ class ModelConfig:
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
         #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
         #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
-        self.vae_preset_architecture = 'tfm_6l_memmlp_ff'  # tfm_6l
+        self.vae_preset_architecture = 'mlp_5l'  # tfm_6l_memmlp_ff
+        # "before_latent_cell" (encoded preset will be the same size as encoded audio, both will be added)
+        # or "after_latent_cell"" (encoded preset size will be 2*dim_z, and will be added to z_mu and z_sigma)
+        self.vae_preset_encode_add = "after_latent_cell"
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values.
@@ -209,7 +212,7 @@ class TrainConfig:
         self.params_loss_exclude_useless = False  # if True, sets to 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
-        self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
+        self.preset_CE_label_smoothing = 0.1  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
         self.preset_CE_use_weights = False
         self.preset_sched_sampling_max_p = 0.8  # FIXME 0.8??? Probability to use the model's outputs during training (AR decoder)
         # self.preset_sched_sampling_start_epoch = 40  # TODO IMPLEMENT Required for the embeddings to train properly?

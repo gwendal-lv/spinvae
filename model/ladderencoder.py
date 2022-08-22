@@ -20,7 +20,9 @@ class LadderEncoder(LadderBase):
                  approx_dim_z: int,
                  preset_architecture: Optional[str] = None,
                  preset_hidden_size: Optional[int] = None,
-                 preset_helper: Optional[Preset2dHelper] = None):
+                 preset_encode_add: Optional[str] = None,
+                 preset_helper: Optional[Preset2dHelper] = None,
+                 preset_dropout_p=0.0):
         """
         Contains cell which define the hierarchy levels (the output of each cell is used to extract latent values)
             Each cell is made of blocks (skip connection may be added/concat/other at the end of block)
@@ -36,6 +38,7 @@ class LadderEncoder(LadderBase):
         self._input_tensor_size = input_tensor_size
         self._single_ch_input_size = (1, 1, input_tensor_size[2], input_tensor_size[3])
         self._audio_seq_len = input_tensor_size[1]
+        self.preset_encode_add = preset_encode_add
 
         # - - - - - 1) Build the single-channel CNN (applied to each input audio channel) - - - - -
         conv_args = self.single_ch_conv_arch['args']
@@ -116,8 +119,8 @@ class LadderEncoder(LadderBase):
             else:
                 raise NotImplementedError("Can't build latent cells: conv kernel arg ('_k1x1' or '_k3x3') not provided")
             for i, cell_output_shape in enumerate(self.cells_output_shapes):
-                n_latent_ch = n_latent_ch_per_level[i] * 2  # Output mu and sigma2
-                # FIXME preset encoding has to be considered
+                n_latent_ch = n_latent_ch_per_level[i] * 2  # Output mu and sigma
+                # preset encodings can be added to those cells' inputs
                 cell_args = (
                     cell_output_shape[1], cell_output_shape[2:], self._audio_seq_len,
                     n_latent_ch, self.latent_arch['n_layers'], kernel_size, padding, self.latent_arch['args']
@@ -132,9 +135,21 @@ class LadderEncoder(LadderBase):
         # 3) Preset encoder (no hierarchical levels) - in its own Python module
         if preset_helper is not None:
             assert preset_architecture is not None and preset_hidden_size is not None
-            # TODO EXPECTED OUTPUT SHAPE CTOR ARG
+            assert len(self.latent_cells) == len(self.cells_output_shapes) == 1  # Single latent level is required
+            encoded_preset_fm_shape = list(self.cells_output_shapes[0][1:])  # 2d feature maps
+            dim_z = self.cells_output_shapes[0][2] * self.cells_output_shapes[0][3] * n_latent_ch_per_level[0]
+            if preset_encode_add.lower() == "before_latent_cell":
+                self.u_hidden_add_before_latent_cell = True
+                encoded_preset_fm_shape[0] *= self._audio_seq_len
+            elif preset_encode_add.lower() == "after_latent_cell":
+                self.u_hidden_add_before_latent_cell = False
+                encoded_preset_fm_shape[0] = n_latent_ch_per_level[0] * 2  # mu and sigma (or var)
+            else:
+                raise ValueError("model_config.vae_preset_encode_add must be either 'before_latent_cell' or "
+                                 "'after_latent_cell' (current: '{}')".format(preset_encode_add))
             self.preset_encoder = model.presetencoder.PresetEncoder(
-                preset_architecture, preset_hidden_size, preset_helper
+                preset_architecture, preset_hidden_size, preset_helper,
+                dim_z, encoded_preset_fm_shape, preset_dropout_p
             )
         else:
             self.preset_encoder = None
@@ -182,34 +197,54 @@ class LadderEncoder(LadderBase):
         elif group_name == 'latent':
             return self.latent_cells
         elif group_name == 'preset':
-            return None  # FIXME
+            return self.preset_encoder
         else:
             raise ValueError("Unavailable group_name '{}'".format(group_name))
 
     def forward(self, x, u=None, midi_notes=None):
         """ Returns (z_mu, z_var): lists of length latent_levels """
+        # TODO this method should be able to use x alone, or u alone, or both (add input args???)
+
         # 1) Apply single-channel CNN to all input channels
-        latent_cells_audio_input_tensors = [[] for _ in self.latent_cells]  # 1st dim: latent level ; 2nd dim: input ch
+        # TODO maybe don't even use the CNN and set the latent cell inputs to zero (check that grad is OK)
+        latent_cells_input_tensors = [[] for _ in self.latent_cells]  # 1st dim: latent level ; 2nd dim: input ch
         for ch in range(self._input_tensor_size[1]):  # Apply all cells to a channel
             cell_x = torch.unsqueeze(x[:, ch, :, :], dim=1)
             for latent_level, cell in enumerate(self.single_ch_cells):
                 cell_x = cell(cell_x)
-                latent_cells_audio_input_tensors[latent_level].append(cell_x)
-        # Latent levels are currently independent (no top-down conditional posterior or prior)
+                latent_cells_input_tensors[latent_level].append(cell_x)
         # We just stack inputs from all input channels to create the sequence dimension
-        latent_cells_audio_input_tensors = [torch.stack(t, dim=1) for t in latent_cells_audio_input_tensors]
-        # TODO 2) Optional: Compute hidden representation of the preset
+        latent_cells_input_tensors = [torch.stack(t, dim=1) for t in latent_cells_input_tensors]
+
+        # 2) Optional: Compute hidden representation of the preset
+        u_hidden = [0.0]
         if self.preset_encoder is not None:  # TODO or if auto synth prog mode
-            dummy_u_hidden = self.preset_encoder(u)
+            assert len(self.latent_cells) == 1  # Single latent level is required
             # TODO  Don't always compute it... if using null representations (preset not used), this
-            #   corresponds to an automatic synthesizer programming model
+            #   corresponds to an automatic synthesizer programming model.
+            #   If don't.... just set to zero?
+            u_hidden = self.preset_encoder(u)
+
+            # maybe add preset "hidden residuals" before
+            if self.u_hidden_add_before_latent_cell:
+                u_hidden = u_hidden.view(u_hidden.shape[0], self._audio_seq_len, *self.cells_output_shapes[0][1:])
+                latent_cells_input_tensors[0] += u_hidden
+            else:
+                u_hidden = [u_hidden]  # To be easily added to z_out
+
         # 3) Compute latent vectors: tuple (mean and variance) of lists (one tensor per latent level)
+        # Latent levels are currently independent (no top-down conditional posterior or prior)
         z_mu, z_var = list(), list()
         for latent_level, latent_cell in enumerate(self.latent_cells):
-            z_out = latent_cell(latent_cells_audio_input_tensors[latent_level], u, midi_notes)  # FIXME not u
+            z_out = latent_cell(latent_cells_input_tensors[latent_level], midi_notes=midi_notes)
+            # Maybe add preset "latent residuals" after
+            if self.preset_encoder is not None and not self.u_hidden_add_before_latent_cell:
+                z_out += u_hidden[latent_level]
+            # Split into mu and variance
             n_ch = z_out.shape[1]
             z_mu.append(z_out[:, 0:n_ch//2, :, :])
             z_var.append(F.softplus(z_out[:, n_ch//2:, :, :]))
+
         return z_mu, z_var
 
     @property
@@ -234,7 +269,7 @@ class LadderEncoder(LadderBase):
         for i, latent_cell in enumerate(self.latent_cells):
             latent_cell_input_shape = list(self.cells_output_shapes[i])
             latent_cell_input_shape.insert(1, self._audio_seq_len)
-            input_data = {'x_audio': torch.zeros(latent_cell_input_shape),  # FIXME 'u_preset': None,
+            input_data = {'x_audio': torch.zeros(latent_cell_input_shape),
                           'midi_notes': torch.zeros((latent_cell_input_shape[0], self._audio_seq_len, 2))}
             with torch.no_grad():
                 summaries['latent_cell_{}'.format(i)] = torchinfo.summary(
@@ -306,7 +341,7 @@ class ConvLatentCell(nn.Module):
         :return:
         """
         if u_preset is not None:
-            warnings.warn("Preset encoding not implemented in conv latent cells.")
+            warnings.warn("Preset encoding not implemented in conv latent cells - preset input ignored")
         x_audio = torch.flatten(x_audio, start_dim=1, end_dim=2)  # merge sequence and channels dimensions
         return self.conv(x_audio)
 
@@ -342,7 +377,7 @@ class ConvLSTMLatentCell(nn.Module):
     def forward(self, x_audio: torch.tensor,
                 u_preset: Optional[torch.Tensor] = None, midi_notes: Optional[torch.Tensor] = None):
         if u_preset is not None:  # FIXME also use preset feature maps (first hidden features?)
-            warnings.warn("Encoder latent cells do not supports preset yet")
+            warnings.warn("Encoder latent cells do not supports preset yet - preset input ignored")
         # Learned residual positional encoding (per-pixel bias on the full feature maps)
         if midi_notes is not None and self.note_encoder is not None:
             for seq_idx in range(midi_notes.shape[1]):

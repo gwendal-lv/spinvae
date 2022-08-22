@@ -112,10 +112,14 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # Build encoder and decoder
         self._preset_helper = preset_helper
         if train_config.pretrain_audio_only:
-            encoder_opt_args, dummy_u = (None, ) * 3, None
+            encoder_opt_args, dummy_u = (None, ) * 5, None
         else:
             assert preset_helper is not None
-            encoder_opt_args = (model_config.vae_preset_architecture, model_config.preset_hidden_size, preset_helper)
+            encoder_opt_args = (model_config.vae_preset_architecture,
+                                model_config.preset_hidden_size,
+                                model_config.vae_preset_encode_add,
+                                preset_helper,
+                                train_config.preset_internal_dropout)
             dummy_u = preset_helper.get_null_learnable_preset(train_config.minibatch_size)
         self.encoder = model.ladderencoder.LadderEncoder(
             self.main_conv_arch, self.latent_arch, model_config.vae_latent_levels, model_config.input_audio_tensor_size,
@@ -178,10 +182,24 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         if u_target is not None and self.pre_training_audio:
             u_target = None  # We force a None value even if a dummy preset was given at input
 
-        # 1) Encode
-        z_mu, z_var = self.encoder(x_target, u_target, midi_notes)  # TODO encode
+        # TODO handle all cases: auto synth prog, preset auto-encoding, ...
+        #TODO 2 passes (the second might be useless)
 
-        # 2) Latent values
+        # Encode, sample, decode
+        z_mu, z_var = self.encoder(x_target, u_target, midi_notes)
+        z_sampled = self.sample_z(z_mu, z_var)
+        x_decoded_proba, x_sampled, preset_decoder_out = self.decoder(z_sampled, u_target)
+
+        # Outputs: return all available values using Tensor only, for this method to remain usable
+        # with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
+        # This tuple output can be parsed later into a proper HierarchicalVAEOutputs instance.
+        out_list = list()
+        for lat_lvl in range(len(z_mu)):
+            out_list += [z_mu[lat_lvl], z_var[lat_lvl], z_sampled[lat_lvl]]
+        out_list += [x_decoded_proba, x_sampled]
+        return tuple(out_list) + preset_decoder_out
+
+    def sample_z(self, z_mu, z_var):
         # For each latent level, sample z_l from q_phi(z_l|x) using reparametrization trick (no conditional posterior)
         z_sampled = list()
         for lat_lvl in range(len(z_mu)):
@@ -191,18 +209,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                 z_sampled.append(z_mu[lat_lvl] + torch.sqrt(z_var[lat_lvl]) * eps)
             else:  # eval mode: no random sampling
                 z_sampled.append(z_mu[lat_lvl])
-
-        # 3) Decode
-        x_decoded_proba, x_sampled, preset_decoder_out = self.decoder(z_sampled, u_target)
-
-        # 4) return all available values using Tensor only, for this method to remain usable
-        # with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
-        # This tuple output can be parsed later into a proper HierarchicalVAEOutputs instance.
-        out_list = list()
-        for lat_lvl in range(len(z_mu)):
-            out_list += [z_mu[lat_lvl], z_var[lat_lvl], z_sampled[lat_lvl]]
-        out_list += [x_decoded_proba, x_sampled]
-        return tuple(out_list) + preset_decoder_out
+        return z_sampled
 
     def parse_outputs(self, forward_outputs):
         """ Parses tuple output from a self.forward(...) call into a HierarchicalVAEOutputs instance. """
@@ -356,9 +363,10 @@ if __name__ == "__main__":
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 1
     _model_config.approx_requested_dim_z = 256
-    _model_config.vae_preset_architecture = 'tfm_2l_ff_memmlp_relu'
-    _model_config.preset_hidden_size = 128
+    _model_config.vae_preset_architecture = 'mlp_5l_bn'  # 'tfm_2l_ff_memmlp_relu'
+    _model_config.preset_hidden_size = 256
     _model_config.preset_decoder_numerical_distribution = "logistic_mixt3"
+    _model_config.vae_preset_encode_add = "before_latent_cell"
 
     _train_config.pretrain_audio_only = False
     _train_config.minibatch_size = 16
