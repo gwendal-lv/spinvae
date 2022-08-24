@@ -179,6 +179,10 @@ class TrainableMultiGroupModel(nn.Module):
     def pre_training_audio(self):
         return self._train_config.pretrain_audio_only
 
+    @property
+    def params_loss_compensation_factor(self):
+        return self._train_config.params_loss_compensation_factor
+
     @abstractmethod
     def get_custom_group_module(self, group_name: str) -> nn.Module:
         pass

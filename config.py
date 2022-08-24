@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'preset_AE_00'
+        self.run_name = 'minibatch_proc_refactor_00'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
@@ -80,7 +80,7 @@ class ModelConfig:
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
         #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
         #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
-        self.vae_preset_architecture = 'mlp_5l'  # tfm_6l_memmlp_ff
+        self.vae_preset_architecture = 'tfm_3l_ff_memmlp'  # tfm_6l_memmlp_ff
         # "before_latent_cell" (encoded preset will be the same size as encoded audio, both will be added)
         # or "after_latent_cell"" (encoded preset size will be 2*dim_z, and will be added to z_mu and z_sigma)
         self.vae_preset_encode_add = "after_latent_cell"
@@ -89,6 +89,15 @@ class ModelConfig:
         # Distribution for modeling (discrete-)numerical synth param values.
         # (categorical variables always use a softmaxed categorical distribution)
         self.preset_decoder_numerical_distribution = 'logistic_mixt3'
+        # Describes how (if) the presets should be auto-encoded:
+        #    - "none": presets are retrieved from audio but are not encoded, presets are not provided at encoder input.
+        #              Corresponds to an ASP (Automatic Synthesizer Programming) situation.
+        #    - TODO "combined_VAE": preset is encoded with audio, their hidden representations are then summed or mixed
+        #           together (TODO single-phase? or not?)
+        #    - TODO "ASP+VAE": hybrid method/training: TODO DOC
+        #    - TODO "independent_VAE": the preset VAE and audio VAE are trained as independent models, but a loss
+        #           (e.g. contrastive, Dkl, ... TODO TBD) is computed using the two latent representations
+        self.preset_ae_method = "combined_VAE"
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector

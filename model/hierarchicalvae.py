@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict, Union, Any
 
 import warnings
 
@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torchinfo
 from torch import nn
+import torch.nn.functional as F
 from torch.distributions.normal import Normal
 
 import config
@@ -16,6 +17,7 @@ import model.ladderdecoder
 import utils.probability
 from data.preset2d import Preset2dHelper
 from utils.probability import gaussian_log_probability, standard_gaussian_log_probability, MMD
+import utils.exception
 
 
 def parse_latent_extract_architecture(full_architecture: str):
@@ -190,6 +192,11 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         z_sampled = self.sample_z(z_mu, z_var)
         x_decoded_proba, x_sampled, preset_decoder_out = self.decoder(z_sampled, u_target)
 
+        # TODO "ASP+VAE" and "independent_VAEs":
+        #   - average losses, metrics, ... "ASP+VAE" only
+        #   - 2 steps
+        #   - compute regularization
+
         # Outputs: return all available values using Tensor only, for this method to remain usable
         # with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
         # This tuple output can be parsed later into a proper HierarchicalVAEOutputs instance.
@@ -337,6 +344,63 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         return summary
 
 
+def process_minibatch(
+        ae_model: HierarchicalVAE, ae_model_parallel: nn.DataParallel, main_device,
+        x_in, v_in, uid, notes, label,
+        epoch: int, scalars: Dict[str, Any], super_metrics: Dict[str, Any]
+):
+    training = ae_model.training
+    suffix = "/Train" if training else "/Valid"
+
+    if training:
+        ae_model.optimizers_zero_grad()
+
+    ae_out = ae_model_parallel(x_in, v_in, uid, notes)
+    ae_out = ae_model.parse_outputs(ae_out)
+    super_metrics['LatentMetric' + suffix].append_hierarchical_latent(ae_out, label)
+    # Losses (computed on 1 GPU using the non-parallel original model instance)
+    audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
+    scalars['Audio/LogProbLoss' + suffix].append(audio_log_prob_loss)
+    lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
+    scalars['Latent/Loss' + suffix].append(lat_loss)
+    scalars['Latent/BackpropLoss' + suffix].append(lat_backprop_loss)  # Includes beta
+    if training:
+        extra_lat_reg_loss = 0.0  # Can be used for extra regularisation, contrastive loss...
+        extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
+    else:
+        extra_lat_reg_loss = 0.0
+    if not ae_model.pre_training_audio:
+        u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
+        preset_loss = u_categorical_nll + u_numerical_nll
+        scalars['Preset/NLL/Total' + suffix].append(preset_loss)
+        preset_loss *= ae_model.params_loss_compensation_factor
+        scalars['Preset/NLL/Numerical' + suffix].append(u_numerical_nll)
+        scalars['Preset/NLL/CatCE' + suffix].append(u_categorical_nll)
+    else:
+        preset_loss = torch.zeros((1,), device=main_device)
+    # FIXME training or not
+    preset_reg_loss = torch.zeros((1,), device=main_device)  # No regularization yet....
+
+    with torch.no_grad():  # Monitoring-only losses
+        scalars['Audio/MSE' + suffix].append(F.mse_loss(ae_out.x_sampled, x_in))
+        scalars['Latent/MMD' + suffix].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
+        if not ae_model.pre_training_audio:
+            scalars['Preset/Accuracy' + suffix].append(ae_out.u_accuracy.mean())
+            scalars['Preset/L1error' + suffix].append(ae_out.u_l1_error.mean())
+        scalars['VAELoss/Total' + suffix].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
+        scalars['VAELoss/Backprop' + suffix].append(audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss)
+
+    if training:
+        utils.exception.check_nan_values(
+            epoch, audio_log_prob_loss, lat_backprop_loss, extra_lat_reg_loss, preset_loss, preset_reg_loss)
+        # Backprop and optimizers' step (before schedulers' step)
+        (audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss + preset_loss + preset_reg_loss).backward()
+        ae_model.optimizers_step()
+
+    return ae_out
+
+
+# FIXME move to a different .py file?
 class AudioDecoder:
     def __init__(self, hierachical_vae: HierarchicalVAE):
         """ A simple wrapper class for a HierarchicalVAE instance to be used by an
@@ -363,7 +427,7 @@ if __name__ == "__main__":
     _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
     _model_config.vae_latent_levels = 1
     _model_config.approx_requested_dim_z = 256
-    _model_config.vae_preset_architecture = 'mlp_5l_bn'  # 'tfm_2l_ff_memmlp_relu'
+    _model_config.vae_preset_architecture = 'tfm_2l_memmlp'  # 'tfm_2l_ff_memmlp_relu'
     _model_config.preset_hidden_size = 256
     _model_config.preset_decoder_numerical_distribution = "logistic_mixt3"
     _model_config.vae_preset_encode_add = "before_latent_cell"
@@ -391,7 +455,7 @@ if __name__ == "__main__":
     # hVAE.eval()  # FIXME remove
     vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size), _dummy_preset)
     vae_out = hVAE.parse_outputs(vae_out)
-    lat_loss, lat_backprop_loss = hVAE.latent_loss(vae_out, 1.0)
+    _lat_loss, _lat_backprop_loss = hVAE.latent_loss(vae_out, 1.0)
 
     print(hVAE.encoder.get_single_ch_conv_summary())
     print(hVAE.encoder.get_latent_cells_summaries())

@@ -44,6 +44,15 @@ def get_act(arch_args):
         return nn.LeakyReLU(0.1)
 
 
+def get_transformer_act(arch_args):
+    if arch_args['elu'] or arch_args['swish']:
+        raise ValueError("Only 'relu' and 'gelu' activations can be used inside a PyTorch Transformer model.")
+    elif arch_args['gelu']:
+        return 'gelu'
+    else:
+        return 'relu'
+
+
 class PresetEmbedding(nn.Module):
     def __init__(self, hidden_size: int, preset_helper: Preset2dHelper):
         super().__init__()
@@ -98,14 +107,22 @@ class PresetEmbedding(nn.Module):
         self._matrix_categorical_bool_mask = self.preset_helper.matrix_categorical_bool_mask.clone()
         self._matrix_numerical_bool_mask = self.preset_helper.matrix_numerical_bool_mask.clone()
 
-        # Precompute the largest possible embedding: seq w/ start and end tokens
+        # Precompute the largest "normal sequence" embedding: seq w/ start and end tokens
+        #   FIXME
         self.pos_embed_L_plus_2 = self.get_sin_cos_positional_embedding(seq_len=self.seq_len + 2)
 
         # TODO unit test: assert that all embeddings are different (after random init)
 
+        # Special tokens: use a different embedding (self.categorical_embedding indexing is complicated enough)
+        self.special_token_embedding = nn.Embedding(65, hidden_size, max_norm=None)  # Including start token
+
     @property
     def seq_len(self):
         return self.preset_helper.n_learnable_params
+
+    @property
+    def n_special_tokens(self):
+        return self.special_token_embedding.num_embeddings
 
     @property
     def _n_num_params(self):
@@ -132,12 +149,17 @@ class PresetEmbedding(nn.Module):
             self.categorical_embed_easy_index = self.categorical_embed_easy_index.to(device)
 
     def get_start_token(self, device, batch_dim=False):
-        if batch_dim:  # FIXME start-token -embed (is the LAST)
-            return torch.zeros((1, 1, self.hidden_size), device=device)
+        token = self.special_token_embedding(torch.arange(self.n_special_tokens-1, self.n_special_tokens).to(device))
+        if batch_dim:
+            return torch.unsqueeze(token, dim=0)
         else:
-            return torch.zeros((1, self.hidden_size), device=device)
+            return token
 
-    def forward(self, u_in: torch.Tensor, start_token=False, pos_embed=True):
+    def get_special_tokens(self, device, n_tokens: int):
+        assert n_tokens < (self.n_special_tokens - 1)  # Last token is the start token
+        return self.special_token_embedding(torch.arange(0, n_tokens).to(device))
+
+    def forward(self, u_in: torch.Tensor, start_token=False, pos_embed=True, n_special_end_tokens=0):
         """
         Returns an embedding, shape N x L x hidden_size if start_token is False else N x (L+1) x hidden_size
         corresponding to an entire input preset (shape N x L x 3)
@@ -162,15 +184,23 @@ class PresetEmbedding(nn.Module):
         #   seems to work properly w/ pytorch 1.10, let's hope an update won't break the current behavior
         u_numerical_embeds = u_numerical_embeds.view(N, self._n_num_params, self.hidden_size)
         embed_out[:, self._matrix_numerical_bool_mask, :] = u_numerical_embeds
-        # insert start token (we do not it at the end, not to mess with masks)
-        if start_token:  # TODO learnable start token?
+        # insert start token (we do it at the end, not to mess with masks)
+        if start_token and n_special_end_tokens == 0:  # TODO learnable start token
             start_embed = self.get_start_token(u_in.device, batch_dim=True).expand(N, -1, -1)
             embed_out = torch.cat((start_embed, embed_out), dim=1)  # Concat along seq dim, start token first
             if pos_embed:
                 embed_out += self.pos_embed_L_plus_1  # broadcast over minibatch dimension
-        else:
+        elif not start_token and n_special_end_tokens > 0:
+            special_embeds = self.get_special_tokens(u_in.device, n_special_end_tokens)
+            special_embeds = torch.unsqueeze(special_embeds, dim=0).expand(N, -1, -1)
+            if pos_embed:  # Don't add positional information to the final special tokens (cat applied after pos add)
+                embed_out += self.pos_embed_L
+            embed_out = torch.cat((embed_out, special_embeds), dim=1)
+        elif not start_token and n_special_end_tokens == 0:
             if pos_embed:
                 embed_out += self.pos_embed_L  # broadcast over minibatch dimension
+        else:
+            raise NotImplementedError("start_token and special end tokens together: not implemented")
         return embed_out
 
     def forward_single_token(self, u_single_step: torch.Tensor):

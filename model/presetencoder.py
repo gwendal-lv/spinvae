@@ -8,7 +8,7 @@ import torch.nn as nn
 import torchinfo
 
 from data.preset2d import Preset2dHelper
-from model.presetmodel import parse_preset_model_architecture, PresetEmbedding, get_act
+from model.presetmodel import parse_preset_model_architecture, PresetEmbedding, get_act, get_transformer_act
 
 
 class PresetEncoder(nn.Module):
@@ -23,10 +23,15 @@ class PresetEncoder(nn.Module):
         self.output_fm_shape = output_fm_shape
 
         if self.arch['name'] == 'tfm':
-            self.tfm = -1  # FIXME
+            # The Transformer encoder is much simpler than the decoder: pure parallel, feedforward, single pass
+            n_head = 4
+            tfm_layer = nn.TransformerEncoderLayer(
+                self.hidden_size, n_head, dim_feedforward=self.hidden_size*4,
+                batch_first=True, dropout=dropout_p, activation=get_transformer_act(self.arch_args)
+            )
+            self.tfm = nn.TransformerEncoder(tfm_layer, self.n_layers)  # No output norm
             self.embedding = PresetEmbedding(hidden_size, preset_helper)
-            # TODO compute the number of tokens required to obtain mu and sigma latent vectors
-            raise NotImplementedError()  # TODO
+            self.n_output_tokens = 2 * dim_z // hidden_size
 
         elif self.arch['name'] == 'mlp':
             self.tfm = None
@@ -70,8 +75,11 @@ class PresetEncoder(nn.Module):
         N = u_in.shape[0]
 
         if self.tfm is not None:  # Transformer
-            embed = self.embedding(u_in)
-            raise NotImplementedError()
+            embed = self.embedding(u_in, n_special_end_tokens=self.n_output_tokens)
+            u_hidden = self.tfm(embed)
+            # retrieve only the last tokens (compressed latent preset representation)
+            #   discard hidden representations of each individual synth parameter
+            u_hidden = u_hidden[:, -self.n_output_tokens:, :]
 
         else:  # MLP
             embed = self.embedding(u_in, pos_embed=False)  # small embeds, shouldn't use pos embed anyway

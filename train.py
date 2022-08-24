@@ -15,7 +15,7 @@ import multiprocessing
 import gc
 from pathlib import Path
 import contextlib
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Union
 
 import numpy as np
 import mkl
@@ -189,44 +189,11 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
             for i in range(len(dataloader['train'])):
                 minibatch = next(dataloader_iter)
                 x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
-                # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
-                ae_model.optimizers_zero_grad()
-                ae_out = ae_model_parallel(x_in, v_in, uid, notes)
-                ae_out = ae_model.parse_outputs(ae_out)
-                # reg_model.precompute_u_out_with_symmetries(v_out)   # FIXME pre-compute permutations
-                super_metrics['LatentMetric/Train'].append_hierarchical_latent(ae_out, label)
-                # Losses (computed on 1 GPU using the non-parallel original model instance)
-                audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
-                scalars['Audio/LogProbLoss/Train'].append(audio_log_prob_loss)
-                lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
-                scalars['Latent/Loss/Train'].append(lat_loss)
-                scalars['Latent/BackpropLoss/Train'].append(lat_backprop_loss)  # Includes beta
-                extra_lat_reg_loss = 0.0  # Can be used for extra regularisation, contrastive loss...
-                extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
-                if not pretrain_audio:
-                    u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
-                    preset_loss = u_categorical_nll + u_numerical_nll
-                    scalars['Preset/NLL/Total/Train'].append(preset_loss)
-                    preset_loss *= train_config.params_loss_compensation_factor
-                    scalars['Preset/NLL/Numerical/Train'].append(u_numerical_nll)
-                    scalars['Preset/NLL/CatCE/Train'].append(u_categorical_nll)
-                else:
-                    preset_loss = torch.zeros((1,), device=device)
-                preset_reg_loss = torch.zeros((1,), device=device)  # No regularization yet....
-                with torch.no_grad():  # Monitoring-only losses
-                    scalars['Audio/MSE/Train'].append(F.mse_loss(ae_out.x_sampled, x_in))
-                    scalars['Latent/MMD/Train'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
-                    if not pretrain_audio:
-                        scalars['Preset/Accuracy/Train'].append(ae_out.u_accuracy.mean())
-                        scalars['Preset/L1error/Train'].append(ae_out.u_l1_error.mean())
-                    scalars['VAELoss/Total/Train'].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
-                    scalars['VAELoss/Backprop/Train'].append(
-                        audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss)
-                utils.exception.check_nan_values(
-                    epoch, audio_log_prob_loss, lat_backprop_loss, extra_lat_reg_loss, preset_loss, preset_reg_loss)
-                # Backprop and optimizers' step (before schedulers' step)
-                (audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss + preset_loss + preset_reg_loss).backward()
-                ae_model.optimizers_step()
+                model.hierarchicalvae.process_minibatch(
+                    ae_model, ae_model_parallel, device,
+                    x_in, v_in, uid, notes, label,
+                    epoch, scalars, super_metrics
+                )
                 # End of mini-batch (step)
                 logger.on_train_minibatch_finished(i)
                 if prof is not None:
@@ -241,29 +208,11 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
                 for i, minibatch in enumerate(dataloader['validation']):
                     x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
-                    # reg_model.precompute_u_in_permutations(v_in)  # FIXME pre-compute permutations
-                    ae_out = ae_model_parallel(x_in, v_in, uid, notes)
-                    ae_out = ae_model.parse_outputs(ae_out)
-                    # reg_model.precompute_u_out_with_symmetries(v_out)  # FIXME pre-compute permutations
-                    super_metrics['LatentMetric/Valid'].append_hierarchical_latent(ae_out, label)
-                    audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
-                    scalars['Audio/LogProbLoss/Valid'].append(audio_log_prob_loss)
-                    lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
-                    scalars['Latent/Loss/Valid'].append(lat_loss)
-                    scalars['Latent/BackpropLoss/Valid'].append(lat_backprop_loss)
-                    scalars['Audio/MSE/Valid'].append(F.mse_loss(ae_out.x_sampled, x_in))
-                    scalars['Latent/MMD/Valid'].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
-                    if not pretrain_audio:
-                        u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
-                        preset_loss = u_categorical_nll + u_numerical_nll
-                        scalars['Preset/NLL/Total/Valid'].append(preset_loss)
-                        preset_loss *= train_config.params_loss_compensation_factor
-                        scalars['Preset/NLL/Numerical/Valid'].append(u_numerical_nll)
-                        scalars['Preset/NLL/CatCE/Valid'].append(u_categorical_nll)
-                        scalars['Preset/Accuracy/Valid'].append(ae_out.u_accuracy.mean())
-                        scalars['Preset/L1error/Valid'].append(ae_out.u_l1_error.mean())
-                    scalars['VAELoss/Total/Valid'].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
-                    scalars['VAELoss/Backprop/Valid'].append(audio_log_prob_loss + lat_backprop_loss)
+                    ae_out = model.hierarchicalvae.process_minibatch(
+                        ae_model, ae_model_parallel, device,
+                        x_in, v_in, uid, notes, label,
+                        epoch, scalars, super_metrics
+                    )
                     # Validation plots
                     if logger.should_plot:
                         v_in_backup.append(v_in)  # Full-batch error storage - will be used later
@@ -321,6 +270,8 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     except UnboundLocalError:
         pass
     gc.collect()
+
+
 
 
 if __name__ == "__main__":

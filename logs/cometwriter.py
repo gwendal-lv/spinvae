@@ -55,6 +55,8 @@ class CometWriter:
         self.experiment.log_parameter("preset_arch", model_config.vae_preset_architecture)
         self.experiment.log_parameter("preset_hid_size", model_config.preset_hidden_size)
         self.experiment.log_parameter("preset_num_distribution", model_config.preset_decoder_numerical_distribution)
+        self.experiment.log_parameter("preset_encode_add", model_config.vae_preset_encode_add)
+        self.experiment.log_parameter("preset_ae_method", model_config.preset_ae_method)
         self.experiment.log_parameter("optimizer", train_config.optimizer)
         if train_config.optimizer.lower() == 'adam':
             self.experiment.log_parameter("opt_adam_beta1", train_config.adam_betas[0])
@@ -67,7 +69,6 @@ class CometWriter:
         self.experiment.log_parameter("AE_FC_dropout", train_config.ae_fc_dropout)
         self.experiment.log_parameter("preset_cat_drop", train_config.preset_cat_dropout)
         self.experiment.log_parameter("preset_intern_drop", train_config.preset_internal_dropout)
-
 
     def log_metric_with_context(self, name: str, value):
         """ Logs a scalar metric, and tries to set a comet context before doing it (e.g. "Loss/Train" will be

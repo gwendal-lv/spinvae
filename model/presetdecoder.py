@@ -8,7 +8,7 @@ from torch import nn as nn
 from torch.nn import functional as F
 
 from data.preset2d import Preset2dHelper
-from model.presetmodel import parse_preset_model_architecture, get_act, PresetEmbedding
+from model.presetmodel import parse_preset_model_architecture, get_act, PresetEmbedding, get_transformer_act
 from synth.dexed import Dexed
 from utils.probability import GaussianUnitVariance, DiscretizedLogisticMixture
 
@@ -455,16 +455,11 @@ class TransformerDecoder(ChildDecoderBase):
             self.input_memory_mlp = None
 
         # Transformer decoder
-        if self.arch_args['elu'] or self.arch_args['swish']:
-            raise ValueError("Only 'relu' and 'gelu' activations can be used inside a PyTorch Transformer model.")
-        elif self.arch_args['gelu']:
-            tfm_act = 'gelu'
-        else:
-            tfm_act = 'relu'
         # Final (3rd) dropout could impair regression, but this does not seem to happen in practice
         tfm_layer = nn.TransformerDecoderLayer(
             self.hidden_size, n_head,  # each head's embed dim will be: self.hidden_size // num_heads
-            dim_feedforward=self.hidden_size * 4, batch_first=True, dropout=self._dropout_p, activation=tfm_act,
+            dim_feedforward=self.hidden_size * 4, batch_first=True, dropout=self._dropout_p,
+            activation=get_transformer_act(self.arch_args),
         )
         self.tfm = nn.TransformerDecoder(tfm_layer, self.n_layers)  # opt norm: between blocks? (default: None)
         self.subsequent_mask = nn.Transformer.generate_square_subsequent_mask(self.seq_len)
