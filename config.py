@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'minibatch_proc_refactor_00'
+        self.run_name = 'devtest__combined_vae'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
@@ -92,12 +92,12 @@ class ModelConfig:
         # Describes how (if) the presets should be auto-encoded:
         #    - "none": presets are retrieved from audio but are not encoded, presets are not provided at encoder input.
         #              Corresponds to an ASP (Automatic Synthesizer Programming) situation.
-        #    - TODO "combined_VAE": preset is encoded with audio, their hidden representations are then summed or mixed
-        #           together (TODO single-phase? or not?)
-        #    - TODO "ASP+VAE": hybrid method/training: TODO DOC
-        #    - TODO "independent_VAE": the preset VAE and audio VAE are trained as independent models, but a loss
+        #    - "combined_vae": preset is encoded with audio, their hidden representations are then summed or mixed
+        #           together
+        #    - TODO "asp+vae": hybrid method/training: TODO DOC
+        #    - TODO "independent_vae": the preset VAE and audio VAE are trained as independent models, but a loss
         #           (e.g. contrastive, Dkl, ... TODO TBD) is computed using the two latent representations
-        self.preset_ae_method = "combined_VAE"
+        self.preset_ae_method = "combined_vae"
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector

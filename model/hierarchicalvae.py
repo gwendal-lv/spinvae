@@ -89,9 +89,6 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         the top level (vanilla VAE).
         The encoder is based on a single-channel CNN build upon multiple cells. Each cell's output can be used to
         infer a partial latent vector.
-
-        :param model_config:
-        :param train_config:
         """
         trainable_param_group_names = ['audio', 'latent'] + ([] if train_config.pretrain_audio_only else ['preset'])
         super().__init__(train_config, ['audio', 'latent', 'preset'], trainable_param_group_names)
@@ -105,6 +102,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # Pre-process configuration
         self.main_conv_arch = model.ladderbase.parse_main_conv_architecture(model_config.vae_main_conv_architecture)
         self.latent_arch = parse_latent_extract_architecture(model_config.vae_latent_extract_architecture)
+        self.preset_ae_method = model_config.preset_ae_method if not train_config.pretrain_audio_only else "none"
 
         # Configuration checks
         if model_config.dim_z > 0:
@@ -187,15 +185,24 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # TODO handle all cases: auto synth prog, preset auto-encoding, ...
         #TODO 2 passes (the second might be useless)
 
+        # 1st pass (might be the single one)
         # Encode, sample, decode
-        z_mu, z_var = self.encoder(x_target, u_target, midi_notes)
+        x_input = x_target  # 1st pass always use the audio input
+        u_input = u_target if self.preset_ae_method == "combined_vae" else None
+        z_mu, z_var = self.encoder(x_input, u_input, midi_notes)
         z_sampled = self.sample_z(z_mu, z_var)
         x_decoded_proba, x_sampled, preset_decoder_out = self.decoder(z_sampled, u_target)
 
-        # TODO "ASP+VAE" and "independent_VAEs":
-        #   - average losses, metrics, ... "ASP+VAE" only
-        #   - 2 steps
-        #   - compute regularization
+        # 2nd pass (optional)
+        if self.preset_ae_method == "asp+vae" or self.preset_ae_method == "independent_vae":
+            x_input = None if self.preset_ae_method == "independent_vae" else x_target  # TODO handle this in the encoder
+            # TODO "ASP+VAE" and "independent_VAEs":
+            #   - average losses, metrics, ... "ASP+VAE" only
+            #   - 2 steps
+            #   - compute regularization
+            raise NotImplementedError()
+
+            # TODO concat results from 1st / 2nd pass???
 
         # Outputs: return all available values using Tensor only, for this method to remain usable
         # with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
@@ -232,6 +239,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # See preset_model.py
         u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc = forward_outputs[i:i+5]
         assert i+5 == len(forward_outputs)
+
         return HierarchicalVAEOutputs(
             z_mu, z_var, z_sampled,
             x_decoded_proba, x_sampled,
@@ -296,7 +304,7 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         ae_out.z_loss = z_loss
         return z_loss, z_loss * beta
 
-    def vae_loss(self, audio_log_prob_loss, x_shape, ae_out: HierarchicalVAEOutputs):
+    def audio_vae_loss(self, audio_log_prob_loss, x_shape, ae_out: HierarchicalVAEOutputs):
         """
         Returns a total loss that corresponds to the ELBO if this VAE is a vanilla VAE with Dkl.
 
@@ -387,7 +395,7 @@ def process_minibatch(
         if not ae_model.pre_training_audio:
             scalars['Preset/Accuracy' + suffix].append(ae_out.u_accuracy.mean())
             scalars['Preset/L1error' + suffix].append(ae_out.u_l1_error.mean())
-        scalars['VAELoss/Total' + suffix].append(ae_model.vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
+        scalars['VAELoss/Total' + suffix].append(ae_model.audio_vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
         scalars['VAELoss/Backprop' + suffix].append(audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss)
 
     if training:
