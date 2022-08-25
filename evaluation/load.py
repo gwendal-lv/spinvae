@@ -3,61 +3,60 @@ Functions and classes to easily load models or data for evaluation.
 """
 
 from pathlib import Path
+import pickle
 
 import torch.cuda
 
+import config
 import data.build
 import logs.logger
-import model.build
-import utils.configutils
+import model.hierarchicalvae
 
 
 class ModelLoader:
-    def __init__(self, model_folder_path: str, device='cpu', dataset_type='validation'):
+    def __init__(self, model_folder_path: Path, device='cpu', dataset_type='validation'):
         """
         Loads model_config and train_config from the given folder, then builds the model and loads the last
         available checkpoint.
         The dataset as well as the required dataloader are also built.
 
-        :param model_folder_path: relative to the project's root folder. E.g. : saved/MMD_tests/model1
+        :param model_folder_path: e.g. Path('/home/user/saved/MMD_tests/model1')
         :param dataset_type: Usually 'validation' or 'test', but 'train' is accepted.
         """
-        self._root_path = Path(__file__).resolve().parent.parent
         self.device = device
-        self.path_to_model_dir = self._root_path.joinpath(model_folder_path)
-        self.model_config, self.train_config = utils.config.get_config_from_file(
-            self.path_to_model_dir.joinpath('config.json'))
+        self.path_to_model_dir = model_folder_path
+        with open(self.path_to_model_dir.joinpath("config.pickle"), 'rb') as f:
+            checkpoint_configs = pickle.load(f)
+        self.model_config: config.ModelConfig = checkpoint_configs['model']
+        self.model_config.preset_ae_method = "combined_vae" # FIXME REMOVE TEMP
+        self.train_config: config.TrainConfig = checkpoint_configs['train']
         if device == 'cpu':
             self.train_config.main_cuda_device_idx = -1
 
-        # FIXME the model will load its checkpoint itself
-        checkpoint = logs.logger.get_model_last_checkpoint(self._root_path, self.model_config, device=self.device)
+        # Build dataset, dataloaders
+        self.dataset_type = dataset_type
         if self.train_config.pretrain_audio_only:
-            # TODO load dataset + dataloader
-            self.dataset = None
-            self.dataset_type = 'None'
-            # Load model
-            _, _, self.ae_model = model.build.build_ae_model(self.model_config, self.train_config)
-            self.ae_model.load_checkpoint(checkpoint, eval_only=True)
-            self.reg_model, self.extended_ae_model = None, None
+            raise NotImplementedError()
         else:
-            # Dataset required to build the preset indexes helper
+            # Parts of train.py code
             self.dataset = data.build.get_dataset(self.model_config, self.train_config)
-            self.dataset_type = dataset_type
-            dataloaders, dataloaders_nb_items \
-                = data.build.get_split_dataloaders(self.train_config, self.dataset, num_workers=0)
-            self.dataloader, self.dataloader_num_items = dataloaders[dataset_type], dataloaders_nb_items[dataset_type]
-            # Load model
-            _, _, self.ae_model, self.reg_model, self.extended_ae_model = model.build.build_extended_ae_model(
-                self.model_config, self.train_config, self.dataset.preset_indexes_helper)
-            self.ae_model.load_checkpoint(checkpoint, eval_only=True)
-            self.reg_model.load_checkpoint(checkpoint, eval_only=True)
-        del checkpoint
+            dataloaders, dataloaders_nb_items = data.build.get_split_dataloaders(self.train_config, self.dataset)
+            self.dataloader = dataloaders[self.dataset_type]
+            self.dataloader_num_items = dataloaders_nb_items[self.dataset_type]
+
+        # Then build model and load its weights
+        self.model_config.dim_z = -1  # Will be set by the hVAE itself
+        self.ae_model = model.hierarchicalvae.HierarchicalVAE(
+            self.model_config, self.train_config, self.dataset.preset_indexes_helper)
+        self.ae_model.load_checkpoints(self.path_to_model_dir.joinpath("checkpoint.tar"))
+
         if device == 'cpu':
             torch.cuda.empty_cache()  # Checkpoints were usually GPU tensors (originally)
 
 
 if __name__ == "__main__":
-    loader = ModelLoader('saved/ControlsRegr_allascat/htanhTrue_softmT°0.2_permTrue')
+    _model_path = Path(__file__).resolve().parent.parent
+    _model_path = _model_path.joinpath('../Data_SSD/Logs/preset-vae/dev/presetAE_tfm_ff_00')
+    loader = ModelLoader(_model_path)
     print("OK")
 

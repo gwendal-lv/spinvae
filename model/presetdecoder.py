@@ -92,40 +92,43 @@ class PresetDecoder(nn.Module):
             self.seq_numerical_items_bool_mask = self.seq_numerical_items_bool_mask.to(device)
             self.seq_categorical_items_bool_mask = self.seq_categorical_items_bool_mask.to(device)
 
-    def forward(self, z_multi_level: List[torch.Tensor], u_target: torch.Tensor):
+    def forward(self, z_multi_level: List[torch.Tensor], u_target: Optional[torch.Tensor] = None):
         """
 
         :param z_multi_level: Deepest latent values are the last elements of this list
         :param u_target: Input preset, sequence-like (expected shape: N x n_synth_presets x 3)
         :return:
         """
-        self._move_masks_to(u_target.device)
+        self._move_masks_to(z_multi_level[0].device)
 
-        # ----- A) Apply the "main" feed-forward or recurrent / sequential network -----$
+        # ----- A) Apply the "main" feed-forward or recurrent / sequential network -----
+        # TODO handle u_target=None
         u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples \
             = self.child_decoder(z_multi_level, u_target)
 
         # ----- B) Compute metrics (quite easy, we can do it now) -----
-        # we don't return separate metric for teacher-forcing
-        #    -> because teacher-forcing will be activated or not from the owner of this module
-        with torch.no_grad():
-            num_l1_error = torch.mean(
-                torch.abs(u_target[:, self.seq_numerical_items_bool_mask, 1] - u_numerical_samples), dim=1
-            )
-            acc = torch.eq(u_target[:, self.seq_categorical_items_bool_mask, 0].long(), u_categorical_samples)
-            acc = acc.count_nonzero(dim=1) / acc.shape[1]
+        if u_target is not None:  # might be None if we only want to sample a preset from z
+            # we don't return separate metric for teacher-forcing
+            #    -> because teacher-forcing will be activated or not from the owner of this module
+            with torch.no_grad():
+                num_l1_error = torch.mean(
+                    torch.abs(u_target[:, self.seq_numerical_items_bool_mask, 1] - u_numerical_samples), dim=1
+                )
+                acc = torch.eq(u_target[:, self.seq_categorical_items_bool_mask, 0].long(), u_categorical_samples)
+                acc = acc.count_nonzero(dim=1) / acc.shape[1]
 
-        # TODO set the NLL of "useless params" (useless as in the target preset) to zero
-        # FIXME don't do this when auto-encoding a preset (only during auto synth prog from audio)
-        if self.params_loss_exclude_useless:
-            u_categorical_nll, u_numerical_nll = self._remove_useless_loss(u_target, u_categorical_nll, u_numerical_nll)
+            # TODO set the NLL of "useless params" (useless as in the target preset) to zero
+            # FIXME don't do this when auto-encoding a preset (only during auto synth prog from audio)
+            if self.params_loss_exclude_useless:
+                u_categorical_nll, u_numerical_nll = self._remove_useless_loss(u_target, u_categorical_nll, u_numerical_nll)
 
-        # sum NLLs and divide by total sequence length (num of params) - keep batch dimension (if multi-GPU)
-        u_numerical_nll = u_numerical_nll.sum(dim=1) / self.seq_len
-        u_categorical_nll = u_categorical_nll.sum(dim=1) / self.seq_len
-        return u_out, \
-            u_numerical_nll, u_categorical_nll, \
-            num_l1_error, acc
+            # sum NLLs and divide by total sequence length (num of params) - keep batch dimension (if multi-GPU)
+            u_numerical_nll = u_numerical_nll.sum(dim=1) / self.seq_len
+            u_categorical_nll = u_categorical_nll.sum(dim=1) / self.seq_len
+        else:
+            num_l1_error, acc = None, None
+
+        return u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc
 
     def _remove_useless_loss(self, u_target, u_categorical_nll, u_numerical_nll):
         """ If a DX7 operator has a null volume, the loss corresponding to parameters of this operator is set to zero.
@@ -215,18 +218,19 @@ class ChildDecoderBase(nn.Module):
         numerical_tokens_card = self.get_numerical_tokens_card(device)
         return numerical_tokens_card.view(1, 1, numerical_tokens_card.shape[0]).expand(batch_size, 1, -1)
 
-    def compute_full_sequence_samples_and_losses(self, u_hidden, u_target, sample_only=False):
+    def compute_full_sequence_samples_and_losses(self, u_hidden,
+                                                 u_target: Optional[torch.Tensor] = None, sample_only=False):
         """
          Compute parameters of probability distributions, compute NLLs (all at once)
 
         :param u_hidden: the hidden sequence representation of the preset - shape N x L x Hembed
         :param sample_only: If True, the NLLs won't be computed
         """
-        u_out = self.preset_helper.get_null_learnable_preset(u_target.shape[0]).to(u_target.device)
+        u_out = self.preset_helper.get_null_learnable_preset(u_hidden.shape[0]).to(u_hidden.device)
         # --- Categorical distribution(s) ---
         u_categorical_logits, u_categorical_nll, u_categorical_samples = self.categorical_module.forward_full_sequence(
             u_hidden[:, self.seq_categorical_items_bool_mask, :].transpose(2, 1),  # FIXME seq dim should NOT be last
-            u_target[:, self.seq_categorical_items_bool_mask, 0],
+            u_target[:, self.seq_categorical_items_bool_mask, 0] if u_target is not None else None,
             sample_only=sample_only
         )
         u_out[:, self.seq_categorical_items_bool_mask, 0] = u_categorical_samples.float()
@@ -248,7 +252,7 @@ class ChildDecoderBase(nn.Module):
             u_numerical_nll: Optional[torch.Tensor] = None
         with torch.no_grad():
             u_numerical_samples = self.numerical_distrib.get_mode(
-                numerical_distrib_params, self.get_numerical_tokens_card(u_target.device))
+                numerical_distrib_params, self.get_numerical_tokens_card(u_hidden.device))
             # Squeeze singleton "channel" dimension
             u_numerical_samples = torch.squeeze(u_numerical_samples, dim=1)
         u_out[:, self.seq_numerical_items_bool_mask, 1] = u_numerical_samples
@@ -265,16 +269,20 @@ class ChildDecoderBase(nn.Module):
             self,
             token_hidden, target_token,
             u_out, u_categorical_nll, u_numerical_nll,
-            categorical_idx, numerical_idx
+            categorical_idx, numerical_idx,
+            sample_only=False
     ):
         """ Computes the loss about a single token (either categorial or numerical), samples from it, and
         stores values into the proper structures (u_out, indexes, and NLL numerical or categorical).
 
         :param token_hidden: (N x 1 x hidden_size) output from the last hidden layer
-        :param target_token: (N x 1 x 3) target
+        :param target_token: (N x 1 x 3) target (can be None if sample_only is True)
         """
         N, device = token_hidden.shape[0], token_hidden.device
         t = categorical_idx + numerical_idx
+        # TODO implement sample_only w/ null target_token
+        if target_token is None or sample_only:
+            raise NotImplementedError()
         type_class = int(target_token[0, 0, 2].item())
         # compute NLLs and sample (and embed the sample)  TODO no_grad, no NLL
         #    we could compute NLLs only once at the end, but this section should be run with no_grad() context
@@ -353,13 +361,14 @@ class MlpDecoder(ChildDecoderBase):
         )
         self.sequence_dim_last = sequence_dim_last
 
-    def forward(self, z_multi_level, u_target):
+    def forward(self, z_multi_level, u_target: Optional[torch.Tensor] = None):
         # Apply the feed-forward MLP
         z_flat = self.flatten_z_multi_level(z_multi_level)
         u_hidden = self.mlp(z_flat).view(-1, self.in_channels, self.seq_len)
         u_hidden = self.conv(u_hidden)  # After this conv, sequence dim ("time" or "step" dimension) is last
         # Full-sequence loss (shared with the transformer in training mode) - embed dim last
-        return self.compute_full_sequence_samples_and_losses(u_hidden.transpose(1, 2), u_target)
+        return self.compute_full_sequence_samples_and_losses(
+            u_hidden.transpose(1, 2), u_target, sample_only=(u_target is None))
 
 
 class RnnDecoder(ChildDecoderBase):
@@ -385,13 +394,15 @@ class RnnDecoder(ChildDecoderBase):
         if self.arch_args['memmlp']:
             warnings.warn("'_memmlp' arch arg can be used with a Transformer decoder only - ignored")
 
-    def forward(self, z_multi_level, u_target):
-        N, device = u_target.shape[0], u_target.device
+    def forward(self, z_multi_level, u_target: Optional[torch.Tensor] = None):
+        if u_target is None:
+            raise NotImplementedError()
+        N, device = z_multi_level[0].shape[0], z_multi_level[0].device
         # Compute h0 and c0 hidden states for each layer - expected shapes (num_layers, N, hidden_size)
         z_flat = self.flatten_z_multi_level(z_multi_level)
         z_expansion_split = torch.chunk(self.latent_expand_mlp(z_flat), self.n_layers, dim=1)
         # We fill this "merged" tensor, then we'll split it into c0 (first) and h0
-        c0_h0 = torch.empty((self.n_layers, u_target.shape[0], 2 * self.hidden_size), device=u_target.device)
+        c0_h0 = torch.empty((self.n_layers, N, 2 * self.hidden_size), device=device)
         c0_h0[:, :, 0:z_flat.shape[1]] = z_flat  # use broadcasting
         for l in range(self.n_layers):
             c0_h0[l, :, z_flat.shape[1]:] = z_expansion_split[l]
@@ -465,8 +476,8 @@ class TransformerDecoder(ChildDecoderBase):
         self.tfm = nn.TransformerDecoder(tfm_layer, self.n_layers)  # opt norm: between blocks? (default: None)
         self.subsequent_mask = nn.Transformer.generate_square_subsequent_mask(self.seq_len)
 
-    def forward(self, z_multi_level, u_target):
-        N, device = u_target.shape[0], u_target.device  # minibatch size, current device
+    def forward(self, z_multi_level, u_target: Optional[torch.Tensor] = None):
+        N, device = z_multi_level[0].shape[0], z_multi_level[0].device  # minibatch size, current device
         # Build memory from z
         z_flat = self.flatten_z_multi_level(z_multi_level)
         # FIXME Very simple memory: 1-token sequence (FIXME use latent space of size hidden_dim not to use this linear)
@@ -483,14 +494,14 @@ class TransformerDecoder(ChildDecoderBase):
         ar_forward_mask = self.subsequent_mask.to(device)
         # Different training and eval procedures: parallel training, sequential evaluation
         #   (however if non-AR: we always use the "training" parallel procedure, even for validation)
-        if self.training or not self.autoregressive:
+        if self.training or not self.autoregressive:  # Parallel computation
             # Usual AR transformer: Get embeddings (shifted right) w/ start token, discard the last token
             if self.autoregressive:
-                u_target_embeds = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]
+                u_input_embeds = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]
             # non-AR transformer: pos encoding input only
             else:
-                u_target_embeds = torch.unsqueeze(self.embedding.pos_embed_L.to(device), dim=0)  # Add batch dimension
-                u_target_embeds = u_target_embeds.expand(N, -1, -1)
+                u_input_embeds = torch.unsqueeze(self.embedding.pos_embed_L.to(device), dim=0)  # Add batch dimension
+                u_input_embeds = u_input_embeds.expand(N, -1, -1)
                 if self.scheduled_sampling_p > 0.0:
                     warnings.warn("Scheduled sampling probability > 0.0 can't be applied w/ this non-AR decoder.")
 
@@ -512,7 +523,7 @@ class TransformerDecoder(ChildDecoderBase):
             #    ACL student workshop Sched Sampling for Transformers https://arxiv.org/abs/1906.07651
             if self.scheduled_sampling_p > 0.0 and self.autoregressive:
                 with torch.no_grad():  # 1st pass without gradient
-                    tfm_out_hidden = self.tfm(u_target_embeds, memory_in, tgt_mask=ar_forward_mask)
+                    tfm_out_hidden = self.tfm(u_input_embeds, memory_in, tgt_mask=ar_forward_mask)
                     # we need to sample from tfm_out (which contains hidden values only), but don't need NLLs
                     out_tokens_1st_pass = self.compute_full_sequence_samples_and_losses(
                         tfm_out_hidden, u_target, sample_only=True)[0]  # keep u_out only
@@ -528,15 +539,20 @@ class TransformerDecoder(ChildDecoderBase):
             # No scheduled sampling (or non-AR): Single pass w/ gradients
             else:
                 # Don't use mask for feed-forward (non-AR) transformer (because input is pos encodings only)
-                tfm_out_hidden = self.tfm(u_target_embeds, memory_in,
+                tfm_out_hidden = self.tfm(u_input_embeds, memory_in,
                                           tgt_mask=(ar_forward_mask if self.autoregressive else None))
 
             # Compute logits and losses - all at once (shared with the MLP decoder)
-            return self.compute_full_sequence_samples_and_losses(tfm_out_hidden, u_target)
+            return self.compute_full_sequence_samples_and_losses(
+                tfm_out_hidden, u_target, sample_only=(u_target is None))
 
         else:  # Eval mode - AR forward inference (feed-forward, non-AR case is handled in the previous 'if' block)
+            sample_only = (u_target is None)
             # Prepare data structures to store all results (will be filled token-by-token)
             u_out, u_categorical_nll, u_numerical_nll = self.get_init_u_out_and_nlls(N, device)
+            if sample_only:
+                u_numerical_nll: Optional[torch.Tensor] = None
+                u_categorical_nll: Optional[torch.Tensor] = None
             numerical_idx, categorical_idx = 0, 0
             # Default null embeddings (we don't need to pre-embed null values): will contain positional embeddings only
             u_input_feedback_embeds = torch.zeros((N, self.seq_len, self.hidden_size), device=device)
@@ -553,7 +569,7 @@ class TransformerDecoder(ChildDecoderBase):
                 )
                 u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx \
                     = self.compute_single_token_sample_and_loss(
-                        tfm_out_hidden[:, t:t+1, :], u_target[:, t:t + 1, :],
+                        tfm_out_hidden[:, t:t+1, :], (u_target[:, t:t + 1, :] if u_target is not None else None),
                         u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
                 )
                 # add the next embedding to its (previously computed) positional embedding
@@ -611,18 +627,20 @@ class MultiCardinalCategories(nn.Module):
     def forward(self):
         raise NotImplementedError("Use forward_full_sequence or forward_item.")
 
-    def forward_full_sequence(self, u_categorical_last_hidden, u_target: torch.Tensor, sample_only=False):
+    def forward_full_sequence(self, u_categorical_last_hidden,
+                              u_target: Optional[torch.Tensor] = None, sample_only=False):
         """
 
         :param u_categorical_last_hidden: Tensor of shape N x hidden_size x Lc
             where Lc is the total number of categorical output variables (synth params)
-        :param u_target: target tensor, shape N x Lc
+        :param u_target: target tensor, shape N x Lc (can be None if sample_only)
         :param sample_only: If True, don't compute the cross-entropy (NLL)
-        :return: out_logits (dict, different shapes),
+        :return:    out_logits (dict, different shapes),
                     out_ce (shape N x Lc) (is a NLL),
                     samples_categories (shape N x Lc)
         """
-        u_target = u_target.long()
+        if u_target is not None:
+            u_target = u_target.long()
         out_logits = dict()
         out_ce = torch.empty((u_categorical_last_hidden.shape[0], self.Lc), device=u_categorical_last_hidden.device)
         sampled_categories = torch.empty(
@@ -649,6 +667,7 @@ class MultiCardinalCategories(nn.Module):
         :param u_categorical_last_hidden: Tensor of shape N x 1 x hidden_size
         :returns logits (shape N), out_ce (shape N), samples (shape N)
         """
+        # TODO allow None target (sampling only)
         card_group = self.preset_helper.param_type_to_cardinality[type_class]
         logits = self.categorical_distribs_conv1d[card_group](u_token_hidden.transpose(1, 2))
         logits = torch.squeeze(logits, 2)

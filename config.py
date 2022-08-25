@@ -29,11 +29,12 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "dev"  # experiment base name
+        self.name = "presetAE"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'devtest__combined_vae'
+        self.run_name = 'devtest__num_nll_squeeze'
         self.pretrained_VAE_checkpoint = \
-            self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
+            self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
+            #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
         # self.pretrained_VAE_checkpoint = None  # Uncomment this to train a full model from scratch
         self.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
         # Comet.ml logger (replaces Tensorboard)
@@ -80,7 +81,7 @@ class ModelConfig:
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
         #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
         #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
-        self.vae_preset_architecture = 'tfm_3l_ff_memmlp'  # tfm_6l_memmlp_ff
+        self.vae_preset_architecture = 'tfm_6l_ff_memmlp'  # tfm_6l_memmlp_ff
         # "before_latent_cell" (encoded preset will be the same size as encoded audio, both will be added)
         # or "after_latent_cell"" (encoded preset size will be 2*dim_z, and will be added to z_mu and z_sigma)
         self.vae_preset_encode_add = "after_latent_cell"
@@ -131,9 +132,9 @@ class ModelConfig:
         self.required_dataset_midi_notes = ((41, 75), (48, 75), (56, 75), (63, 75), (56, 25), (56, 127))
         # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
         # self.midi_notes = ((56, 75), )  # Reference note: G#3 , intensity 75/127
-        # self.midi_notes = ((41, 75), (48, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 6 notes
+        self.midi_notes = ((41, 75), (48, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 6 notes
         # self.midi_notes = ((41, 75), (56, 25), (56, 75), (56, 127), (63, 75))  # 5 notes
-        self.midi_notes = ((41, 75), (56, 75), (56, 127))  # 3 notes (faster training)
+        # self.midi_notes = ((41, 75), (56, 75), (56, 127))  # 3 notes (faster training)
         self.main_midi_note_index = len(self.midi_notes) // 2  # 56, 75
         self.stack_spectrograms = True  # If True, dataset will feed multi-channel spectrograms to the encoder
         # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
@@ -217,7 +218,8 @@ class TrainConfig:
         # - - - Synth parameters losses - - -
         # - General options
         self.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
-        self.params_loss_compensation_factor = 0.5  # FIXME because MSE loss of the VAE is much lower (approx. 1e-2)
+        # applied to the preset loss FIXME because MSE loss of the VAE is much lower (approx. 1e-2)
+        self.params_loss_compensation_factor = 0.5
         self.params_loss_exclude_useless = False  # if True, sets to 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
         # - Cross-Entropy loss (deactivated when using dequantized outputs)

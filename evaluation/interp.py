@@ -11,7 +11,7 @@ import torch
 
 import data.abstractbasedataset
 import data.build
-import data.preset
+from data.preset2d import Preset2dHelper, Preset2d
 import logs.logger
 import model.build
 import utils.configutils
@@ -80,57 +80,67 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
         raise NotImplementedError()
 
 
-# TODO don't inherit from LatentInterpolation
-class SynthPresetLatentInterpolation(LatentInterpolation):
+class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
     def __init__(self, model_loader: evaluation.load.ModelLoader, num_steps=7,
                  latent_interp='linear'):
-        super().__init__(model_loader=model_loader, num_steps=num_steps,
-                         init_generator=False, latent_interp=latent_interp)
+        super().__init__(
+            model_loader=model_loader, num_steps=num_steps,
+            latent_interp_kind=latent_interp
+        )
         if not isinstance(self.dataset, data.abstractbasedataset.PresetDataset):
             raise NotImplementedError("This evaluation class is available for a PresetDataset only (current "
                                       "self.dataset type: {})".format(type(self.dataset)))
-        if self.extended_ae_model is None or self.reg_model is None:
-            raise AssertionError("A full model (including a regression network) must be loaded.")
 
         # TODO finish all checks
 
-    def compute_latent_vector(self, x, sample_info, v_target) -> Tuple[torch.Tensor, float, float]:
-        return self.find_preset_inverse(x, sample_info, v_target)
-
-    def find_preset_inverse(self, x_in, sample_info, u_target):
+    def compute_latent_vector(self, x_in, v_in, uid, notes):
         self.ae_model.eval()
         with torch.no_grad():
-            ae_outputs = self.ae_model(x_in, sample_info)
-            z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_outputs
-        self.reg_model.eval()  # Dropout must be de-activated
+            ae_out = self.ae_model(x_in, v_in, uid, notes)
+            ae_out = self.ae_model.parse_outputs(ae_out)
+        # Presets need to be flattened for u, z interpolation, then un-flattened during audio interpolation/generation
+        z_first_guess = self.ae_model.flatten_latent_values(ae_out.z_sampled)
+        # return self.find_preset_inverse(x_in, v_in, uid, notes) FIXME re-implement
+        z_estimated = z_first_guess  # FIXME
+        return z_estimated, z_first_guess, ae_out.u_accuracy.item(), ae_out.u_l1_error.item()
+
+    def find_preset_inverse(self, x_in, v_in, uid, notes):
+        """ TODO doc """
+        assert x_in.shape[0] == v_in.shape[0] == uid.shape[0] == notes.shape[0] == 1
+        self.ae_model.eval()
+        with torch.no_grad():
+            ae_out = self.ae_model(x_in, v_in, uid, notes)
+            ae_out = self.ae_model.parse_outputs(ae_out)
         # TODO proper ctor arg to use flow inverse, or not
         # return self.reg_model.find_preset_inverse(u_target, z_first_guess)  # Flow inverse
-        if not torch.all(torch.isclose(z_0_sampled, z_K_sampled)).item():
-            raise AssertionError("z_0 must be equal to z_K to use this preset inversion method.")
-        return self.reg_model.find_preset_inverse_SGD(u_target, z_0_sampled, z_0_mu_logvar)
+        raise NotImplementedError("")  # TODO find exact preset inverse
+        return None  # self.reg_model.find_preset_inverse_SGD(u_target, z_0_sampled, z_0_mu_logvar)
 
     @property
     def gen(self):
         raise NotImplementedError()
 
     def generate_audio_and_spectrograms(self, z: torch.Tensor):
-        v_out = self.reg_model(z)
-        # Convert learnable presets to VST presets  FIXME works for Dexed only
-        presets = data.preset.DexedPresetsParams(self.dataset, learnable_presets=v_out)
-        vst_presets = presets.get_full()
+        z_multi_level = self.ae_model.unflatten_latent_values(z)
+        # Apply model to each step retrieve corresponding presets
+        decoder_out = self.ae_model.decoder.preset_decoder(z_multi_level, u_target=None)
+        v_out = decoder_out[0]
+        # Convert learnable presets to VST presets - non-batched code (processes individual presets)
+        vst_presets = list()
+        for i in range(v_out.shape[0]):
+            preset2d = Preset2d(self.dataset, learnable_tensor_preset=v_out[i])
+            vst_presets.append(preset2d.to_raw())
         midi_pitch, midi_vel = self.dataset.default_midi_note
-        audio_renders = [self.dataset._render_audio(vst_presets[i, :], midi_pitch, midi_vel)
-                         for i in range(vst_presets.shape[0])]
-        spectrograms = [self.dataset.compute_spectrogram(audio_renders[i][0])
-                        for i in range(len(audio_renders))]
+        audio_renders = [self.dataset._render_audio(raw_preset, midi_pitch, midi_vel) for raw_preset in vst_presets]
+        spectrograms = [self.dataset.compute_spectrogram(audio_wav[0]) for audio_wav in audio_renders]
         return audio_renders, spectrograms
 
 
 if __name__ == "__main__":
     _device = 'cpu'
-    model_path = "saved/FlowInterp/labelsmooth0.0_FCdrop0.1"
-    # model_path = "saved/FlowReg_dimz5020/dequantL2loss_out-2+2_regulloss0.001"
-    _model_loader = evaluation.load.ModelLoader(model_path, _device, 'validation')
+    _model_path = Path(__file__).resolve().parent.parent
+    _model_path = _model_path.joinpath('../Data_SSD/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.50')
+    _model_loader = evaluation.load.ModelLoader(_model_path, _device, 'validation')
 
     _num_steps = 9
 

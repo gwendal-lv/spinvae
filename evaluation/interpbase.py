@@ -6,6 +6,7 @@ import os.path
 import pathlib
 import pickle
 import shutil
+import warnings
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 from datetime import datetime
@@ -84,6 +85,7 @@ class InterpSequence:
             Metrics keys ending with '_frames' are 2D metrics ; other metrics are average values across all frames.
             First dim of all arrays is always the interpolation step.
         """
+        # FIXME use matlab's TimbreToolbox instead
         self.interpolation_metrics = dict()
         # first, compute librosa spectrograms
         sr = self.audio[0][1]
@@ -340,9 +342,7 @@ class ModelBasedInterpolation(InterpBase):
             self.dataset_type = model_loader.dataset_type
             self.dataloader, self.dataloader_num_items = model_loader.dataloader, model_loader.dataloader_num_items
             self._storage_path = model_loader.path_to_model_dir
-            # extended_ae_model and/or reg_model may be None
-            self.extended_ae_model, self.ae_model, self.reg_model \
-                = model_loader.extended_ae_model, model_loader.ae_model, model_loader.reg_model
+            self.ae_model = model_loader.ae_model
         else:
             self.device = device
             self.dataset, self.dataset_type, self.dataloader, self.dataloader_num_items = None, None, None, None
@@ -372,28 +372,31 @@ class ModelBasedInterpolation(InterpBase):
         current_sequence_index = 0
         # Retrieve all latent vectors that will be used for interpolation
         # We assume that batch size is an even number...
-        for batch_idx, sample in enumerate(self.dataloader):
+        for batch_idx, minibatch in enumerate(self.dataloader):
             end_sequence_with_next_item = False  # If True, the next item is the 2nd (last) of an InterpSequence
-            x_in, v_target, sample_info = sample[0], sample[1], sample[2]
-            for i in range(sample[0].shape[0]):
+            x_in, v_in, uid, notes, label = [m for m in minibatch]
+            N = x_in.shape[0]
+            for i in range(N):
                 if not end_sequence_with_next_item:
                     if self.verbose:
                         print("Item {} (mini-batch {}/{})"
-                              .format(i + batch_idx * x_in.shape[0], batch_idx+1, len(self.dataloader)))
+                              .format(i + batch_idx * N, batch_idx+1, len(self.dataloader)))
                     end_sequence_with_next_item = True
                 else:
                     # It's easier to compute interpolations one-by-one (all data might not fit into RAM)
                     seq = LatentInterpSequence(self.storage_path, current_sequence_index)
-                    seq.UID_start, seq.UID_end = sample_info[i-1, 0], sample_info[i, 0]
+                    seq.UID_start, seq.UID_end = uid[i-1].item(), uid[i].item()
                     seq.name = self.get_sequence_name(seq.UID_start, seq.UID_end, self.dataset)
-                    z_start, z_start_first_guess, acc, L1_err \
-                        = self.compute_latent_vector(x_in[i-1:i, :], sample_info[i-1:i, :], v_target[i-1:i, :])
+                    z_start, z_start_first_guess, acc, L1_err = self.compute_latent_vector(
+                        x_in[i-1:i], v_in[i-1:i], uid[i-1:i], notes[i-1:i])
                     if acc < 100.0 or L1_err > 0.0:
-                        raise AssertionError(acc, L1_err)
-                    z_end, z_end_first_guess, acc, L1_err \
-                        = self.compute_latent_vector(x_in[i:i+1, :], sample_info[i:i+1, :], v_target[i:i+1, :])
+                        warnings.warn("UID {}: acc={:.2f}, l1err={:.2f}".format(uid[i-1].item(), acc, L1_err))
+                        # raise AssertionError(acc, L1_err)
+                    z_end, z_end_first_guess, acc, L1_err = self.compute_latent_vector(
+                        x_in[i:i+1], v_in[i:i+1], uid[i:i+1], notes[i:i+1])
                     if acc < 100.0 or L1_err > 0.0:
-                        raise AssertionError(acc, L1_err)
+                        warnings.warn("UID {}: acc={:.2f}, l1err={:.2f}".format(uid[i].item(), acc, L1_err))
+                        # raise AssertionError(acc, L1_err)
                     z_ae.append(z_start_first_guess), z_ae.append(z_end_first_guess)
                     z_endpoints.append(z_start), z_endpoints.append(z_end)
 
@@ -426,8 +429,11 @@ class ModelBasedInterpolation(InterpBase):
                           delta_t / (all_z_endpoints.shape[0] // 2)))
 
     @abstractmethod
-    def compute_latent_vector(self, x, sample_info, v_target):
-        """ Computes the most appropriate latent vector (child class implements this method) """
+    def compute_latent_vector(self, x_in, v_in, uid, notes) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
+        """ Computes the most appropriate latent vector (child class implements this method)
+
+        :returns: z_estimated, z_first_guess, preset_accuracy, preset_L1_error
+        """
         pass
 
     def interpolate_latent(self, z_start, z_end) -> Tuple[np.ndarray, torch.Tensor]:
@@ -441,11 +447,13 @@ class ModelBasedInterpolation(InterpBase):
         :returns: u, interpolated_z
         """
         z_cat = torch.cat([z_start, z_end], dim=0)
+        # TODO SPHERICAL interpolation available?
         interp_f = scipy.interpolate.interp1d(
             [0.0, 1.0], z_cat.clone().detach().cpu().numpy(), kind=self.latent_interp_kind, axis=0,
             bounds_error=True)  # extrapolation disabled, no fill_value
         u_interpolated = self.get_u_interpolated()
-        return u_interpolated, torch.tensor(interp_f(u_interpolated), device=self.device, dtype=torch.float32)
+        z_interpolated = interp_f(u_interpolated)
+        return u_interpolated, torch.tensor(z_interpolated, device=self.device, dtype=torch.float32)
 
     @abstractmethod
     def generate_audio_and_spectrograms(self, z: torch.Tensor):
