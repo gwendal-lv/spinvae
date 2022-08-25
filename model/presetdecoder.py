@@ -237,12 +237,13 @@ class ChildDecoderBase(nn.Module):
         # Set sequence dim last for the probability distribution (channels: distrib params)
         numerical_distrib_params = self.numerical_distrib.apply_activations(numerical_distrib_params.transpose(2, 1))
         if not sample_only:
-            # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
-            u_numerical_nll = torch.squeeze(self.numerical_distrib.NLL(
+            u_numerical_nll = self.numerical_distrib.NLL(
                 numerical_distrib_params,
                 u_target[:, self.seq_numerical_items_bool_mask, 1:2].transpose(2, 1),
                 self.get_expanded_numerical_tokens_card(u_target.shape[0], u_target.device)  # for discrete logistics
-            ))
+            )
+            # These are NLLs and samples for a "single-channel" distribution -> squeeze for consistency vs. categorical
+            u_numerical_nll = torch.squeeze(u_numerical_nll, dim=1)  # don't squeeze batch dim
         else:
             u_numerical_nll: Optional[torch.Tensor] = None
         with torch.no_grad():
