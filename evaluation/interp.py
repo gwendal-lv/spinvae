@@ -82,7 +82,7 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
 
 class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
     def __init__(self, model_loader: evaluation.load.ModelLoader, num_steps=7,
-                 latent_interp='linear'):
+                 u_curve='linear', latent_interp='linear'):
         super().__init__(
             model_loader=model_loader, num_steps=num_steps,
             latent_interp_kind=latent_interp
@@ -138,24 +138,21 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
 
 if __name__ == "__main__":
     _device = 'cpu'
-    _model_path = Path(__file__).resolve().parent.parent
-    _model_path = _model_path.joinpath('../Data_SSD/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.50')
+    _root_path = Path(__file__).resolve().parent.parent
+    _model_path = _root_path.joinpath('../Data_SSD/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.20')
     _model_loader = evaluation.load.ModelLoader(_model_path, _device, 'validation')
 
     _num_steps = 9
 
-    if False:  # Gen naive interpolations ? (THRESHOLD)
+    if False:  # TODO Gen naive interpolations ? (LINEAR)
         naive_preset_interpolator = evaluation.interpbase.NaivePresetInterpolation(
             _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
-            '/media/gwendal/Data/Interpolations/ThresholdNaive', u_curve='threshold', num_steps=_num_steps)
-        naive_preset_interpolator.process_dataset()
-    if False:  # Gen naive interpolations ? (LINEAR)
-        naive_preset_interpolator = evaluation.interpbase.NaivePresetInterpolation(
-            _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
-            '/media/gwendal/Data/Interpolations/LinearNaive', num_steps=_num_steps)
+            _root_path.joinpath('../Data_SSD/Interpolations/LinearNaive'), num_steps=_num_steps)
         naive_preset_interpolator.process_dataset()
 
     # TODO additional path suffix for different interp hparams
-    preset_interpolator = SynthPresetLatentInterpolation(_model_loader, num_steps=_num_steps)
+    preset_interpolator = SynthPresetLatentInterpolation(
+        _model_loader, num_steps=_num_steps, u_curve='linear', latent_interp='linear',
+    )
     preset_interpolator.process_dataset()
 

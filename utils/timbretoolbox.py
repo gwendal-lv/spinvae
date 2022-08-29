@@ -321,7 +321,7 @@ class InterpolationTimbreToolbox(ToolboxLogger):
 
 if __name__ == "__main__":
 
-    _timbre_toolbox_path = '/home/gwendal/Documents/MATLAB/timbretoolbox'
+    _timbre_toolbox_path = '/home/gwendal/Documents/MATLAB/timbretoolbox'  # TODO anonymize this
     _data_root_path = '/media/gwendal/Data/Interpolations/LinearNaive/interp_validation'
     timbre_proc = InterpolationTimbreToolbox(_timbre_toolbox_path, _data_root_path,
                                              num_matlab_proc=12)

@@ -195,13 +195,16 @@ def remove_axes_spines_and_ticks(ax):
     ax.get_yaxis().set_ticks([])
 
 
-def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,
-                             plot_delta_spectrograms=True,
-                             z: Optional[torch.Tensor] = None, num_z_coords_to_show=40,
-                             metrics: Optional[Dict[str, np.ndarray]] = None,
-                             subplot_w_h=(1.5, 1.5), title: Optional[str] = None):
-    """ Plots a "batch" of interpolated spectrograms. The number of spectrograms must be the same as the number of
-    interpolation abscissae u. """
+def plot_spectrograms_interp(
+        u: np.ndarray, spectrograms: torch.Tensor, plot_delta_spectrograms=True,
+        z: Optional[torch.Tensor] = None, num_z_coords_to_show=40, metrics: Optional[Dict[str, np.ndarray]] = None,
+        subplot_w_h=(1.5, 1.5), title: Optional[str] = None):
+    """
+    Plots a "batch" of interpolated spectrograms. The number of spectrograms must be the same as the number of
+    interpolation abscissae u.
+
+    :param metrics: TODO DOC
+    """
     if u.shape[0] != spectrograms.shape[0] or (z is not None and u.shape[0] != z.shape[0]):  # TODO all tests
         raise AssertionError("All input arrays/tensor must have the same length along dimension 0.")
     if u.shape[0] < 2:
@@ -213,6 +216,8 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,
     n_rows += (1 if metrics is not None else 0)
     fig, axes = plt.subplots(n_rows, u.shape[0], sharey='row',
                              figsize=(u.shape[0]*subplot_w_h[0], n_rows*subplot_w_h[1] + (0 if title is None else 0.3)))
+    if n_rows == 1:  # Always convert to 2D axes (even if single-line plot)
+        axes = np.expand_dims(axes, axis=0)
     # Data converted to numpy, compute deltas
     if spectrograms.shape[1] > 1:
         raise AssertionError("Input spectrograms must be single-channel.")
@@ -276,8 +281,9 @@ def plot_spectrograms_interp(u: np.ndarray, spectrograms: torch.Tensor,
         lol = 0
     # Display: labels, ...
     axes[0, 0].set_ylabel(r'Spectrogram $\mathbf{s}$')
-    remove_axes_spines_and_ticks(axes[1, 0])
-    axes[1, 0].set_ylabel(r'$\frac{\Delta \mathbf{s}}{\Delta u}$', fontsize=14.0).set_rotation(0.0)
+    if n_rows > 1:
+        remove_axes_spines_and_ticks(axes[1, 0])
+        axes[1, 0].set_ylabel(r'$\frac{\Delta \mathbf{s}}{\Delta u}$', fontsize=14.0).set_rotation(0.0)
     if z_np is not None:
         axes[2, 0].set_ylabel(r'Latent vector $\mathbf{z}$')
     if title is not None:
