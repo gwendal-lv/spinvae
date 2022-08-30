@@ -144,15 +144,16 @@ if __name__ == "__main__":
 
     _num_steps = 9
 
-    if False:  # TODO Gen naive interpolations ? (LINEAR)
+    if True:  # TODO Gen naive interpolations ? (LINEAR)
         naive_preset_interpolator = evaluation.interpbase.NaivePresetInterpolation(
             _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
-            _root_path.joinpath('../Data_SSD/Interpolations/LinearNaive'), num_steps=_num_steps)
+            _root_path.parent.joinpath('Data_SSD/Interpolations/LinearNaive'), num_steps=_num_steps)
         naive_preset_interpolator.process_dataset()
 
     # TODO additional path suffix for different interp hparams
-    preset_interpolator = SynthPresetLatentInterpolation(
-        _model_loader, num_steps=_num_steps, u_curve='linear', latent_interp='linear',
-    )
-    preset_interpolator.process_dataset()
+    if True:
+        preset_interpolator = SynthPresetLatentInterpolation(
+            _model_loader, num_steps=_num_steps, u_curve='linear', latent_interp='linear',
+        )
+        preset_interpolator.process_dataset()
 

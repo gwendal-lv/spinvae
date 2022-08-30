@@ -29,7 +29,7 @@ class InterpSequence:
         self.UID_start, self.UID_end = -1, -1
         self.audio = list()
         self.spectrograms = list()
-        self.librosa_interpolation_metrics: Optional[Dict[str, Any]] = None
+        self.librosa_features: Optional[Dict[str, Any]] = None
         # Actual number of frames might be greater (odd) because of window centering and signal padding
         self.num_metric_frames = 8  # 500ms frames for 4.0s audio  FIXME use ctor arg
 
@@ -37,11 +37,11 @@ class InterpSequence:
     def storage_path(self) -> pathlib.Path:
         return self.parent_path.joinpath('{:05d}'.format(self.seq_index))
 
-    def process_and_save(self, librosa_interp_metrics=False):
+    def process_and_save(self, _librosa_features=False):
         """ Computes interpolation metrics
             then saves all available data into a new directory created inside the parent dir. """
-        if librosa_interp_metrics:
-            self.librosa_interpolation_metrics = timbre_librosa.compute_interpolation_metrics(
+        if _librosa_features:
+            self.librosa_features = timbre_librosa.compute_audio_features(
                 self.audio, self.num_metric_frames)
         if os.path.exists(self.storage_path):
             shutil.rmtree(self.storage_path)
@@ -54,12 +54,12 @@ class InterpSequence:
                             audio_Fs[0], audio_Fs[1], subtype='FLOAT')
         with open(self.storage_path.joinpath('spectrograms.pkl'), 'wb') as f:
             pickle.dump(self.spectrograms, f)
-        if self.librosa_interpolation_metrics is not None:  # Don't save if librosa features were not computed
+        if self.librosa_features is not None:  # Don't save if librosa features were not computed
             with open(self.storage_path.joinpath('librosa_interp_metrics.dict.pkl'), 'wb') as f:
-                pickle.dump(self.librosa_interpolation_metrics, f)
+                pickle.dump(self.librosa_features, f)
         fig, axes = utils.figures.plot_spectrograms_interp(
             self.u, torch.vstack([torch.unsqueeze(torch.unsqueeze(s, dim=0), dim=0) for s in self.spectrograms]),
-            metrics=self.librosa_interpolation_metrics, plot_delta_spectrograms=False,
+            metrics=self.librosa_features, plot_delta_spectrograms=False,
             title=(self.name if len(self.name) > 0 else None)
         )
         fig.savefig(self.storage_path.joinpath("spectrograms_interp.pdf"))
@@ -75,7 +75,7 @@ class InterpSequence:
                 json_info['start'], json_info['end'], json_info['sequence_name'], json_info['num_steps']
         # FIXME don't always load these interp metrics
         with open(self.storage_path.joinpath('librosa_interp_metrics.dict.pkl'), 'rb') as f:
-            self.librosa_interpolation_metrics = pickle.load(f)
+            self.librosa_features = pickle.load(f)
         with open(self.storage_path.joinpath('spectrograms.pkl'), 'rb') as f:
             self.spectrograms = pickle.load(f)
         self.audio = list()

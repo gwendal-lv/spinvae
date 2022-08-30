@@ -7,7 +7,7 @@ import pickle
 import shutil
 import warnings
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict, List, Any
 from datetime import datetime
 
 import numpy as np
@@ -20,6 +20,7 @@ from data.preset2d import Preset2d
 from data.abstractbasedataset import PresetDataset
 import evaluation.load
 from evaluation.interpsequence import InterpSequence, LatentInterpSequence
+from utils.timbretoolbox import InterpolationTimbreToolbox
 
 
 class InterpBase(ABC):
@@ -33,7 +34,7 @@ class InterpBase(ABC):
         self.num_steps = num_steps
         self.u_curve = u_curve
         self.verbose = verbose
-        self.all_librosa_interp_metrics = dict()
+        self.all_librosa_features = dict()
 
     def get_u_interpolated(self):
         if self.u_curve == 'linear':
@@ -64,26 +65,77 @@ class InterpBase(ABC):
         end_name = dataset.get_name_from_preset_UID(end_UID)
         return "[{}] '{}' --> [{}] '{}'".format(start_UID, start_name, end_UID, end_name)
 
-    def librosa_interp_metrics_init(self):
-        self.all_librosa_interp_metrics = None
+    def librosa_metrics_init(self):
+        self.all_librosa_features = None
 
-    def append_librosa_interp_metric(self, m: InterpSequence):
+    def append_librosa_features(self, m: InterpSequence):
         """ Internally stores all available librosa metrics (might be None) from the given sequence. """
-        if m.librosa_interpolation_metrics is not None:
-            if self.all_librosa_interp_metrics is None:  # Create dict and init lists of arrays
-                self.all_librosa_interp_metrics = {k: list() for k in m.librosa_interpolation_metrics}
-            for k, v in m.librosa_interpolation_metrics.items():
-                self.all_librosa_interp_metrics[k].append(v)
+        if m.librosa_features is not None:
+            if self.all_librosa_features is None:  # Create dict and init lists of arrays
+                self.all_librosa_features = {k: list() for k in m.librosa_features}
+            for k, v in m.librosa_features.items():
+                self.all_librosa_features[k].append(v)
 
-    def store_librosa_interp_metrics(self):
-        if self.all_librosa_interp_metrics is not None:
-            stacked_metrics = {k: np.stack(l, axis=0) for k, l in self.all_librosa_interp_metrics.items()}
-            with open(self.storage_path.joinpath('all_librosa_interp_metrics.pkl'), 'wb') as f:
+    def store_librosa_features(self):
+        if self.all_librosa_features is not None:
+            stacked_metrics = {k: np.stack(l, axis=0) for k, l in self.all_librosa_features.items()}
+            with open(self.storage_path.joinpath('all_librosa_features.pkl'), 'wb') as f:
                 pickle.dump(stacked_metrics, f)
         else:
-            warnings.warn("Cannot store librosa metrics (which are None).")
+            warnings.warn("Cannot store librosa features (which are None).")
 
-    # TODO compute TT interp metrics
+    def compute_store_timbre_toolbox_features(self):
+        _timbre_toolbox_path = '~/Documents/MATLAB/timbretoolbox'
+        timbre_proc = InterpolationTimbreToolbox(
+            _timbre_toolbox_path, self.storage_path, num_matlab_proc=12, remove_matlab_csv_after_usage=True)
+        timbre_proc.run()
+        timbre_proc.post_process_features(self.storage_path)
+
+    def compute_and_save_interpolation_metrics(self):
+        self.store_librosa_features()  # Deprecated... currently does nothing
+        self.compute_store_timbre_toolbox_features()
+
+        all_seqs_dfs = InterpolationTimbreToolbox.get_stored_postproc_sequences_descriptors(self.storage_path)
+        features_stats = InterpolationTimbreToolbox.get_default_postproc_features_stats()
+        interp_results = self._compute_interp_metrics(all_seqs_dfs, features_stats)
+        with open(self.storage_path.joinpath('interp_results.pkl'), 'wb') as f:
+            pickle.dump(interp_results, f)
+
+    @staticmethod
+    def get_interp_results(storage_path: pathlib.Path):
+        with open(storage_path.joinpath('interp_results.pkl'), 'rb') as f:
+            return pickle.load(f)
+
+    @staticmethod
+    def _compute_interp_metrics(all_seqs_dfs: List[pd.DataFrame], features_stats: Dict[str, Any]):
+        """ Quantifies how smooth and linear the interpolation is, using previously computed audio features
+        from timbretoolbox TODO maybe include some librosa features """
+        # Compute interpolation performance for each interpolation metric, for each sequence
+        interp_results = {'smoothness': list(), 'sum_squared_residuals': list()}
+        for seq_df in all_seqs_dfs:
+            seq_interp_results = InterpBase._compute_sequence_interp_metrics(seq_df, features_stats)
+            for k in seq_interp_results:
+                interp_results[k].append(seq_interp_results[k])
+        # Then sum each interp metric everything up into a single df
+        for k in interp_results:
+            interp_results[k] = pd.DataFrame(interp_results[k])
+        return interp_results
+
+    @staticmethod
+    def _compute_sequence_interp_metrics(seq: pd.DataFrame, features_stats: Dict[str, Any]):
+        interp_metrics = {'smoothness': dict(), 'sum_squared_residuals': dict()}
+        seq = seq.drop(columns="step_index")
+        step_h = 1.0 / (len(seq) - 1.0)
+        for col in seq.columns:
+            feature_values = ((seq[col] - features_stats['mean'][col]) / features_stats['std'][col]).values
+            # Smoothness: https://proceedings.neurips.cc/paper/2019/file/7d12b66d3df6af8d429c1a357d8b9e1a-Paper.pdf
+            # Second-order central difference using a conv kernel, then compute the RMS of the smaller array
+            smoothness = np.convolve(feature_values, [1.0, -2.0, 1.0], mode='valid') / (step_h ** 2)
+            interp_metrics['smoothness'][col] = np.sqrt( (smoothness ** 2).mean() )
+            # RSS
+            target_linear_values = np.linspace(feature_values[0], feature_values[-1], num=feature_values.shape[0]).T
+            interp_metrics['sum_squared_residuals'][col] = ((feature_values - target_linear_values) ** 2).sum()
+        return interp_metrics
 
 
 class NaivePresetInterpolation(InterpBase):
@@ -104,7 +156,7 @@ class NaivePresetInterpolation(InterpBase):
         self.create_storage_directory()
         t_start = datetime.now()
 
-        self.librosa_interp_metrics_init()
+        self.librosa_metrics_init()
 
         current_sequence_index = 0
         # Retrieve all latent vectors that will be used for interpolation
@@ -132,13 +184,13 @@ class NaivePresetInterpolation(InterpBase):
                     vst_interp_presets = self.get_interpolated_presets(seq.u, np.vstack(start_end_presets))
                     seq.audio, seq.spectrograms = self.generate_audio_and_spectrograms(vst_interp_presets)
                     seq.process_and_save()
-                    self.append_librosa_interp_metric(seq)
+                    self.append_librosa_features(seq)
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
-            if batch_idx >= 1:  # FIXME, TEMP
+            if batch_idx >= 0:  # FIXME, TEMP
                 break
-        self.store_librosa_interp_metrics()
+        self.compute_and_save_interpolation_metrics()
         if self.verbose:
             delta_t = (datetime.now() - t_start).total_seconds()
             print("[{}] Finished processing interpolations in {:.1f}min ".format(type(self).__name__, delta_t / 60.0))
@@ -196,7 +248,7 @@ class ModelBasedInterpolation(InterpBase):
         self.create_storage_directory()
         t_start = datetime.now()
 
-        self.librosa_interp_metrics_init()
+        self.librosa_metrics_init()
         # to store all latent-specific stats (each sequence is written to SSD before computing the next one)
         # encoded latent vectors (usually different from endpoints, if the corresponding preset is not 100% accurate)
         z_ae = list()
@@ -237,16 +289,16 @@ class ModelBasedInterpolation(InterpBase):
                     seq.u, seq.z = self.interpolate_latent(z_start, z_end)
                     seq.audio, seq.spectrograms = self.generate_audio_and_spectrograms(seq.z)
                     seq.process_and_save()
-                    self.append_librosa_interp_metric(seq)
+                    self.append_librosa_features(seq)
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
 
             # FIXME TEMP
-            if batch_idx >= 1:
+            if batch_idx >= 0:
                 break
 
-        self.store_librosa_interp_metrics()
+        self.compute_and_save_interpolation_metrics()
 
         # TODO also store "interp hparams" which were used to compute interpolation (e.g. u_curve, inverse log prob, ...)
 
@@ -297,87 +349,17 @@ class ModelBasedInterpolation(InterpBase):
         pass
 
 
-def _compute_metric_statistics(flat_metric: np.ndarray, metric_name: str):
-    """
-    :returns: FIXME DOC sum_squared_normalized_residuals, linregress_R2, pearson_r_squared
-    """
-    # TODO acceleration RMS (smoothness factor)
-    # First, we perform linear regression on the output features
-    linregressions = [scipy.stats.linregress(np.linspace(0.0, 1.0, num=y.shape[0]), y) for y in flat_metric]
-    linregr_R2 = np.asarray([l.rvalue**2 for l in linregressions])
-    linregr_pvalues = np.asarray([l.pvalue for l in linregressions])
-    # target features (ideal linear increase/decrease)
-    target_metric = np.linspace(flat_metric[:, 0], flat_metric[:, -1], num=flat_metric.shape[1]).T
-    target_amplitudes = flat_metric.max(axis=1) - flat_metric.min(axis=1)
-    mean_target_amplitude = target_amplitudes.mean()
-    target_max_abs_values = np.abs(flat_metric).max(axis=1)
-    target_relative_variation = target_amplitudes / target_max_abs_values
-    # Sum of squared (normalized) residuals
-    residuals = (flat_metric - target_metric) / mean_target_amplitude
-    # r2 pearson correlation - might trigger warnings if an array is (too) constant. Dismiss p-values
-    pearson_r = np.asarray(
-        [scipy.stats.pearsonr(target_metric[i, :], flat_metric[i, :])[0] for i in range(target_metric.shape[0])])
-    pearson_r = pearson_r[~np.isnan(pearson_r)]
-    # max of abs derivative (compensated for step size, normalized vs. target amplitude)
-    diffs = np.diff(flat_metric, axis=1) * flat_metric.shape[1] / mean_target_amplitude
-    max_abs_diffs = np.abs(diffs.max(axis=1))  # Biggest delta for all steps, average for all sequences
-    return {'metric': metric_name,
-            'sum_squared_residuals': (residuals ** 2).mean(),
-            'linregression_R2': linregr_R2.mean(),
-            'target_pearson_r2': (pearson_r**2).mean(),  # Identical to R2 when there is no nan r value
-            'max_abs_delta': max_abs_diffs.mean()
-            }
-
-
-def process_features(storage_path: pathlib.Path):
-    """ Reads the 'all_interp_metrics.pkl' file (pre-computed audio features at each interp step) and computes:
-        - constrained affine regression values (start and end values are start/end feature values). They can't be used
-          to compute a R2 coeff of determination, because some values -> -infty (when target is close to constant)
-        - R2 coefficients for each regression curve fitted to interpolated features (not the GT ideal features)
-    TODO where to store results?? Dataframe?
-    """
-    with open(storage_path.joinpath('all_interp_metrics.pkl'), 'rb') as f:
-        all_interp_metrics = pickle.load(f)
-    # TODO pre-preprocessing of '_full' metrics: compute their avg and std as new keys
-    # Compute various stats  for all metrics - store all in a dataframe
-    results_list = list()
-    for k, metric in all_interp_metrics.items():
-        # sklearn r2 score (coefficient of determination) expects inputs shape: (n_samples, n_outputs)
-        #    We can't use it with constrained regressions (from start to end point) because R2 values
-        #    become arbitrarily negative for flat target data (zero-slope)
-        # So: we'll use the usual rvalue from linear regression, where R2 (determination coeff) = rvalue^2 >= 0.0
-        #    (pvalue > 0.05 indicates that we can't reject H0: "the slope is zero")
-        # TODO also compute sum of errors compared to the "ideal start->end affine regression"
-        if len(metric.shape) == 2:  # scalar metric (real value for each step of each interpolation sequence)
-            results_list.append(_compute_metric_statistics(metric, k))
-        elif len(metric.shape) == 3:  # vector metric (for each step of each sequence) e.g. RMS values for time frames
-            if '_frames' not in k:
-                raise AssertionError("All vector metrics should have the '_frames' suffix (found: '{}').".format(k))
-            # A regression is computed on each time frame (considered independent)
-            for frame_i in range(metric.shape[2]):
-                results_list.append(_compute_metric_statistics(metric[:, :, frame_i], k + '{:02d}'.format(frame_i)))
-        elif len(metric.shape) == 4:  # 2D metric (matrix for each step of each sequence) e.g. MFCCs, spectral contrast
-            continue  # TODO multivariate correlation coeff ?
-            # MFCC: orthogonal features (in the frequency axis)
-        else:
-            raise NotImplementedError()
-    # Compute global averages (_frames excluded)
-    results_df = pd.DataFrame(results_list)
-    df_without_frames = results_df[~results_df['metric'].str.contains('_frame')]
-    global_averages = {'metric': 'global_average'}
-    for k in list(df_without_frames.columns):
-        if k != 'metric':
-            global_averages[k] = df_without_frames[k].values.mean()
-    results_df.loc[len(results_df)] = global_averages  # loc can add a new row to a DataFrame
-    # TODO output results and/or store
-    return results_df
-
 
 if __name__ == "__main__":
-    _storage_path = "/home/gwendal/Jupyter/nn-synth-interp/saved/" \
-                    "FlowReg_dimz5020/CElabels_smooth0.2_noise0.1__permsFalse/interp_validation"
-    #_storage_path = '/media/gwendal/Data/Interpolations/LinearNaive/interp_validation'
-    #_storage_path = '/media/gwendal/Data/Interpolations/ThresholdNaive/interp_validation'
-    _results_df = process_features(pathlib.Path(_storage_path))
+    _storage_path = '/media/gwendal/Data/Interpolations/LinearNaive/interp_validation'
+    #_storage_path = '/media/gwendal/Data/Interpolations/ThresholdNaive/interp_validation'cd ../
+    _results1 = InterpBase.get_interp_results(pathlib.Path(_storage_path))
+
+    _storage_path = '/media/gwendal/Data/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.20/interp_validation'
+    _results2 = InterpBase.get_interp_results(pathlib.Path(_storage_path))
+
+    _all_seqs_dfs = InterpolationTimbreToolbox.get_stored_postproc_sequences_descriptors(_storage_path)
+    _features_stats =  InterpolationTimbreToolbox.get_default_postproc_features_stats()
+    _results_dfs = InterpBase._compute_interp_metrics(_all_seqs_dfs, _features_stats)
 
 
