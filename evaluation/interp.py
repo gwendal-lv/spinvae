@@ -28,8 +28,7 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
                  generator=None, init_generator=True):
         """
         Generic class for interpolating latent vectors (between two reference latent vectors), and for generating
-        samples (spectrograms and/or audio) from those interpolated latent vectors.
-        The generator
+        samples (spectrograms and/or audio) from those interpolated latent vectors using a generator model.
 
         :param generator: Any model that provides a generate_from_latent_vector(z) method (where z is a batch of
               vectors), a .dim_z attribute (e.g. a decoder model). Using this argument will prevent this class from
@@ -82,10 +81,10 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
 
 class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
     def __init__(self, model_loader: evaluation.load.ModelLoader, num_steps=7,
-                 u_curve='linear', latent_interp='linear'):
+                 u_curve='linear', latent_interp='linear', storage_path: Optional[pathlib.Path] = None):
         super().__init__(
-            model_loader=model_loader, num_steps=num_steps,
-            latent_interp_kind=latent_interp
+            model_loader=model_loader, num_steps=num_steps, u_curve=u_curve, latent_interp_kind=latent_interp,
+            storage_path=storage_path
         )
         if not isinstance(self.dataset, data.abstractbasedataset.PresetDataset):
             raise NotImplementedError("This evaluation class is available for a PresetDataset only (current "
@@ -139,7 +138,7 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
 if __name__ == "__main__":
     _device = 'cpu'
     _root_path = Path(__file__).resolve().parent.parent
-    _model_path = _root_path.joinpath('../Data_SSD/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.20')
+    _model_path = _root_path.joinpath('../Data_SSD/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.50')
     _model_loader = evaluation.load.ModelLoader(_model_path, _device, 'validation')
 
     _num_steps = 9

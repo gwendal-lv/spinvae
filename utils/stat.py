@@ -4,6 +4,7 @@ Statistics-related utility functions.
 import copy
 
 import numpy as np
+import pandas as pd
 
 
 def get_outliers_bounds(x: np.array, IQR_factor=1.5):
@@ -16,6 +17,13 @@ def get_outliers_bounds(x: np.array, IQR_factor=1.5):
 def remove_outliers(x: np.ndarray, IQR_factor=1.5):
     x_limits = get_outliers_bounds(x, IQR_factor)
     return x[(x_limits[0] <= x) & (x <= x_limits[1])]
+
+
+def means_without_outliers(df: pd.DataFrame, IQR_factor=1.5):
+    """ Returns a Pandas Series containing the "no-outlier" mean of each column of the input DataFrame, i.e.
+    means are computed after outliers of each column have been removed. """
+    d = {col: remove_outliers(df[col].values, IQR_factor).mean() for col in df.columns}
+    return pd.Series(d)  # build a dict, return it as a Series
 
 
 def get_random_subset_keep_minmax(x: np.array, subset_len: int):

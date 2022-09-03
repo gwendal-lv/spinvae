@@ -7,6 +7,7 @@ import pandas as pd
 import seaborn as sns
 
 from interpbase import InterpBase
+import utils.stat
 
 
 def interp_results_boxplots(
@@ -53,10 +54,11 @@ def interp_results_boxplots(
                 except KeyError:
                     pass  # A feature might be removed multiple times (multiple overlapping removal criteria)
 
-    # TODO for each feature, retrieve max of the 1st model, which can be used as a reference for normalization
-    #   or retrieve mean?? (very different scales for different features)
+    # for each feature, compute normalisation factors from the 1st model, to be used for all models
+    #   mean "without outliers" gives the best boxplots
     reference_results = models_interp_results[reference_model_idx]
-    reference_norm_factors = {k: results_df.mean() for k, results_df in reference_results.items()}
+    reference_norm_factors = {k: utils.stat.means_without_outliers(results_df)
+                              for k, results_df in reference_results.items()}
 
     # Detailed boxplots: each metric has its own subplots
     fig, axes = plt.subplots(len(metrics_to_plot), 1, figsize=(12, len(metrics_to_plot) * 5))  # FIXME size
@@ -74,7 +76,8 @@ def interp_results_boxplots(
         models_melted_results = pd.concat(models_melted_results)
         # TODO use bright colors such that the black median line is easily visible
         sns.boxplot(data=models_melted_results, x="variable", y="value", hue="model_name",
-                    ax=axes[metric_idx], showfliers=False, linewidth=0.75)  # TODO test linewidth 0.75
+                    ax=axes[metric_idx], showfliers=False, linewidth=1.2, palette="pastel")
+        axes[metric_idx].set_ylim(ymin=0.0)
         if False:
             sns.pointplot(
                 data=models_melted_results, x="variable", y="value", hue="model_name", ax=axes[metric_idx],

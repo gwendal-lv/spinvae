@@ -34,7 +34,7 @@ class InterpBase(ABC):
         self.num_steps = num_steps
         self.u_curve = u_curve
         self.verbose = verbose
-        self.all_librosa_features = dict()
+        self.use_reduced_dataset = False  # faster debugging
 
     def get_u_interpolated(self):
         if self.u_curve == 'linear':
@@ -55,7 +55,7 @@ class InterpBase(ABC):
         # First: create the dir to store data (erase any previously written eval files)
         if os.path.exists(self.storage_path):
             shutil.rmtree(self.storage_path)
-        os.mkdir(self.storage_path)
+        self.storage_path.mkdir(parents=True)
         if self.verbose:
             print("[{}] Results will be stored in '{}'".format(type(self).__name__, self.storage_path))
 
@@ -65,34 +65,29 @@ class InterpBase(ABC):
         end_name = dataset.get_name_from_preset_UID(end_UID)
         return "[{}] '{}' --> [{}] '{}'".format(start_UID, start_name, end_UID, end_name)
 
-    def librosa_metrics_init(self):
-        self.all_librosa_features = None
-
-    def append_librosa_features(self, m: InterpSequence):
-        """ Internally stores all available librosa metrics (might be None) from the given sequence. """
-        if m.librosa_features is not None:
-            if self.all_librosa_features is None:  # Create dict and init lists of arrays
-                self.all_librosa_features = {k: list() for k in m.librosa_features}
-            for k, v in m.librosa_features.items():
-                self.all_librosa_features[k].append(v)
-
-    def store_librosa_features(self):
-        if self.all_librosa_features is not None:
-            stacked_metrics = {k: np.stack(l, axis=0) for k, l in self.all_librosa_features.items()}
-            with open(self.storage_path.joinpath('all_librosa_features.pkl'), 'wb') as f:
-                pickle.dump(stacked_metrics, f)
+    def try_process_dataset(self, force_re_eval=False):
+        if force_re_eval:
+            self.process_dataset()
         else:
-            warnings.warn("Cannot store librosa features (which are None).")
+            if os.path.exists(self.storage_path):
+                print("[{}] Some results were already stored in '{}' - dataset won't be re-evaluated"
+                      .format(type(self).__name__, self.storage_path))
+            else:
+                self.process_dataset()
 
-    def compute_store_timbre_toolbox_features(self):
-        _timbre_toolbox_path = '~/Documents/MATLAB/timbretoolbox'
-        timbre_proc = InterpolationTimbreToolbox(
-            _timbre_toolbox_path, self.storage_path, num_matlab_proc=12, remove_matlab_csv_after_usage=True)
-        timbre_proc.run()
-        timbre_proc.post_process_features(self.storage_path)
+    def process_dataset(self):
+        self.render_audio()
+        self.compute_and_save_interpolation_metrics()
+
+    @abstractmethod
+    def render_audio(self):
+        pass
 
     def compute_and_save_interpolation_metrics(self):
-        self.store_librosa_features()  # Deprecated... currently does nothing
+        """
+        Compute features for each individual audio file (which has already been rendered),
+        then compute interpolation metrics for each sequence.
+        """
         self.compute_store_timbre_toolbox_features()
 
         all_seqs_dfs = InterpolationTimbreToolbox.get_stored_postproc_sequences_descriptors(self.storage_path)
@@ -100,6 +95,13 @@ class InterpBase(ABC):
         interp_results = self._compute_interp_metrics(all_seqs_dfs, features_stats)
         with open(self.storage_path.joinpath('interp_results.pkl'), 'wb') as f:
             pickle.dump(interp_results, f)
+
+    def compute_store_timbre_toolbox_features(self):
+        _timbre_toolbox_path = '~/Documents/MATLAB/timbretoolbox'
+        timbre_proc = InterpolationTimbreToolbox(
+            _timbre_toolbox_path, self.storage_path, num_matlab_proc=12, remove_matlab_csv_after_usage=True)
+        timbre_proc.run()
+        timbre_proc.post_process_features(self.storage_path)
 
     @staticmethod
     def get_interp_results(storage_path: pathlib.Path):
@@ -116,7 +118,7 @@ class InterpBase(ABC):
             seq_interp_results = InterpBase._compute_sequence_interp_metrics(seq_df, features_stats)
             for k in seq_interp_results:
                 interp_results[k].append(seq_interp_results[k])
-        # Then sum each interp metric everything up into a single df
+        # Then sum each interp metric up into a single df
         for k in interp_results:
             interp_results[k] = pd.DataFrame(interp_results[k])
         return interp_results
@@ -149,14 +151,12 @@ class NaivePresetInterpolation(InterpBase):
 
     @property
     def storage_path(self) -> pathlib.Path:
-        return self._base_storage_path.joinpath('interp_{}'.format(self.dataset_type))
+        return self._base_storage_path.joinpath('interp_{}'.format(self.dataset_type[0:5]))
 
-    def process_dataset(self):
+    def render_audio(self):
         """ Generates interpolated sounds using the 'naïve' linear interpolation between VST preset parameters. """
         self.create_storage_directory()
         t_start = datetime.now()
-
-        self.librosa_metrics_init()
 
         current_sequence_index = 0
         # Retrieve all latent vectors that will be used for interpolation
@@ -171,9 +171,10 @@ class NaivePresetInterpolation(InterpBase):
                     end_sequence_with_next_item = True
                 else:
                     # Compute and store interpolations one-by-one (gigabytes of audio data might not fit into RAM)
-                    seq = InterpSequence(self.storage_path, current_sequence_index)
-                    seq.UID_start, seq.UID_end = uid[i-1].item(), uid[i].item()
-                    seq.name = self.get_sequence_name(seq.UID_start, seq.UID_end, self.dataset)
+                    seq = InterpSequence(
+                        self.storage_path, current_sequence_index, uid[i-1].item(), uid[i].item(),
+                        self.get_sequence_name(uid[i-1].item(), uid[i].item(), self.dataset)
+                    )
                     seq.u = self.get_u_interpolated()
                     # Convert learnable presets to VST presets  FIXME works for Dexed only
                     start_end_presets = list()
@@ -183,17 +184,16 @@ class NaivePresetInterpolation(InterpBase):
                     start_end_presets.append(preset2d.to_raw())
                     vst_interp_presets = self.get_interpolated_presets(seq.u, np.vstack(start_end_presets))
                     seq.audio, seq.spectrograms = self.generate_audio_and_spectrograms(vst_interp_presets)
-                    seq.process_and_save()
-                    self.append_librosa_features(seq)
+                    seq.save()
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
-            if batch_idx >= 0:  # FIXME, TEMP
+            if self.use_reduced_dataset:
                 break
-        self.compute_and_save_interpolation_metrics()
         if self.verbose:
             delta_t = (datetime.now() - t_start).total_seconds()
-            print("[{}] Finished processing interpolations in {:.1f}min ".format(type(self).__name__, delta_t / 60.0))
+            print("[{}] Finished rendering audio for interpolations in {:.1f}min "
+                  .format(type(self).__name__, delta_t / 60.0))
 
     def get_interpolated_presets(self, u: np.ndarray, start_end_presets: np.ndarray):
         interp_f = scipy.interpolate.interp1d(
@@ -210,9 +210,11 @@ class NaivePresetInterpolation(InterpBase):
 
 
 class ModelBasedInterpolation(InterpBase):
-    def __init__(self, model_loader: Optional[evaluation.load.ModelLoader] = None,
-                 device='cpu', num_steps=7,
-                 u_curve='linear', latent_interp_kind='linear', verbose=True):
+    def __init__(
+            self, model_loader: Optional[evaluation.load.ModelLoader] = None, device='cpu', num_steps=7,
+            u_curve='linear', latent_interp_kind='linear', verbose=True,
+            storage_path: Optional[pathlib.Path] = None
+    ):
         """
         A class for performing interpolations using a neural network model whose inputs are latent vectors.
 
@@ -221,34 +223,29 @@ class ModelBasedInterpolation(InterpBase):
         """
         super().__init__(num_steps=num_steps, verbose=verbose, u_curve=u_curve)
         self.latent_interp_kind = latent_interp_kind
+        self._storage_path = storage_path
         if model_loader is not None:
             self._model_loader = model_loader
             self.device = model_loader.device
             self.dataset = model_loader.dataset
             self.dataset_type = model_loader.dataset_type
             self.dataloader, self.dataloader_num_items = model_loader.dataloader, model_loader.dataloader_num_items
-            self._storage_path = model_loader.path_to_model_dir
             self.ae_model = model_loader.ae_model
         else:
             self.device = device
             self.dataset, self.dataset_type, self.dataloader, self.dataloader_num_items = None, None, None, None
-            self._storage_path = None
 
     @property
     def storage_path(self) -> pathlib.Path:
-        if self._storage_path is not None:
-            return self._storage_path.joinpath('interp_{}'.format(self.dataset_type))
-        else:
-            raise AssertionError("self._storage_path was not set (this instance was not built using a ModelLoader)")
+        return self._storage_path
 
-    def process_dataset(self):
+    def render_audio(self):
         """ Performs an interpolation over the whole given dataset (usually validation or test), using pairs
         of items from the dataloader. Dataloader should be deterministic. Total number of interpolations computed:
         len(dataloder) // 2. """
         self.create_storage_directory()
         t_start = datetime.now()
 
-        self.librosa_metrics_init()
         # to store all latent-specific stats (each sequence is written to SSD before computing the next one)
         # encoded latent vectors (usually different from endpoints, if the corresponding preset is not 100% accurate)
         z_ae = list()
@@ -265,14 +262,14 @@ class ModelBasedInterpolation(InterpBase):
             for i in range(N):
                 if not end_sequence_with_next_item:
                     if self.verbose:
-                        print("Item {} (mini-batch {}/{})"
-                              .format(i + batch_idx * N, batch_idx+1, len(self.dataloader)))
+                        print("Item {} (mini-batch {}/{})".format(i + batch_idx * N, batch_idx+1, len(self.dataloader)))
                     end_sequence_with_next_item = True
                 else:
                     # It's easier to compute interpolations one-by-one (all data might not fit into RAM)
-                    seq = LatentInterpSequence(self.storage_path, current_sequence_index)
-                    seq.UID_start, seq.UID_end = uid[i-1].item(), uid[i].item()
-                    seq.name = self.get_sequence_name(seq.UID_start, seq.UID_end, self.dataset)
+                    seq = LatentInterpSequence(
+                        self.storage_path, current_sequence_index, uid[i-1].item(), uid[i].item(),
+                        self.get_sequence_name(uid[i-1].item(), uid[i].item(), self.dataset)
+                    )
                     z_start, z_start_first_guess, acc, L1_err = self.compute_latent_vector(
                         x_in[i-1:i], v_in[i-1:i], uid[i-1:i], notes[i-1:i])
                     if acc < 100.0 or L1_err > 0.0:
@@ -288,17 +285,12 @@ class ModelBasedInterpolation(InterpBase):
 
                     seq.u, seq.z = self.interpolate_latent(z_start, z_end)
                     seq.audio, seq.spectrograms = self.generate_audio_and_spectrograms(seq.z)
-                    seq.process_and_save()
-                    self.append_librosa_features(seq)
+                    seq.save()
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
-
-            # FIXME TEMP
-            if batch_idx >= 0:
+            if self.use_reduced_dataset:
                 break
-
-        self.compute_and_save_interpolation_metrics()
 
         # TODO also store "interp hparams" which were used to compute interpolation (e.g. u_curve, inverse log prob, ...)
 
@@ -310,7 +302,7 @@ class ModelBasedInterpolation(InterpBase):
             pickle.dump(all_z_endpoints, f)
         if self.verbose:
             delta_t = (datetime.now() - t_start).total_seconds()
-            print("[{}] Finished processing {} interpolations in {:.1f}min total ({:.1f}s / interpolation)"
+            print("[{}] Finished rendering audio for {} interpolations in {:.1f}min total ({:.1f}s / interpolation)"
                   .format(type(self).__name__, all_z_endpoints.shape[0] // 2, delta_t / 60.0,
                           delta_t / (all_z_endpoints.shape[0] // 2)))
 
