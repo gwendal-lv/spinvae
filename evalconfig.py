@@ -3,40 +3,53 @@ Allows easy modification of all configuration parameters required to perform a s
 This script is not intended to be run, it only describes parameters.
 """
 
+from pathlib import Path
+from typing import List, Dict, Union
 
-import datetime
-from utils.configutils import EvalConfig
+from utils import config_confidential
 
 
-eval = EvalConfig()  # (shadows unused built-in name)
-eval.start_datetime = datetime.datetime.now().isoformat()
+class InterpEvalConfig:
+    def __init__(self):
+        self.device = 'cpu'
+        self.dataset_type = 'validation'
+        self.num_steps = 9
+        self.use_reduced_dataset = True  # fast debugging (set to False during actual eval)
+        self.force_re_eval_all = False
 
-# Names must be include experiment folder and run name (_kf suffix must be omitted is all_k_folds is True)
-eval.models_names = [  # - - - 30k samples full dataset ('b' suffix means 'big') - - -
-                     'FlVAE3/10b_dex3op_numonly_1midi',
-                     'FlVAE3/11b_dex6op_numonly_1midi',
-                     'FlVAE3/12b_dex3op_vstcat_1midi',
-                     'FlVAE3/13b_dex6op_vstcat_1midi',
-                     'FlVAE3/14b_dex3op_all<=32_1midi',
-                     'FlVAE3/15b_dex6op_all<=32_1midi',
-                     'MLPVAE3/20b_dex3op_numonly_1midi',
-                     'MLPVAE3/21b_dex6op_numonly_1midi',
-                     'MLPVAE3/22b_dex3op_vstcat_1midi',
-                     'MLPVAE3/23b_dex6op_vstcat_1midi',
-                     'MLPVAE3/24b_dex3op_all<=32_1midi',
-                     'MLPVAE3/25b_dex6op_all<=32_1midi',
-                     'FlVAE3/34b_dex3op_all<=32_6midi',
-                     'FlVAE3/35b_dex6op_all<=32_6midi',
-                     'FlVAE3/44b_dex3op_all<=32_6stack',
-                     'FlVAE3/45b_dex6op_all<=32_6stack',
-                     ]
-eval.dataset = 'test'  # Do not use 'test' dataset during models development
-eval.override_previous_eval = False  # If True, all models be re-evaluated (might be very long)
-eval.k_folds_count = 5  # 0 means do not automatically process all k-folds trains
+        # Audio features and interpolation metrics
+        self.exclude_min_max_interp_features = True  # the TimbreToolbox paper advises to use IQR and medians only
+        # Features to be rejected
+        #    - Noisiness features seem badly estimated for the DX7 (because of the FM?). They are quite constant
+        #      equal to 1.0 (absurd) and any slightly < 1.0 leads to diverging values after 1-std normalization
+        self.excluded_interp_features = ('Noisiness', )
 
-eval.minibatch_size = 1  # Reduced mini-batch size not to reserve too much GPU RAM. 1 <=> per-preset metrics
-eval.device = 'cpu'
-# Don't use too many cores, numpy uses multi-threaded MKL (in each process)
-eval.multiprocess_cores_ratio = 0.1  # ratio of CPU cores to be used (if 1.0: use all os.cpu_count() cores)
-eval.verbosity = 2
-eval.load_from_archives = False  # Load from ./saved_archives instead of ./saved
+        # Reference model
+        self.logs_root_dir = Path(config_confidential.logs_root_dir)
+        # Reference data can be stored anywhere (they don't use a trained NN)
+        self.reference_model_path = self.logs_root_dir.parent.joinpath('RefInterp/LinearNaive')
+        self.ref_model_interp_path = self.reference_model_path.joinpath(
+            'interp{}_{}'.format(self.num_steps, self.dataset_type[0:5]))
+        self.ref_model_force_re_eval = False
+
+        # List of models and eval configs for each model
+        #    the config of the first model will be used to load the dataset used by the reference model
+        self.other_models: List[Dict[str, Union[str, Path, bool]]] = [
+            {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.50',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.20',
+             'u_curve': 'linear', 'latent_interp': 'linear', 'force_re_eval': True},
+        ]
+
+        self.build_models_storage_path()
+
+
+    def build_models_storage_path(self):
+        """ auto build eval data paths from the model name and interp-hyperparams """
+        for m_config in self.other_models:
+            m_config['base_model_path'] = self.logs_root_dir.joinpath(m_config['base_model_name'])
+            interp_name = 'interp{}'.format(self.num_steps)
+            interp_name += '_' + self.dataset_type[0:5]
+            interp_name += '_u' + m_config['u_curve'][0:3].capitalize()
+            interp_name += '_z' + m_config['latent_interp'][0:3].capitalize()
+            m_config['interp_storage_path'] = m_config['base_model_path'].joinpath(interp_name)

@@ -5,6 +5,7 @@ import copy
 
 import numpy as np
 import pandas as pd
+import scipy.stats
 
 
 def get_outliers_bounds(x: np.array, IQR_factor=1.5):
@@ -38,3 +39,24 @@ def get_random_subset_keep_minmax(x: np.array, subset_len: int):
         if idx >= subset_len:
             x[i] = x[idx]
     return x[0:subset_len]
+
+
+def wilcoxon_test(x: pd.DataFrame, y: pd.DataFrame, improved_if="y<x", p_value_th=0.05):
+    """ Computes the wilcoxon test for DataFrames of paired samples, for each column of the x dataframe
+     vs. each col of the y dataframe.
+
+    :returns: a Pandas Series containing the test's p-value for each column, and a Pandas Series indicating whether
+        y features are improved compared to x
+    """
+    p_values = dict()
+    if improved_if == "y<x":
+        alternative = "greater"  # d = x - y "tends to be > 0"  ===> H0 : "x < y" (we'll try to reject that)
+    else:
+        raise NotImplementedError()
+    for col in x:
+        test_result = scipy.stats.wilcoxon(x[col].values, y[col].values, alternative=alternative)
+        p_values[col] = test_result.pvalue
+    p_values = pd.Series(p_values)
+    return p_values, p_values < p_value_th
+
+

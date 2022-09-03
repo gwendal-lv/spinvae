@@ -19,6 +19,7 @@ import torch
 from data.preset2d import Preset2d
 from data.abstractbasedataset import PresetDataset
 import evaluation.load
+from evalconfig import InterpEvalConfig
 from evaluation.interpsequence import InterpSequence, LatentInterpSequence
 from utils.timbretoolbox import InterpolationTimbreToolbox
 
@@ -104,16 +105,30 @@ class InterpBase(ABC):
         timbre_proc.post_process_features(self.storage_path)
 
     @staticmethod
-    def get_interp_results(storage_path: pathlib.Path):
+    def get_interp_results(storage_path: pathlib.Path, eval_config: Optional[InterpEvalConfig] = None):
         with open(storage_path.joinpath('interp_results.pkl'), 'rb') as f:
-            return pickle.load(f)
+            multi_metrics_interp_results = pickle.load(f)
+        if eval_config is not None:
+            # filtering: remove unused columns (e.g. min / max), ...
+            for metric_name, interp_results_df in multi_metrics_interp_results.items():
+                for col in list(interp_results_df.columns):
+                    try:
+                        if eval_config.exclude_min_max_interp_features:
+                            if col.endswith('_min') or col.endswith('_max'):
+                                interp_results_df.drop(columns=[col], inplace=True)  # must be inplace inside the for loop
+                        for feat_name in eval_config.excluded_interp_features:
+                            if col.startswith(feat_name):
+                                interp_results_df.drop(columns=[col], inplace=True)  # must be inplace inside the for loop
+                    except KeyError:
+                        pass  # A feature might be removed multiple times (multiple overlapping removal criteria)
+        return multi_metrics_interp_results
 
     @staticmethod
     def _compute_interp_metrics(all_seqs_dfs: List[pd.DataFrame], features_stats: Dict[str, Any]):
         """ Quantifies how smooth and linear the interpolation is, using previously computed audio features
         from timbretoolbox TODO maybe include some librosa features """
         # Compute interpolation performance for each interpolation metric, for each sequence
-        interp_results = {'smoothness': list(), 'sum_squared_residuals': list()}
+        interp_results = {'smoothness': list(), 'nonlinearity': list()}
         for seq_df in all_seqs_dfs:
             seq_interp_results = InterpBase._compute_sequence_interp_metrics(seq_df, features_stats)
             for k in seq_interp_results:
@@ -125,7 +140,7 @@ class InterpBase(ABC):
 
     @staticmethod
     def _compute_sequence_interp_metrics(seq: pd.DataFrame, features_stats: Dict[str, Any]):
-        interp_metrics = {'smoothness': dict(), 'sum_squared_residuals': dict()}
+        interp_metrics = {'smoothness': dict(), 'nonlinearity': dict()}
         seq = seq.drop(columns="step_index")
         step_h = 1.0 / (len(seq) - 1.0)
         for col in seq.columns:
@@ -134,24 +149,25 @@ class InterpBase(ABC):
             # Second-order central difference using a conv kernel, then compute the RMS of the smaller array
             smoothness = np.convolve(feature_values, [1.0, -2.0, 1.0], mode='valid') / (step_h ** 2)
             interp_metrics['smoothness'][col] = np.sqrt( (smoothness ** 2).mean() )
-            # RSS
+            # non-linearity, quantified as the RMS of the error vs. the ideal linear curve
+            # FIXME always use the same start/end points
             target_linear_values = np.linspace(feature_values[0], feature_values[-1], num=feature_values.shape[0]).T
-            interp_metrics['sum_squared_residuals'][col] = ((feature_values - target_linear_values) ** 2).sum()
+            interp_metrics['nonlinearity'][col] = np.sqrt( ((feature_values - target_linear_values) ** 2).mean() )
         return interp_metrics
 
 
 class NaivePresetInterpolation(InterpBase):
-    def __init__(self, dataset, dataset_type, dataloader, base_storage_path: Union[str, pathlib.Path],
+    def __init__(self, dataset, dataset_type, dataloader, storage_path: Union[str, pathlib.Path],
                  num_steps=7, u_curve='linear', verbose=True):
         super().__init__(num_steps, u_curve, verbose)
         self.dataset = dataset
         self.dataset_type = dataset_type
         self.dataloader = dataloader
-        self._base_storage_path = pathlib.Path(base_storage_path)
+        self._storage_path = pathlib.Path(storage_path)
 
     @property
     def storage_path(self) -> pathlib.Path:
-        return self._base_storage_path.joinpath('interp_{}'.format(self.dataset_type[0:5]))
+        return self._storage_path
 
     def render_audio(self):
         """ Generates interpolated sounds using the 'naïve' linear interpolation between VST preset parameters. """
