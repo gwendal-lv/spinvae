@@ -25,11 +25,7 @@ class ModelLoader:
         """
         self.device = device
         self.path_to_model_dir = model_folder_path
-        with open(self.path_to_model_dir.joinpath("config.pickle"), 'rb') as f:
-            checkpoint_configs = pickle.load(f)
-        self.model_config: config.ModelConfig = checkpoint_configs['model']
-        self.model_config.preset_ae_method = "combined_vae" # FIXME REMOVE TEMP
-        self.train_config: config.TrainConfig = checkpoint_configs['train']
+        self.model_config, self.train_config = self.get_model_train_configs(self.path_to_model_dir)
         if device == 'cpu':
             self.train_config.main_cuda_device_idx = -1
 
@@ -52,6 +48,14 @@ class ModelLoader:
 
         if device == 'cpu':
             torch.cuda.empty_cache()  # Checkpoints were usually GPU tensors (originally)
+
+    @staticmethod
+    def get_model_train_configs(model_dir: Path):
+        with open(model_dir.joinpath("config.pickle"), 'rb') as f:
+            checkpoint_configs = pickle.load(f)
+        model_config: config.ModelConfig = checkpoint_configs['model']
+        train_config: config.TrainConfig = checkpoint_configs['train']
+        return model_config, train_config
 
 
 if __name__ == "__main__":

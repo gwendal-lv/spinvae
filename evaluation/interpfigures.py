@@ -88,22 +88,60 @@ def interp_results_boxplots(
                 warnings.warn("The Wilcoxon test requires to provide only 2 models (reference and another)")
     fig.tight_layout()
 
-    # TODO grouped boxplots
-
-    # TODO statistical test???
+    # TODO grouped boxplots - or maybe edit figures after they have been saved as PDF?
 
     return fig, axes
+
+
+def plot_improvements_vs_ref(improvements_df: pd.DataFrame, hparams: Optional[List[str]] = None):
+    measurements_to_plot = ['wilcoxon_improved_features', 'median_variation_vs_ref', 'mean_variation_vs_ref']
+
+    # 1) Plot numeric general improvement
+    # auto-adapt height
+    n_models = len(set(improvements_df['model'].values))
+    fig1, axes1 = plt.subplots(1, 3, figsize=(14, 1 + 0.25 * n_models), sharey=True)
+    for j, measurement_name in enumerate(measurements_to_plot):
+        sns.barplot(data=improvements_df, y="model", x=measurement_name, ax=axes1[j])
+    fig1.tight_layout()
+
+    # 2) plot improvements vs model/train/interp hparams - scatter plots only
+    if hparams is not None and len(hparams) >= 1:
+        fig2, axes2 = plt.subplots(len(hparams), 3, figsize=(4 * 3, 1 + 3 * len(hparams)), sharex='col', sharey='row')
+        axes2 = np.expand_dims(axes2, axis=0) if len(hparams) == 1 else axes2
+        for i, hparam in enumerate(hparams):
+            for j, measurement_name in enumerate(measurements_to_plot):
+                # draw the evolution of means using lines (as done in comet.ml)
+                h_params_values = np.unique(improvements_df[hparam].values)  # float equality: works OK with hparams
+                mean_per_hparam = [improvements_df.loc[improvements_df[hparam] == v][measurement_name].values.mean()
+                                   for v in h_params_values]
+                axes2[i, j].plot(mean_per_hparam, h_params_values, color='k')  # 'vertical' plot
+                # Then draw the actual scatter plot
+                sns.scatterplot(data=improvements_df, x=measurement_name, y=hparam, ax=axes2[i, j],
+                                hue='model', legend=False)
+        fig2.tight_layout()
+    else:
+        fig2, axes2 = None, None
+
+    return fig1, axes1, fig2, axes2
 
 
 if __name__ == "__main__":
     # use for debugging only
     from evalconfig import InterpEvalConfig
 
-    _base_path = Path(__file__).resolve().parent.parent.parent.joinpath("Data_SSD/Logs")
-    _storage_paths = [
-        _base_path.joinpath('RefInterp/LinearNaive/interp9_valid'),
-        _base_path.joinpath('preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.20/interp9_valid_uLin_zLin')
-    ]
-    interp_results_boxplots(_storage_paths, eval_config=InterpEvalConfig(), display_wilcoxon_tests=True)
+    if False:  # test BOXPLOT
+        _base_path = Path(__file__).resolve().parent.parent.parent.joinpath("Data_SSD/Logs")
+        _storage_paths = [
+            _base_path.joinpath('RefInterp/LinearNaive/interp9_valid'),
+            _base_path.joinpath('preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.20/interp9_valid_uLin_zLin')
+        ]
+        interp_results_boxplots(_storage_paths, eval_config=InterpEvalConfig(), display_wilcoxon_tests=True)
+
+    _improvements_df = InterpBase.compute_interp_improvement_vs_ref(InterpEvalConfig())
+    plot_improvements_vs_ref(
+        _improvements_df,
+        hparams=['trncfg__beta', 'trncfg__params_loss_compensation_factor', 'u_curve', 'z_curve']  # TODO try others
+    )
+
     plt.show()
 

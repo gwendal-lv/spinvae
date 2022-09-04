@@ -46,7 +46,7 @@ def wilcoxon_test(x: pd.DataFrame, y: pd.DataFrame, improved_if="y<x", p_value_t
      vs. each col of the y dataframe.
 
     :returns: a Pandas Series containing the test's p-value for each column, and a Pandas Series indicating whether
-        y features are improved compared to x
+        y features are improved compared to x (if using default arguments)
     """
     p_values = dict()
     if improved_if == "y<x":

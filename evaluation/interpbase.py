@@ -16,6 +16,7 @@ import scipy.interpolate
 import scipy.stats
 import torch
 
+import utils.stat
 from data.preset2d import Preset2d
 from data.abstractbasedataset import PresetDataset
 import evaluation.load
@@ -155,6 +156,46 @@ class InterpBase(ABC):
             interp_metrics['nonlinearity'][col] = np.sqrt( ((feature_values - target_linear_values) ** 2).mean() )
         return interp_metrics
 
+    @staticmethod
+    def compute_interp_improvement_vs_ref(eval_config: InterpEvalConfig):
+        ref_interp_results = InterpBase.get_interp_results(eval_config.ref_model_interp_path, eval_config)
+        models_interp_results = [
+            InterpBase.get_interp_results(m_config['interp_storage_path'], eval_config)
+            for m_config in eval_config.other_models
+        ]
+        # We'll build a wide-form DF from a list of dicts
+        improvements_df = []
+        for model_idx, interp_results in enumerate(models_interp_results):
+            interp_config = eval_config.other_models[model_idx]
+            # retrieve model hparams (train/model and interpolation hparams)
+            nn_model_config, nn_train_config = evaluation.load.ModelLoader.get_model_train_configs(
+                interp_config['base_model_path'])
+            nn_model_config_dict = {'mdlcfg__' + k: v for k, v in nn_model_config.__dict__.items()}
+            nn_train_config_dict = {'trncfg__' + k: v for k, v in nn_train_config.__dict__.items()}
+            # also 'manually' add interp hparams
+            interp_config_dict = {'u_curve': interp_config['u_curve'], 'z_curve': interp_config['latent_interp']}
+            # Then process all interpolation metrics (e.g. smoothness, ....) for all audio features
+            for metric_name in ref_interp_results.keys():
+                ref_interp_df = ref_interp_results[metric_name]
+                model_interp_df = interp_results[metric_name]
+                # Average variation (vs. reference) of the median and mean of features
+                #    Average is not weighted: all features are considered to be as equally important
+                median_variation_vs_ref = (model_interp_df.median() - ref_interp_df.median()) / ref_interp_df.median()
+                median_variation_vs_ref = median_variation_vs_ref.values.mean()
+                mean_variation_vs_ref = (model_interp_df.mean() - ref_interp_df.mean()) / ref_interp_df.mean()
+                mean_variation_vs_ref = mean_variation_vs_ref.values.mean()
+                # Wilcoxon test: which medians have significantly improved?
+                test_results = utils.stat.wilcoxon_test(ref_interp_df, model_interp_df)
+                improvements_df.append({
+                    'model': interp_config['model_interp_name'], 'metric': metric_name,
+                    'wilcoxon_improved_features': np.count_nonzero(test_results[1].values),
+                    'median_variation_vs_ref': median_variation_vs_ref,
+                    'mean_variation_vs_ref': mean_variation_vs_ref,
+                    **nn_model_config_dict, **nn_train_config_dict, **interp_config_dict
+                })
+        improvements_df = pd.DataFrame(improvements_df)
+        return improvements_df
+
 
 class NaivePresetInterpolation(InterpBase):
     def __init__(self, dataset, dataset_type, dataloader, storage_path: Union[str, pathlib.Path],
@@ -204,7 +245,7 @@ class NaivePresetInterpolation(InterpBase):
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
-            if self.use_reduced_dataset:
+            if self.use_reduced_dataset and batch_idx >= 1:  # during debug: process 2 mini-batches only
                 break
         if self.verbose:
             delta_t = (datetime.now() - t_start).total_seconds()
@@ -305,7 +346,7 @@ class ModelBasedInterpolation(InterpBase):
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
-            if self.use_reduced_dataset:
+            if self.use_reduced_dataset and batch_idx >= 1:  # during debug: process 2 mini-batches only
                 break
 
         # TODO also store "interp hparams" which were used to compute interpolation (e.g. u_curve, inverse log prob, ...)

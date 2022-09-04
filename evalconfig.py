@@ -32,13 +32,28 @@ class InterpEvalConfig:
             'interp{}_{}'.format(self.num_steps, self.dataset_type[0:5]))
         self.ref_model_force_re_eval = False
 
+        # TODO try different u/z curves
         # List of models and eval configs for each model
         #    the config of the first model will be used to load the dataset used by the reference model
         self.other_models: List[Dict[str, Union[str, Path, bool]]] = [
+            {'base_model_name': 'presetAE/combined_vae_beta1.6e-03_presetfactor1.00',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'presetAE/combined_vae_beta1.6e-03_presetfactor0.50',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'presetAE/combined_vae_beta1.6e-03_presetfactor0.20',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'presetAE/combined_vae_beta1.6e-04_presetfactor1.00',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
             {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.50',
              'u_curve': 'linear', 'latent_interp': 'linear'},
             {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.20',
-             'u_curve': 'linear', 'latent_interp': 'linear', 'force_re_eval': True},
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'presetAE/combined_vae_beta1.6e-05_presetfactor1.00',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'presetAE/combined_vae_beta1.60e-05_presetfactor0.50',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'presetAE/combined_vae_beta1.60e-05_presetfactor0.20',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
         ]
 
         self.build_models_storage_path()
@@ -53,3 +68,4 @@ class InterpEvalConfig:
             interp_name += '_u' + m_config['u_curve'][0:3].capitalize()
             interp_name += '_z' + m_config['latent_interp'][0:3].capitalize()
             m_config['interp_storage_path'] = m_config['base_model_path'].joinpath(interp_name)
+            m_config['model_interp_name'] = m_config['base_model_name'] + '/' + interp_name
