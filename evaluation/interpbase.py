@@ -26,7 +26,8 @@ from utils.timbretoolbox import InterpolationTimbreToolbox
 
 
 class InterpBase(ABC):
-    def __init__(self, num_steps=7, u_curve='linear', verbose=True):
+    def __init__(self, num_steps=7, u_curve='linear', verbose=True,
+                 reference_storage_path: Optional[pathlib.Path] = None):
         """
         Base attributes and methods of any interpolation engine.
 
@@ -37,6 +38,7 @@ class InterpBase(ABC):
         self.u_curve = u_curve
         self.verbose = verbose
         self.use_reduced_dataset = False  # faster debugging
+        self._reference_storage_path = reference_storage_path
 
     def get_u_interpolated(self):
         if self.u_curve == 'linear':
@@ -67,23 +69,39 @@ class InterpBase(ABC):
         end_name = dataset.get_name_from_preset_UID(end_UID)
         return "[{}] '{}' --> [{}] '{}'".format(start_UID, start_name, end_UID, end_name)
 
-    def try_process_dataset(self, force_re_eval=False):
+    def try_process_dataset(self, force_re_eval=False, skip_audio_render=False):
         if force_re_eval:
-            self.process_dataset()
+            self.process_dataset(skip_audio_render)
         else:
             if os.path.exists(self.storage_path):
                 print("[{}] Some results were already stored in '{}' - dataset won't be re-evaluated"
                       .format(type(self).__name__, self.storage_path))
             else:
-                self.process_dataset()
+                self.process_dataset(skip_audio_render)
 
-    def process_dataset(self):
-        self.render_audio()
+    def process_dataset(self, skip_audio_render=False):
+        if not skip_audio_render:
+            self.render_audio()
+        else:
+            if self.verbose:
+                print("[{}] Skip audio render - will compute interpolation metrics only".format(type(self).__name__))
         self.compute_and_save_interpolation_metrics()
 
     @abstractmethod
     def render_audio(self):
         pass
+
+    def get_stored_postproc_sequences_descriptors(self) -> List[pd.DataFrame]:
+        """ Returns the dataframes of sequences descriptors (audio features) previously computed for this model. """
+        return InterpolationTimbreToolbox.get_stored_postproc_sequences_descriptors(self.storage_path)
+
+    def get_stored_reference_postproc_sequences_descriptors(self) -> List[pd.DataFrame]:
+        """ Returns the dataframes of sequences descriptors (audio features) obtained from the reference model
+         (may be this model itself). """
+        if self._reference_storage_path is None:
+            return self.get_stored_postproc_sequences_descriptors()
+        else:
+            return InterpolationTimbreToolbox.get_stored_postproc_sequences_descriptors(self._reference_storage_path)
 
     def compute_and_save_interpolation_metrics(self):
         """
@@ -92,9 +110,10 @@ class InterpBase(ABC):
         """
         self.compute_store_timbre_toolbox_features()
 
-        all_seqs_dfs = InterpolationTimbreToolbox.get_stored_postproc_sequences_descriptors(self.storage_path)
+        all_seqs_dfs = self.get_stored_postproc_sequences_descriptors()
+        all_reference_seqs_dfs = self.get_stored_reference_postproc_sequences_descriptors()
         features_stats = InterpolationTimbreToolbox.get_default_postproc_features_stats()
-        interp_results = self._compute_interp_metrics(all_seqs_dfs, features_stats)
+        interp_results = self._compute_interp_metrics(all_seqs_dfs, features_stats, all_reference_seqs_dfs)
         with open(self.storage_path.joinpath('interp_results.pkl'), 'wb') as f:
             pickle.dump(interp_results, f)
 
@@ -125,13 +144,20 @@ class InterpBase(ABC):
         return multi_metrics_interp_results
 
     @staticmethod
-    def _compute_interp_metrics(all_seqs_dfs: List[pd.DataFrame], features_stats: Dict[str, Any]):
-        """ Quantifies how smooth and linear the interpolation is, using previously computed audio features
-        from timbretoolbox TODO maybe include some librosa features """
+    def _compute_interp_metrics(all_seqs_dfs: List[pd.DataFrame],
+                                features_stats: Dict[str, Any],
+                                all_reference_seqs_dfs: List[pd.DataFrame]):
+        """
+        Quantifies how smooth and linear the interpolation is, using previously computed audio features
+        from timbretoolbox TODO maybe include some librosa features
+
+        :param features_stats: Must have been computed once, and the same must be used for all sequences
+        """
         # Compute interpolation performance for each interpolation metric, for each sequence
         interp_results = {'smoothness': list(), 'nonlinearity': list()}
-        for seq_df in all_seqs_dfs:
-            seq_interp_results = InterpBase._compute_sequence_interp_metrics(seq_df, features_stats)
+        for seq_idx, seq_df in enumerate(all_seqs_dfs):
+            ref_seq_df = all_reference_seqs_dfs[seq_idx]
+            seq_interp_results = InterpBase._compute_sequence_interp_metrics(seq_df, features_stats, ref_seq_df)
             for k in seq_interp_results:
                 interp_results[k].append(seq_interp_results[k])
         # Then sum each interp metric up into a single df
@@ -140,7 +166,7 @@ class InterpBase(ABC):
         return interp_results
 
     @staticmethod
-    def _compute_sequence_interp_metrics(seq: pd.DataFrame, features_stats: Dict[str, Any]):
+    def _compute_sequence_interp_metrics(seq: pd.DataFrame, features_stats: Dict[str, Any], ref_seq: pd.DataFrame):
         interp_metrics = {'smoothness': dict(), 'nonlinearity': dict()}
         seq = seq.drop(columns="step_index")
         step_h = 1.0 / (len(seq) - 1.0)
@@ -151,8 +177,10 @@ class InterpBase(ABC):
             smoothness = np.convolve(feature_values, [1.0, -2.0, 1.0], mode='valid') / (step_h ** 2)
             interp_metrics['smoothness'][col] = np.sqrt( (smoothness ** 2).mean() )
             # non-linearity, quantified as the RMS of the error vs. the ideal linear curve
-            # FIXME always use the same start/end points
-            target_linear_values = np.linspace(feature_values[0], feature_values[-1], num=feature_values.shape[0]).T
+            #    by using a reference, we ensure that we always use the exact same start/end points
+            ref_feature_values = ((ref_seq[col] - features_stats['mean'][col]) / features_stats['std'][col]).values
+            target_linear_values = np.linspace(ref_feature_values[0], ref_feature_values[-1],
+                                               num=ref_feature_values.shape[0]).T
             interp_metrics['nonlinearity'][col] = np.sqrt( ((feature_values - target_linear_values) ** 2).mean() )
         return interp_metrics
 
@@ -199,8 +227,8 @@ class InterpBase(ABC):
 
 class NaivePresetInterpolation(InterpBase):
     def __init__(self, dataset, dataset_type, dataloader, storage_path: Union[str, pathlib.Path],
-                 num_steps=7, u_curve='linear', verbose=True):
-        super().__init__(num_steps, u_curve, verbose)
+                 num_steps=7, u_curve='linear', verbose=True, reference_storage_path: Optional[pathlib.Path] = None):
+        super().__init__(num_steps, u_curve, verbose, reference_storage_path)
         self.dataset = dataset
         self.dataset_type = dataset_type
         self.dataloader = dataloader
@@ -270,7 +298,7 @@ class ModelBasedInterpolation(InterpBase):
     def __init__(
             self, model_loader: Optional[evaluation.load.ModelLoader] = None, device='cpu', num_steps=7,
             u_curve='linear', latent_interp_kind='linear', verbose=True,
-            storage_path: Optional[pathlib.Path] = None
+            storage_path: Optional[pathlib.Path] = None, reference_storage_path: Optional[pathlib.Path] = None
     ):
         """
         A class for performing interpolations using a neural network model whose inputs are latent vectors.
@@ -278,7 +306,8 @@ class ModelBasedInterpolation(InterpBase):
         :param model_loader: If given, most of other arguments (related to the model and corresponding
          dataset) will be ignored.
         """
-        super().__init__(num_steps=num_steps, verbose=verbose, u_curve=u_curve)
+        super().__init__(num_steps=num_steps, verbose=verbose, u_curve=u_curve,
+                         reference_storage_path=reference_storage_path)
         self.latent_interp_kind = latent_interp_kind
         self._storage_path = storage_path
         if model_loader is not None:
@@ -295,6 +324,12 @@ class ModelBasedInterpolation(InterpBase):
     @property
     def storage_path(self) -> pathlib.Path:
         return self._storage_path
+
+    def get_stored_reference_postproc_sequences_descriptors(self) -> List[pd.DataFrame]:
+        if self._reference_storage_path is None:
+            raise AssertionError("A reference interpolation-model must be provided.")
+        else:
+            return super().get_stored_reference_postproc_sequences_descriptors()
 
     def render_audio(self):
         """ Performs an interpolation over the whole given dataset (usually validation or test), using pairs
@@ -348,8 +383,6 @@ class ModelBasedInterpolation(InterpBase):
                     end_sequence_with_next_item = False
             if self.use_reduced_dataset and batch_idx >= 1:  # during debug: process 2 mini-batches only
                 break
-
-        # TODO also store "interp hparams" which were used to compute interpolation (e.g. u_curve, inverse log prob, ...)
 
         all_z_ae = torch.vstack(z_ae).detach().clone().cpu().numpy()
         all_z_endpoints = torch.vstack(z_endpoints).detach().clone().cpu().numpy()

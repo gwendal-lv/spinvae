@@ -78,10 +78,11 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
 
 class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
     def __init__(self, model_loader: evaluation.load.ModelLoader, num_steps=7,
-                 u_curve='linear', latent_interp='linear', storage_path: Optional[pathlib.Path] = None):
+                 u_curve='linear', latent_interp='linear',
+                 storage_path: Optional[pathlib.Path] = None, reference_storage_path: Optional[pathlib.Path] = None):
         super().__init__(
             model_loader=model_loader, num_steps=num_steps, u_curve=u_curve, latent_interp_kind=latent_interp,
-            storage_path=storage_path
+            storage_path=storage_path, reference_storage_path=reference_storage_path
         )
         if not isinstance(self.dataset, data.abstractbasedataset.PresetDataset):
             raise NotImplementedError("This evaluation class is available for a PresetDataset only (current "

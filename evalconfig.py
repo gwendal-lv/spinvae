@@ -16,6 +16,7 @@ class InterpEvalConfig:
         self.num_steps = 9
         self.use_reduced_dataset = True  # fast debugging (set to False during actual eval)
         self.force_re_eval_all = False
+        self.skip_audio_render = False  # don't re-render audio, recompute interpolation features/metrics only
 
         # Audio features and interpolation metrics
         self.exclude_min_max_interp_features = True  # the TimbreToolbox paper advises to use IQR and medians only

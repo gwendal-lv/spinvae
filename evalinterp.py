@@ -18,7 +18,8 @@ def run(eval_config: InterpEvalConfig):
     else:
         raise NotImplementedError()
     ref_preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset
-    ref_preset_interpolator.try_process_dataset(eval_config.ref_model_force_re_eval or eval_config.force_re_eval_all)
+    ref_preset_interpolator.try_process_dataset(
+        eval_config.ref_model_force_re_eval or eval_config.force_re_eval_all, eval_config.skip_audio_render)
 
     # Evaluate all "other" (i.e. non-reference) models
     for m_config in eval_config.other_models:
@@ -26,7 +27,8 @@ def run(eval_config: InterpEvalConfig):
         model_loader = ModelLoader(m_config['base_model_path'], eval_config.device, eval_config.dataset_type)
         preset_interpolator = SynthPresetLatentInterpolation(
             model_loader, storage_path=m_config['interp_storage_path'],
-            num_steps=eval_config.num_steps, u_curve=m_config['u_curve'], latent_interp=m_config['latent_interp']
+            num_steps=eval_config.num_steps, u_curve=m_config['u_curve'], latent_interp=m_config['latent_interp'],
+            reference_storage_path=eval_config.ref_model_interp_path,
         )
         preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset
         try:
@@ -34,7 +36,7 @@ def run(eval_config: InterpEvalConfig):
         except KeyError:  # Default: don't force re-evaluate
             force_re_eval = False
         force_re_eval = force_re_eval or eval_config.force_re_eval_all
-        preset_interpolator.try_process_dataset(force_re_eval)
+        preset_interpolator.try_process_dataset(force_re_eval, eval_config.skip_audio_render)
 
 
 if __name__ == "__main__":
