@@ -2,9 +2,9 @@
 Allows easy modification of all configuration parameters required to perform a series of models evaluations.
 This script is not intended to be run, it only describes parameters.
 """
-
+import copy
 from pathlib import Path
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Any
 
 from utils import config_confidential
 
@@ -15,7 +15,7 @@ class InterpEvalConfig:
         self.dataset_type = 'validation'
         self.num_steps = 9
         self.use_reduced_dataset = True  # fast debugging (set to False during actual eval)
-        self.force_re_eval_all = False
+        self.force_re_eval_all = True
         self.skip_audio_render = False  # don't re-render audio, recompute interpolation features/metrics only
 
         # Audio features and interpolation metrics
@@ -36,6 +36,11 @@ class InterpEvalConfig:
         # TODO try different u/z curves
         # List of models and eval configs for each model
         #    the config of the first model will be used to load the dataset used by the reference model
+        self.other_models: List[Dict[str, Any]] = [
+            {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.50',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+        ]
+        """
         self.other_models: List[Dict[str, Union[str, Path, bool]]] = [
             {'base_model_name': 'presetAE/combined_vae_beta1.6e-03_presetfactor1.00',
              'u_curve': 'linear', 'latent_interp': 'linear'},
@@ -56,9 +61,35 @@ class InterpEvalConfig:
             {'base_model_name': 'presetAE/combined_vae_beta1.60e-05_presetfactor0.20',
              'u_curve': 'linear', 'latent_interp': 'linear'},
         ]
+        """
+        # Auto duplicate everything to try arcsin u curves
+        if False:
+            other_models_duplicates = copy.deepcopy(self.other_models)
+            for m_config in other_models_duplicates:
+                m_config['u_curve'] = 'arcsin'
+            self.other_models += other_models_duplicates
+        # Auto duplicate everything to try all z refinement options
+        if True:
+            other_models_backup = copy.deepcopy(self.other_models)
+            for refine_lvl in [1, 2]:
+                other_models_duplicates = copy.deepcopy(other_models_backup)
+                for m_config in other_models_duplicates:
+                    m_config['refine_level'] = refine_lvl
+                self.other_models += other_models_duplicates
 
+        self.set_default_config_values()
         self.build_models_storage_path()
 
+
+    def set_default_config_values(self):
+        """ Sets default values for some argument that can be omitted """
+        for m_config in self.other_models:
+            # refine level: default is 0
+            try:
+                refine_lvl = m_config['refine_level']
+            except KeyError:
+                refine_lvl = 0
+            m_config['refine_level'] = refine_lvl
 
     def build_models_storage_path(self):
         """ auto build eval data paths from the model name and interp-hyperparams """
@@ -68,5 +99,9 @@ class InterpEvalConfig:
             interp_name += '_' + self.dataset_type[0:5]
             interp_name += '_u' + m_config['u_curve'][0:3].capitalize()
             interp_name += '_z' + m_config['latent_interp'][0:3].capitalize()
+            refine_lvl = m_config['refine_level']
+            interp_name += '_refi{}'.format(refine_lvl) if refine_lvl > 0 else ''
+            # Set paths and names
             m_config['interp_storage_path'] = m_config['base_model_path'].joinpath(interp_name)
             m_config['model_interp_name'] = m_config['base_model_name'] + '/' + interp_name
+

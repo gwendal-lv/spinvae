@@ -28,7 +28,7 @@ def run(eval_config: InterpEvalConfig):
         preset_interpolator = SynthPresetLatentInterpolation(
             model_loader, storage_path=m_config['interp_storage_path'],
             num_steps=eval_config.num_steps, u_curve=m_config['u_curve'], latent_interp=m_config['latent_interp'],
-            reference_storage_path=eval_config.ref_model_interp_path,
+            reference_storage_path=eval_config.ref_model_interp_path, refine_level=m_config['refine_level']
         )
         preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset
         try:

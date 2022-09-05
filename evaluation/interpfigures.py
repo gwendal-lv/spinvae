@@ -81,8 +81,15 @@ def interp_results_boxplots(
                 # p_value < 0.05 if model [1] has significantly LOWER values than model [0] (reference)
                 p_values, has_improved = utils.stat.wilcoxon_test(
                     models_interp_results[0][metric_name], models_interp_results[1][metric_name])
-                axes[metric_idx].set(title="{} - Wilcoxon test: {}/{} significantly improved features".format(
-                    metric_name, np.count_nonzero(has_improved.values), len(has_improved)))
+                p_values, has_deteriorated = utils.stat.wilcoxon_test(
+                    models_interp_results[1][metric_name], models_interp_results[0][metric_name])
+                axes[metric_idx].set(
+                    title="{} - Wilcoxon test: {}/{} improved, {}/{} deteriorated features"
+                    .format(
+                        metric_name, np.count_nonzero(has_improved.values), len(has_improved),
+                        np.count_nonzero(has_deteriorated.values), len(has_deteriorated)
+                    )
+                )
         else:
             if display_wilcoxon_tests:
                 warnings.warn("The Wilcoxon test requires to provide only 2 models (reference and another)")
@@ -94,19 +101,35 @@ def interp_results_boxplots(
 
 
 def plot_improvements_vs_ref(improvements_df: pd.DataFrame, hparams: Optional[List[str]] = None):
-    measurements_to_plot = ['wilcoxon_improved_features', 'median_variation_vs_ref', 'mean_variation_vs_ref']
+    measurements_to_plot = ['wilcoxon_improved_features', 'wilcoxon_deteriorated_features',
+                            'median_variation_vs_ref', 'mean_variation_vs_ref']
 
     # 1) Plot numeric general improvement
     # auto-adapt height
     n_models = len(set(improvements_df['model'].values))
-    fig1, axes1 = plt.subplots(1, 3, figsize=(14, 1 + 0.25 * n_models), sharey=True)
+    """
+    fig1, axes1 = plt.subplots(1, len(measurements_to_plot),
+                               figsize=(15, 1 + 0.25 * n_models), sharey=True)
     for j, measurement_name in enumerate(measurements_to_plot):
-        sns.barplot(data=improvements_df, y="model", x=measurement_name, ax=axes1[j])
+        sns.barplot(data=improvements_df, y="model", x=measurement_name, ax=axes1[j], hue="metric")
     fig1.tight_layout()
+    """
+    # TODO try cat plot...?????
+    cols = list(improvements_df.columns)
+    for m in measurements_to_plot:
+        cols.remove(m)
+    melted_df = pd.melt(improvements_df, id_vars=cols, var_name='var')  # value_vars will be all non-id cols
+    g = sns.catplot(
+        data=melted_df, y="model", x='value', col='var', hue="metric",
+        kind="bar", sharex=False
+    )
+    fig1, axes1 = g.fig, g.axes
 
     # 2) plot improvements vs model/train/interp hparams - scatter plots only
     if hparams is not None and len(hparams) >= 1:
-        fig2, axes2 = plt.subplots(len(hparams), 3, figsize=(4 * 3, 1 + 3 * len(hparams)), sharex='col', sharey='row')
+        fig2, axes2 = plt.subplots(
+            len(hparams), len(measurements_to_plot),
+            figsize=(1 + 3 * len(measurements_to_plot), 1 + 3 * len(hparams)), sharex='col', sharey='row')
         axes2 = np.expand_dims(axes2, axis=0) if len(hparams) == 1 else axes2
         for i, hparam in enumerate(hparams):
             for j, measurement_name in enumerate(measurements_to_plot):

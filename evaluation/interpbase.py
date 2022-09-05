@@ -201,7 +201,8 @@ class InterpBase(ABC):
             nn_model_config_dict = {'mdlcfg__' + k: v for k, v in nn_model_config.__dict__.items()}
             nn_train_config_dict = {'trncfg__' + k: v for k, v in nn_train_config.__dict__.items()}
             # also 'manually' add interp hparams
-            interp_config_dict = {'u_curve': interp_config['u_curve'], 'z_curve': interp_config['latent_interp']}
+            interp_config_dict = {'u_curve': interp_config['u_curve'], 'z_curve': interp_config['latent_interp'],
+                                  'refine_level': interp_config['refine_level']}
             # Then process all interpolation metrics (e.g. smoothness, ....) for all audio features
             for metric_name in ref_interp_results.keys():
                 ref_interp_df = ref_interp_results[metric_name]
@@ -212,11 +213,15 @@ class InterpBase(ABC):
                 median_variation_vs_ref = median_variation_vs_ref.values.mean()
                 mean_variation_vs_ref = (model_interp_df.mean() - ref_interp_df.mean()) / ref_interp_df.mean()
                 mean_variation_vs_ref = mean_variation_vs_ref.values.mean()
-                # Wilcoxon test: which medians have significantly improved?
-                test_results = utils.stat.wilcoxon_test(ref_interp_df, model_interp_df)
+                # Wilcoxon test: which medians have significantly improved? (have been reduced significantly?)
+                improved_test_results = utils.stat.wilcoxon_test(ref_interp_df, model_interp_df)
+                # Other test: which medians are now significantly higher?
+                deteriorated_test_results = utils.stat.wilcoxon_test(model_interp_df, ref_interp_df)
+                # Add everything to the dataframe
                 improvements_df.append({
                     'model': interp_config['model_interp_name'], 'metric': metric_name,
-                    'wilcoxon_improved_features': np.count_nonzero(test_results[1].values),
+                    'wilcoxon_improved_features': np.count_nonzero(improved_test_results[1].values),
+                    'wilcoxon_deteriorated_features': np.count_nonzero(deteriorated_test_results[1].values),
                     'median_variation_vs_ref': median_variation_vs_ref,
                     'mean_variation_vs_ref': mean_variation_vs_ref,
                     **nn_model_config_dict, **nn_train_config_dict, **interp_config_dict
@@ -337,6 +342,7 @@ class ModelBasedInterpolation(InterpBase):
         len(dataloder) // 2. """
         self.create_storage_directory()
         t_start = datetime.now()
+        self.ae_model = self.ae_model.to(self.device)
 
         # to store all latent-specific stats (each sequence is written to SSD before computing the next one)
         # encoded latent vectors (usually different from endpoints, if the corresponding preset is not 100% accurate)
@@ -344,12 +350,21 @@ class ModelBasedInterpolation(InterpBase):
         # Interpolation endpoints
         z_endpoints = list()
 
+        # Accuracy / L1 error improvement, if the latent code is refined
+        z_refinement_results = {
+            'acc_first_guess': [], 'acc_refined': [], 'l1_err_first_guess': [], 'l1_err_refined': []}
+        def _append_refinement_results(acc, L1_err, acc_1st, L1_err_1st):
+            z_refinement_results['acc_first_guess'].append(acc_1st)
+            z_refinement_results['acc_refined'].append(acc)
+            z_refinement_results['l1_err_first_guess'].append(L1_err_1st)
+            z_refinement_results['l1_err_refined'].append(L1_err)
+
         current_sequence_index = 0
         # Retrieve all latent vectors that will be used for interpolation
         # We assume that batch size is an even number...
         for batch_idx, minibatch in enumerate(self.dataloader):
             end_sequence_with_next_item = False  # If True, the next item is the 2nd (last) of an InterpSequence
-            x_in, v_in, uid, notes, label = [m for m in minibatch]
+            x_in, v_in, uid, notes, label = [m.to(self.device) for m in minibatch]
             N = x_in.shape[0]
             for i in range(N):
                 if not end_sequence_with_next_item:
@@ -362,16 +377,12 @@ class ModelBasedInterpolation(InterpBase):
                         self.storage_path, current_sequence_index, uid[i-1].item(), uid[i].item(),
                         self.get_sequence_name(uid[i-1].item(), uid[i].item(), self.dataset)
                     )
-                    z_start, z_start_first_guess, acc, L1_err = self.compute_latent_vector(
+                    z_start, z_start_first_guess, acc, L1_err, acc_1st, L1_err_1st = self.compute_latent_vector(
                         x_in[i-1:i], v_in[i-1:i], uid[i-1:i], notes[i-1:i])
-                    if acc < 100.0 or L1_err > 0.0:
-                        warnings.warn("UID {}: acc={:.2f}, l1err={:.2f}".format(uid[i-1].item(), acc, L1_err))
-                        # raise AssertionError(acc, L1_err)
-                    z_end, z_end_first_guess, acc, L1_err = self.compute_latent_vector(
+                    _append_refinement_results(acc, L1_err, acc_1st, L1_err_1st)
+                    z_end, z_end_first_guess, acc, L1_err, acc_1st, L1_err_1st = self.compute_latent_vector(
                         x_in[i:i+1], v_in[i:i+1], uid[i:i+1], notes[i:i+1])
-                    if acc < 100.0 or L1_err > 0.0:
-                        warnings.warn("UID {}: acc={:.2f}, l1err={:.2f}".format(uid[i].item(), acc, L1_err))
-                        # raise AssertionError(acc, L1_err)
+                    _append_refinement_results(acc, L1_err, acc_1st, L1_err_1st)
                     z_ae.append(z_start_first_guess), z_ae.append(z_end_first_guess)
                     z_endpoints.append(z_start), z_endpoints.append(z_end)
 
@@ -384,12 +395,11 @@ class ModelBasedInterpolation(InterpBase):
             if self.use_reduced_dataset and batch_idx >= 1:  # during debug: process 2 mini-batches only
                 break
 
-        all_z_ae = torch.vstack(z_ae).detach().clone().cpu().numpy()
+        z_refinement_results['z_first_guess'] = torch.vstack(z_ae).detach().clone().cpu().numpy()
         all_z_endpoints = torch.vstack(z_endpoints).detach().clone().cpu().numpy()
-        with open(self.storage_path.joinpath('all_z_ae.np.pkl'), 'wb') as f:
-            pickle.dump(all_z_ae, f)
-        with open(self.storage_path.joinpath('all_z_endpoints.np.pkl'), 'wb') as f:
-            pickle.dump(all_z_endpoints, f)
+        z_refinement_results['z_estimated'] = all_z_endpoints
+        with open(self.storage_path.joinpath('z_refinement_results.pkl'), 'wb') as f:
+            pickle.dump(z_refinement_results, f)
         if self.verbose:
             delta_t = (datetime.now() - t_start).total_seconds()
             print("[{}] Finished rendering audio for {} interpolations in {:.1f}min total ({:.1f}s / interpolation)"
@@ -397,10 +407,12 @@ class ModelBasedInterpolation(InterpBase):
                           delta_t / (all_z_endpoints.shape[0] // 2)))
 
     @abstractmethod
-    def compute_latent_vector(self, x_in, v_in, uid, notes) -> Tuple[torch.Tensor, torch.Tensor, float, float]:
+    def compute_latent_vector(self, x_in, v_in, uid, notes) \
+            -> Tuple[torch.Tensor, torch.Tensor, float, float, float, float]:
         """ Computes the most appropriate latent vector (child class implements this method)
 
-        :returns: z_estimated, z_first_guess, preset_accuracy, preset_L1_error
+        :returns: z_estimated, z_first_guess,
+            preset_accuracy, preset_L1_error, preset_accuracy_1st_guess, preset_L1_error_1st_guess
         """
         pass
 

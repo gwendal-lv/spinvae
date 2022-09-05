@@ -11,6 +11,7 @@ import torch
 
 import data.abstractbasedataset
 import data.build
+import utils.probability
 from data.preset2d import Preset2dHelper, Preset2d
 
 import evaluation.load
@@ -78,40 +79,96 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
 
 class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
     def __init__(self, model_loader: evaluation.load.ModelLoader, num_steps=7,
-                 u_curve='linear', latent_interp='linear',
+                 u_curve='linear', latent_interp='linear', refine_level=0,
                  storage_path: Optional[pathlib.Path] = None, reference_storage_path: Optional[pathlib.Path] = None):
+        """
+
+        :param refine_level: The amount of refinement applied to the original inferred latent codes, in order
+            to try to improve the presets' reconstruction accuracy.
+        """
         super().__init__(
             model_loader=model_loader, num_steps=num_steps, u_curve=u_curve, latent_interp_kind=latent_interp,
             storage_path=storage_path, reference_storage_path=reference_storage_path
         )
+        self.refine_level = refine_level
         if not isinstance(self.dataset, data.abstractbasedataset.PresetDataset):
             raise NotImplementedError("This evaluation class is available for a PresetDataset only (current "
                                       "self.dataset type: {})".format(type(self.dataset)))
 
         # TODO finish all checks
 
+    def _init_nn_model(self):
+        pass
+
     def compute_latent_vector(self, x_in, v_in, uid, notes):
         self.ae_model.eval()
         with torch.no_grad():
             ae_out = self.ae_model(x_in, v_in, uid, notes)
             ae_out = self.ae_model.parse_outputs(ae_out)
-        # Presets need to be flattened for u, z interpolation, then un-flattened during audio interpolation/generation
-        z_first_guess = self.ae_model.flatten_latent_values(ae_out.z_sampled)
-        # return self.find_preset_inverse(x_in, v_in, uid, notes) FIXME re-implement
-        z_estimated = z_first_guess  # FIXME
-        return z_estimated, z_first_guess, ae_out.u_accuracy.item(), ae_out.u_l1_error.item()
+            # Presets need to be flattened for u, z interpolation, then un-flattened during audio interp/generation
+            z_first_guess_flat = self.ae_model.flatten_latent_values(ae_out.z_sampled)
+            # We'll keep those as a reference
+            z_mu_first_guess_flat = self.ae_model.flatten_latent_values(ae_out.z_mu)
+            z_var_first_guess_flat = self.ae_model.flatten_latent_values(ae_out.z_var)
+            z_logvar_first_guess_flat = torch.log(z_var_first_guess_flat)
 
-    def find_preset_inverse(self, x_in, v_in, uid, notes):
-        """ TODO doc """
-        assert x_in.shape[0] == v_in.shape[0] == uid.shape[0] == notes.shape[0] == 1
-        self.ae_model.eval()
-        with torch.no_grad():
-            ae_out = self.ae_model(x_in, v_in, uid, notes)
-            ae_out = self.ae_model.parse_outputs(ae_out)
-        # TODO proper ctor arg to use flow inverse, or not
-        # return self.reg_model.find_preset_inverse(u_target, z_first_guess)  # Flow inverse
-        raise NotImplementedError("")  # TODO find exact preset inverse
-        return None  # self.reg_model.find_preset_inverse_SGD(u_target, z_0_sampled, z_0_mu_logvar)
+        num_l1_error, acc = ae_out.u_l1_error.item(), ae_out.u_accuracy.item()
+        num_l1_error_first_guess, acc_first_guess = num_l1_error, acc
+        z_estimated = z_first_guess_flat  # Default behavior, this tensor might be modified during optimization
+        # TODO as args: threshold acc/L1
+        acc_th, num_l1_th = 0.99, 0.01
+
+        if self.refine_level > 0:
+            if self.refine_level == 1:
+                lr, n_steps, z_NLL_factor = 0.1, 50, 0.1
+            elif self.refine_level == 2:
+                lr, n_steps, z_NLL_factor = 1.0, 50, 0.01
+            else:
+                raise ValueError(self.refine_level)  # Should be 1 or 2 (if not 0)
+
+            if num_l1_error > num_l1_th or acc < acc_th:  # we optimize only if necessary
+                #  we'll optimize a small z delta to find a better z (that reconstructs the preset better)
+                #    A Tensor will work, torch.autograd.Variable is deprecated
+                z_delta = torch.zeros_like(z_first_guess_flat, device=z_first_guess_flat.device, requires_grad=True)
+                optimizer = torch.optim.SGD([z_delta], lr=lr, momentum=0.5)
+                for step in range(n_steps):  # TODO max n steps as arg
+                    optimizer.zero_grad()
+                    self.ae_model.zero_grad()  # Needs to be done manually - not in the optimizer
+                    z_flat = z_first_guess_flat + z_delta
+                    z_multi_level = self.ae_model.unflatten_latent_values(z_flat)
+                    dec_out = self.ae_model.decoder.preset_decoder(z_multi_level, u_target=v_in)
+                    u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc = dec_out
+
+                    # Stop optimization as soon as possible
+                    # TODO raise warning if results worsen...
+                    if num_l1_error.item() < num_l1_th and acc.item() > acc_th:
+                        break
+
+                    # TODO compute log-prob under the VAE-encoded gaussian distrib q(z | x, v)
+                    # Ensures that latent codes remains highly log-probable under the posterior distribution
+                    z_NLL_initial_distribution = - utils.probability.gaussian_log_probability(
+                        z_flat, z_mu_first_guess_flat, z_logvar_first_guess_flat, add_log_2pi_term=True)
+                    z_NLL_initial_distribution = z_NLL_initial_distribution / z_flat.shape[1]
+
+                    # TODO maybe decrease the loss for perfectly-reconstructed params?
+                    # Note: 1.0 z_NLL factor leads to deteriorated results (too strong gradients?)
+                    loss = u_numerical_nll + u_categorical_nll + z_NLL_factor * z_NLL_initial_distribution
+                    loss.backward()
+                    optimizer.step()
+                acc, num_l1_error = acc.item(), num_l1_error.item()
+                z_delta.requires_grad = False
+                z_estimated = z_first_guess_flat + z_delta
+                if self.verbose:  # TODO improve prints
+                    print("opt ended at step {} - acc = {:.1f}%    num_l1_err = {:.3f}    avg |delta z| = {}    max |delta z| = {}"
+                          .format(step, acc * 100.0, num_l1_error, z_delta.abs().mean().item(), z_delta.abs().max().item()))
+                    print("Improvement:    acc {}    num_l1_err {}"
+                          .format((acc - acc_first_guess) * 100.0, num_l1_error - num_l1_error_first_guess))
+            else:
+                if self.verbose:
+                    print("NO optimization necessary")
+
+        return z_estimated, z_first_guess_flat, acc, num_l1_error, acc_first_guess, num_l1_error_first_guess
+
 
     @property
     def gen(self):
@@ -134,23 +191,22 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
 
 
 if __name__ == "__main__":
-    _device = 'cpu'
+    _device = 'cuda:0'
     _root_path = Path(__file__).resolve().parent.parent
     _model_path = _root_path.joinpath('../Data_SSD/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.50')
     _model_loader = evaluation.load.ModelLoader(_model_path, _device, 'validation')
 
     _num_steps = 9
 
-    if True:  # TODO Gen naive interpolations ? (LINEAR)
-        naive_preset_interpolator = evaluation.interpbase.NaivePresetInterpolation(
-            _model_loader.dataset, _model_loader.dataset_type, _model_loader.dataloader,
-            _root_path.parent.joinpath('Data_SSD/Interpolations/LinearNaive'), num_steps=_num_steps)
-        naive_preset_interpolator.process_dataset()
 
     # TODO additional path suffix for different interp hparams
     if True:
+        _storage_path = _model_path.joinpath('DEBUG')
         preset_interpolator = SynthPresetLatentInterpolation(
             _model_loader, num_steps=_num_steps, u_curve='linear', latent_interp='linear',
+            storage_path=_storage_path
         )
-        preset_interpolator.process_dataset()
+        preset_interpolator.use_reduced_dataset = True
+        preset_interpolator.render_audio()
+        #preset_interpolator.process_dataset()  # audio + audio features + interp metrics
 
