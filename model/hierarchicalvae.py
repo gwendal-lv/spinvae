@@ -40,7 +40,7 @@ def parse_latent_extract_architecture(full_architecture: str):
 
 class HierarchicalVAEOutputs:
     def __init__(self, z_mu: List[torch.Tensor], z_var: List[torch.Tensor], z_sampled: List[torch.Tensor],
-                 x_decoded_proba, x_sampled,
+                 x_decoded_proba, x_sampled, x_target_NLL,
                  u_out, u_numerical_nll, u_categorical_nll, u_l1_error, u_accuracy
                  ):
         """
@@ -50,7 +50,7 @@ class HierarchicalVAEOutputs:
         Latent values can be retrieved as N * dimZ tensors (without the latent hierarchy dimension)
         """
         self.z_mu, self.z_var, self.z_sampled= z_mu, z_var, z_sampled
-        self.x_decoded_proba, self.x_sampled = x_decoded_proba, x_sampled
+        self.x_decoded_proba, self.x_sampled, self.x_target_NLL = x_decoded_proba, x_sampled, x_target_NLL
         self.u_out, self.u_numerical_nll, self.u_categorical_nll, self.u_l1_error, self.u_accuracy = \
             u_out, u_numerical_nll, u_categorical_nll, u_l1_error, u_accuracy
         # Quick tests to try to ensure that the proper data was provided
@@ -108,6 +108,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         if model_config.dim_z > 0:
             warnings.warn("model_config.dim_z cannot be enforced (requested value: {}) and will automatically be set "
                           "by the HierarchicalVAE during its construction.".format(model_config.dim_z))
+        if self.preset_ae_method not in ['no_encoding', 'combined_vae', 'no_audio']:
+            raise ValueError("preset_ae_method '{}' not available".format(self.preset_ae_method))
 
         # Build encoder and decoder
         self._preset_helper = preset_helper
@@ -185,15 +187,21 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # TODO handle all cases: auto synth prog, preset auto-encoding, ...
         #TODO 2 passes (the second might be useless)
 
-        # 1st pass (might be the single one)
+        # - - - - - 1st pass (might be the single one) - - - - -
+        # use the audio input with all methods but 'no_audio'
+        x_input = x_target if self.preset_ae_method != "no_audio" else None
+        if self.preset_ae_method in ["combined_vae", 'no_audio']:
+            u_input = u_target
+        else:
+            u_input = None
         # Encode, sample, decode
-        x_input = x_target  # 1st pass always use the audio input
-        u_input = u_target if self.preset_ae_method == "combined_vae" else None
         z_mu, z_var = self.encoder(x_input, u_input, midi_notes)
         z_sampled = self.sample_z(z_mu, z_var)
-        x_decoded_proba, x_sampled, preset_decoder_out = self.decoder(z_sampled, u_target)
+        # TODO maybe don't use x_target is auto-encoding preset only
+        x_decoded_proba, x_sampled, x_target_NLL, preset_decoder_out = self.decoder(
+            z_sampled, x_target=x_target, u_target=u_target)
 
-        # 2nd pass (optional)
+        #  - - - - -  2nd pass (optional) - - - - -
         if self.preset_ae_method == "asp+vae" or self.preset_ae_method == "independent_vae":
             x_input = None if self.preset_ae_method == "independent_vae" else x_target  # TODO handle this in the encoder
             # TODO "ASP+VAE" and "independent_VAEs":
@@ -205,12 +213,13 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             # TODO concat results from 1st / 2nd pass???
 
         # Outputs: return all available values using Tensor only, for this method to remain usable
-        # with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
-        # This tuple output can be parsed later into a proper HierarchicalVAEOutputs instance.
+        #     with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
+        #     This tuple output can be parsed later into a proper HierarchicalVAEOutputs instance.
+        #     All of these output tensors must retain the batch dimension
         out_list = list()
         for lat_lvl in range(len(z_mu)):
             out_list += [z_mu[lat_lvl], z_var[lat_lvl], z_sampled[lat_lvl]]
-        out_list += [x_decoded_proba, x_sampled]
+        out_list += [x_decoded_proba, x_sampled, x_target_NLL]
         return tuple(out_list) + preset_decoder_out
 
     def sample_z(self, z_mu, z_var):
@@ -234,15 +243,15 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
             z_var.append(forward_outputs[i + 1])
             z_sampled.append(forward_outputs[i + 2])
             i += 3
-        x_decoded_proba, x_sampled = forward_outputs[i:i+2]
-        i += 2
+        x_decoded_proba, x_sampled, x_target_NLL = forward_outputs[i:i+3]
+        i += 3
         # See preset_model.py
         u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc = forward_outputs[i:i+5]
         assert i+5 == len(forward_outputs)
 
         return HierarchicalVAEOutputs(
             z_mu, z_var, z_sampled,
-            x_decoded_proba, x_sampled,
+            x_decoded_proba, x_sampled, x_target_NLL,
             u_out, u_numerical_nll, u_categorical_nll, num_l1_error, acc
         )
 
@@ -267,6 +276,8 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
 
     def latent_loss(self, ae_out: HierarchicalVAEOutputs, beta):
         """ Returns the non-normalized latent loss, and the same value multiplied by beta (for backprop) """
+        # FIXME for hybrid training (parallel preset/audio VAEs), use a different beta for different batch items
+        #    (if possible? not batch-reduced yet?)
         z_mu, z_var = ae_out.z_mu, ae_out.z_var
         # Only the vanilla-VAE Dkl loss is available at the moment
         z_losses_per_lvl = list()  # Batch-averaged losses
@@ -362,12 +373,12 @@ def process_minibatch(
 
     if training:
         ae_model.optimizers_zero_grad()
-
+    # TODO plan 2-passes forward, ae_out_preset and ae_out_audio for logs
     ae_out = ae_model_parallel(x_in, v_in, uid, notes)
     ae_out = ae_model.parse_outputs(ae_out)
     super_metrics['LatentMetric' + suffix].append_hierarchical_latent(ae_out, label)
-    # Losses (computed on 1 GPU using the non-parallel original model instance)
-    audio_log_prob_loss = ae_model.decoder.audio_log_prob_loss(ae_out.x_decoded_proba, x_in)
+    # Losses (some of them are computed on 1 GPU using the non-parallel original model instance)
+    audio_log_prob_loss = ae_out.x_target_NLL.mean()
     scalars['Audio/LogProbLoss' + suffix].append(audio_log_prob_loss)
     lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
     scalars['Latent/Loss' + suffix].append(lat_loss)
@@ -422,62 +433,7 @@ class AudioDecoder:
     def generate_from_latent_vector(self, z):
         # input z is expected to be a flattened tensor
         z_multi_level = self._hierarchical_vae.unflatten_latent_values(z)
-        decoder_out = self._hierarchical_vae.decoder(z_multi_level, None)  # No preset: will return lots of None
+        # No preset: will return lots of None (or zeroes, maybe...)
+        decoder_out = self._hierarchical_vae.decoder(z_multi_level, x_target=None, u_target=None)
         return decoder_out[1]  # Return x_sampled only
-
-
-
-
-
-if __name__ == "__main__":
-    _model_config, _train_config = config.ModelConfig(), config.TrainConfig()
-    _model_config.vae_main_conv_architecture = 'specladder8x1_res_swish'
-    _model_config.vae_latent_extract_architecture = 'conv_1l_k1x1_gated'
-    _model_config.vae_latent_levels = 1
-    _model_config.approx_requested_dim_z = 256
-    _model_config.vae_preset_architecture = 'tfm_2l_memmlp'  # 'tfm_2l_ff_memmlp_relu'
-    _model_config.preset_hidden_size = 256
-    _model_config.preset_decoder_numerical_distribution = "logistic_mixt3"
-    _model_config.vae_preset_encode_add = "before_latent_cell"
-
-    _train_config.pretrain_audio_only = False
-    _train_config.minibatch_size = 16
-    _train_config.preset_cat_dropout = 0.12
-    _train_config.preset_CE_label_smoothing = 0.13
-    _train_config.preset_internal_dropout = 0.05
-    _train_config.preset_sched_sampling_max_p = 0.0
-
-    config.update_dynamic_config_params(_model_config, _train_config)
-
-    if not _train_config.pretrain_audio_only:
-        import data.build
-        _ds = data.build.get_dataset(_model_config, _train_config)
-        _preset_helper = _ds.preset_indexes_helper
-        _dummy_preset = _preset_helper.get_null_learnable_preset(_train_config.minibatch_size)
-    else:
-        _preset_helper, _dummy_preset = None, None
-
-    hVAE = HierarchicalVAE(_model_config, _train_config, _preset_helper)
-    hVAE.train()
-    hVAE.set_preset_decoder_scheduled_sampling_p(0.3)  # set to > 0.0 to eval in AR mode
-    # hVAE.eval()  # FIXME remove
-    vae_out = hVAE(torch.zeros(_model_config.input_audio_tensor_size), _dummy_preset)
-    vae_out = hVAE.parse_outputs(vae_out)
-    _lat_loss, _lat_backprop_loss = hVAE.latent_loss(vae_out, 1.0)
-
-    print(hVAE.encoder.get_single_ch_conv_summary())
-    print(hVAE.encoder.get_latent_cells_summaries())
-    if not _train_config.pretrain_audio_only:
-        print(hVAE.encoder.preset_encoder.get_summary(_train_config.minibatch_size))
-
-    print(hVAE.z_shapes)
-
-    print(hVAE.decoder.get_single_ch_conv_summary())
-    print(hVAE.decoder.get_latent_cells_summaries())
-    if not _train_config.pretrain_audio_only:
-        print(hVAE.decoder.preset_decoder.get_summary())
-
-    print(hVAE.get_detailed_summary())
-
-    print(hVAE)
 

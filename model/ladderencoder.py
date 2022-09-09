@@ -201,24 +201,34 @@ class LadderEncoder(LadderBase):
         else:
             raise ValueError("Unavailable group_name '{}'".format(group_name))
 
-    def forward(self, x, u=None, midi_notes=None):
-        """ Returns (z_mu, z_var): lists of length latent_levels """
-        # TODO this method should be able to use x alone, or u alone, or both (add input args???)
+    def forward(self, x: Optional[torch.Tensor] = None, u: Optional[torch.Tensor] = None,
+                midi_notes: Optional[torch.Tensor] = None):
+        """
+        TODO this method should be able to use x alone, or u alone, or both. It will use what's available
+        (its HierarchicalVAE owner will decided what is to be encoded, or not)
+
+        :returns: (z_mu, z_var): lists of length latent_levels
+        """
+        N, device = x.shape[0] if x is not None else u.shape[0], x.device if x is not None else u.device
 
         # 1) Apply single-channel CNN to all input channels
-        # TODO maybe don't even use the CNN and set the latent cell inputs to zero (check that grad is OK)
-        latent_cells_input_tensors = [[] for _ in self.latent_cells]  # 1st dim: latent level ; 2nd dim: input ch
-        for ch in range(self._input_tensor_size[1]):  # Apply all cells to a channel
-            cell_x = torch.unsqueeze(x[:, ch, :, :], dim=1)
-            for latent_level, cell in enumerate(self.single_ch_cells):
-                cell_x = cell(cell_x)
-                latent_cells_input_tensors[latent_level].append(cell_x)
-        # We just stack inputs from all input channels to create the sequence dimension
-        latent_cells_input_tensors = [torch.stack(t, dim=1) for t in latent_cells_input_tensors]
+        if x is not None:  # usual case
+            latent_cells_input_tensors = [[] for _ in self.latent_cells]  # 1st dim: latent level ; 2nd dim: input ch
+            for ch in range(self._input_tensor_size[1]):  # Apply all cells to a channel
+                cell_x = torch.unsqueeze(x[:, ch, :, :], dim=1)
+                for latent_level, cell in enumerate(self.single_ch_cells):
+                    cell_x = cell(cell_x)
+                    latent_cells_input_tensors[latent_level].append(cell_x)
+            # For each latent lvl: we just stack inputs from all input channels to create the sequence dimension
+            latent_cells_input_tensors = [torch.stack(t_list, dim=1) for t_list in latent_cells_input_tensors]
+        else:  # no audio: don't even use the CNN and set the latent cell inputs to zero
+            latent_input_sizes = [[N, self._audio_seq_len, *s[1:]] for s in self.cells_output_shapes]
+            latent_cells_input_tensors = [torch.zeros(s, device=device) for s in latent_input_sizes]
 
         # 2) Optional: Compute hidden representation of the preset
         u_hidden = [0.0]
-        if self.preset_encoder is not None:  # TODO or if auto synth prog mode
+        # preset might not be given at input (audio AE only, or AutoSynthProg mode)
+        if self.preset_encoder is not None and u is not None:
             assert len(self.latent_cells) == 1  # Single latent level is required
             # TODO  Don't always compute it... if using null representations (preset not used), this
             #   corresponds to an automatic synthesizer programming model.
@@ -236,10 +246,14 @@ class LadderEncoder(LadderBase):
         # Latent levels are currently independent (no top-down conditional posterior or prior)
         z_mu, z_var = list(), list()
         for latent_level, latent_cell in enumerate(self.latent_cells):
-            z_out = latent_cell(latent_cells_input_tensors[latent_level], midi_notes=midi_notes)
+            # if x is None, maybe don't even use the latent cells
+            if x is None and not self.u_hidden_add_before_latent_cell:  # Don't process zeroes through the latent NN
+                z_out = 0.0
+            else:  # Usual case: apply latent cell to extract features from multi-channel audio
+                z_out = latent_cell(latent_cells_input_tensors[latent_level], midi_notes=midi_notes)
             # Maybe add preset "latent residuals" after
             if self.preset_encoder is not None and not self.u_hidden_add_before_latent_cell:
-                z_out += u_hidden[latent_level]
+                z_out = z_out + u_hidden[latent_level]  # One of these two can be a scalar 0.0
             # Split into mu and variance
             n_ch = z_out.shape[1]
             z_mu.append(z_out[:, 0:n_ch//2, :, :])

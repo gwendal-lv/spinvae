@@ -29,9 +29,9 @@ class ModelConfig:
         # ----------------------------------------------- Data ---------------------------------------------------
         self.data_root_path = config_confidential.data_root_path
         self.logs_root_dir = config_confidential.logs_root_dir
-        self.name = "presetAE"  # experiment base name
+        self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'devtest__num_nll_squeeze'
+        self.run_name = 'preset_dont_enc__refactored'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -91,14 +91,15 @@ class ModelConfig:
         # (categorical variables always use a softmaxed categorical distribution)
         self.preset_decoder_numerical_distribution = 'logistic_mixt3'
         # Describes how (if) the presets should be auto-encoded:
-        #    - "none": presets are retrieved from audio but are not encoded, presets are not provided at encoder input.
-        #              Corresponds to an ASP (Automatic Synthesizer Programming) situation.
+        #    - "no_encoding": presets are inferred from audio but are not encoded (not provided at
+        #               encoder input). Corresponds to an ASP (Automatic Synthesizer Programming) situation.
         #    - "combined_vae": preset is encoded with audio, their hidden representations are then summed or mixed
         #           together
         #    - TODO "asp+vae": hybrid method/training: TODO DOC
         #    - TODO "independent_vae": the preset VAE and audio VAE are trained as independent models, but a loss
         #           (e.g. contrastive, Dkl, ... TODO TBD) is computed using the two latent representations
-        self.preset_ae_method = "combined_vae"
+        #    - "no_audio": the preset alone is auto-encoded, audio is discarded
+        self.preset_ae_method = "no_encoding"
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector
@@ -225,7 +226,8 @@ class TrainConfig:
         # - Cross-Entropy loss (deactivated when using dequantized outputs)
         self.preset_CE_label_smoothing = 0.1  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
         self.preset_CE_use_weights = False
-        self.preset_sched_sampling_max_p = 0.8  # FIXME 0.8??? Probability to use the model's outputs during training (AR decoder)
+        # Probability to use the model's outputs during training (AR decoder)
+        self.preset_sched_sampling_max_p = 0.0  # Set to zero for FF decoder
         # self.preset_sched_sampling_start_epoch = 40  # TODO IMPLEMENT Required for the embeddings to train properly?
         self.preset_sched_sampling_warmup_epochs = 100
 
