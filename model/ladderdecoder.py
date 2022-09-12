@@ -213,49 +213,51 @@ class LadderDecoder(LadderBase):
             raise ValueError("Unavailable group_name '{}'".format(group_name))
 
     def forward(self, z_sampled: List[torch.Tensor],
-                u_target: Optional[torch.Tensor] = None, x_target: Optional[torch.Tensor] = None):
+                u_target: Optional[torch.Tensor] = None,
+                x_target: Optional[torch.Tensor] = None, compute_x_out=True):
         """ Returns the p(x|z) distributions, values sampled from them, and x_target (if not None) NLL
             and
             preset_decoder_out (tuple of 5 values) if this instance has a preset decoder, and
-                if u_target is not None. """
+                if u_target is not None.
+        """
 
         # ---------- Audio decoder ----------
-        # apply latent cells and split outputs to get residuals
-        conv_cell_res_inputs = [[] for _ in range(self.n_latent_levels)]  # 1st dim: cell index; 2nd dim: audio channel
-        for latent_level, level_z in enumerate(z_sampled):  # Higher latent_level corresponds to deeper latent features
-            cell_index = self._get_cell_index(latent_level)
-            multi_ch_conv_input = self.latent_cells[latent_level](level_z)
-            conv_cell_res_inputs[cell_index] = torch.chunk(multi_ch_conv_input, self.num_audio_output_ch, 1)
-        # Sequential CNN audio decoder - apply cell-by-cell
-        # FIXME set to zero if auto-encoding preset only - but that requires an extra arg (e.g. decode_preset_only ???)
-        audio_prob_parameters = list()  # One probability distribution tensor / audio channel
-        for audio_ch in range(self.num_audio_output_ch):
-            x = torch.zeros_like(conv_cell_res_inputs[0][audio_ch])
-            for cell_index, cell in enumerate(self.single_ch_cells):
-                x += conv_cell_res_inputs[cell_index][audio_ch]
-                x = cell(x)
-            # crop and append to the list of per-channel outputs
-            if self.single_ch_conv_arch['name'].startswith('specladder8x'):  # known CNN output size: 257x257
-                audio_prob_parameters.append(x[:, :, :, 3:254])
-            else:
-                raise AssertionError("Cropping not implemented for the specific convolutional architecture '{}'."
-                                     .format(self.single_ch_conv_arch['name']))
-        # Keep lists - the channels dimension stores (single or multiple) parameter(s) of the probability distribution
-        # Apply activations
-        audio_prob_parameters = [self.audio_proba_distribution.apply_activations(x) for x in audio_prob_parameters]
-        # Sample from the probability distribution should always be fast and easy (even for mixture models)
-        audio_x_sampled = [self.audio_proba_distribution.get_mode(x) for x in audio_prob_parameters]
-        # The audio outputs can now be concatenated (channels dimension)
-        #     to remain usable in a multi-GPU configuration
-        audio_prob_parameters = torch.cat(audio_prob_parameters, dim=1)
-        audio_x_sampled = torch.cat(audio_x_sampled, dim=1)
-        # compute non-reduced target NLL (if target available)
-        audio_NLL = self.audio_log_prob_loss(audio_prob_parameters, x_target) if x_target is not None else None
+        if compute_x_out:
+            # apply latent cells and split outputs to get residuals
+            conv_cell_res_inputs = [[] for _ in range(self.n_latent_levels)]  # 1st dim: cell index; 2nd dim: audio ch
+            for latent_level, level_z in enumerate(z_sampled):  # Higher latent_level corresponds to deeper latent feats
+                cell_index = self._get_cell_index(latent_level)
+                multi_ch_conv_input = self.latent_cells[latent_level](level_z)
+                conv_cell_res_inputs[cell_index] = torch.chunk(multi_ch_conv_input, self.num_audio_output_ch, 1)
+            # Sequential CNN audio decoder - apply cell-by-cell
+            audio_prob_parameters = list()  # One probability distribution tensor / audio channel
+            for audio_ch in range(self.num_audio_output_ch):
+                x = torch.zeros_like(conv_cell_res_inputs[0][audio_ch])
+                for cell_index, cell in enumerate(self.single_ch_cells):
+                    x += conv_cell_res_inputs[cell_index][audio_ch]
+                    x = cell(x)
+                # crop and append to the list of per-channel outputs
+                if self.single_ch_conv_arch['name'].startswith('specladder8x'):  # known CNN output size: 257x257
+                    audio_prob_parameters.append(x[:, :, :, 3:254])
+                else:
+                    raise AssertionError("Cropping not implemented for the specific convolutional architecture '{}'."
+                                         .format(self.single_ch_conv_arch['name']))
+            # Keep lists - the ch dimension stores (single or multiple) parameter(s) of the probability distribution
+            # Apply activations
+            audio_prob_parameters = [self.audio_proba_distribution.apply_activations(x) for x in audio_prob_parameters]
+            # Sample from the probability distribution should always be fast and easy (even for mixture models)
+            audio_x_sampled = [self.audio_proba_distribution.get_mode(x) for x in audio_prob_parameters]
+            # The audio outputs can now be concatenated (channels dimension)
+            #     to remain usable in a multi-GPU configuration
+            audio_prob_parameters = torch.cat(audio_prob_parameters, dim=1)
+            audio_x_sampled = torch.cat(audio_x_sampled, dim=1)
+            # compute non-reduced target NLL (if target available)
+            audio_NLL = self.audio_log_prob_loss(audio_prob_parameters, x_target) if x_target is not None else None
+        else:
+            audio_prob_parameters, audio_x_sampled, audio_NLL = None, None, None
 
         # ---------- Preset decoder ----------
         if self.preset_decoder is not None and u_target is not None:
-            # TODO teacher-forcing or not?
-            # TODO NEVER use teaching forcing during eval
             preset_decoder_out = self.preset_decoder(z_sampled, u_target)
         else:
             preset_decoder_out = (None, ) * 5

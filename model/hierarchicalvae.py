@@ -110,6 +110,9 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                           "by the HierarchicalVAE during its construction.".format(model_config.dim_z))
         if self.preset_ae_method not in ['no_encoding', 'combined_vae', 'no_audio']:
             raise ValueError("preset_ae_method '{}' not available".format(self.preset_ae_method))
+        if self.preset_ae_method == 'independent_vae':
+            assert model_config.vae_preset_encode_add == 'after_latent_cell', \
+                "Independent VAEs should not share the latent cells "
 
         # Build encoder and decoder
         self._preset_helper = preset_helper
@@ -180,37 +183,39 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
     def get_custom_group_module(self, group_name: str) -> nn.Module:
         return self._aggregated_modules_lists[group_name]
 
-    def forward(self, x_target, u_target=None, preset_uids=None, midi_notes=None):
-        if u_target is not None and self.pre_training_audio:
-            u_target = None  # We force a None value even if a dummy preset was given at input
-
+    def forward(self, x_target, u_target=None, preset_uids=None, midi_notes=None, pass_index=0):
         # TODO handle all cases: auto synth prog, preset auto-encoding, ...
-        #TODO 2 passes (the second might be useless)
-
-        # - - - - - 1st pass (might be the single one) - - - - -
-        # use the audio input with all methods but 'no_audio'
-        x_input = x_target if self.preset_ae_method != "no_audio" else None
-        if self.preset_ae_method in ["combined_vae", 'no_audio']:
-            u_input = u_target
+        if pass_index == 0:  # - - - - - 1st pass (might be the single one) - - - - -
+            if self.pre_training_audio or self.preset_ae_method == 'no_encoding':
+                x_input, u_input = x_target, None
+            elif self.preset_ae_method == 'combined_vae':
+                x_input, u_input = x_target, u_target
+            elif self.preset_ae_method == 'independent_vae':
+                x_input, u_input = x_target, None  # 1st pass: audio only
+                u_target = None  # disable preset loss computation
+            elif self.preset_ae_method == 'no_audio':
+                x_input, u_input = None, u_target
+                x_target = None  # will disable computation of x outputs (audio distribution and samples)
+            else:
+                raise NotImplementedError(self.preset_ae_method)
+        elif pass_index == 1:  # - - - - -  2nd pass (optional) - - - - -
+            if self.preset_ae_method == 'independent_vae':
+                x_input, u_input = None, u_target
+                x_target = None  # will disable computation of x outputs (audio distribution and samples)
+            else:
+                raise AssertionError("This model's training procedure is single-pass.")
         else:
-            u_input = None
+            raise ValueError(pass_index)
+
         # Encode, sample, decode
         z_mu, z_var = self.encoder(x_input, u_input, midi_notes)
         z_sampled = self.sample_z(z_mu, z_var)
-        # TODO maybe don't use x_target is auto-encoding preset only
+        # TODO maybe don't use x_target if auto-encoding preset only
         x_decoded_proba, x_sampled, x_target_NLL, preset_decoder_out = self.decoder(
-            z_sampled, x_target=x_target, u_target=u_target)
-
-        #  - - - - -  2nd pass (optional) - - - - -
-        if self.preset_ae_method == "asp+vae" or self.preset_ae_method == "independent_vae":
-            x_input = None if self.preset_ae_method == "independent_vae" else x_target  # TODO handle this in the encoder
-            # TODO "ASP+VAE" and "independent_VAEs":
-            #   - average losses, metrics, ... "ASP+VAE" only
-            #   - 2 steps
-            #   - compute regularization
-            raise NotImplementedError()
-
-            # TODO concat results from 1st / 2nd pass???
+            z_sampled,
+            u_target=u_target,
+            x_target=x_target, compute_x_out=(x_target is not None)
+        )
 
         # Outputs: return all available values using Tensor only, for this method to remain usable
         #     with multi-GPU training (mini-batch split over GPUs, all output tensors will be concatenated).
@@ -373,14 +378,38 @@ def process_minibatch(
 
     if training:
         ae_model.optimizers_zero_grad()
-    # TODO plan 2-passes forward, ae_out_preset and ae_out_audio for logs
-    ae_out = ae_model_parallel(x_in, v_in, uid, notes)
-    ae_out = ae_model.parse_outputs(ae_out)
-    super_metrics['LatentMetric' + suffix].append_hierarchical_latent(ae_out, label)
+    # 1- or 2-pass forward
+    ae_out_0 = ae_model_parallel(x_in, v_in, uid, notes, pass_index=0)
+    ae_out_0 = ae_model.parse_outputs(ae_out_0)
+    if ae_model.preset_ae_method == 'independent_vae':
+        ae_out_1 = ae_model_parallel(x_in, v_in, uid, notes, pass_index=1)
+        ae_out_1 = ae_model.parse_outputs(ae_out_1)
+    else:
+        ae_out_1 = None
+    # assign the output(s) to preset- and/or audio-outputs (not to log Nones, and to log the proper values)
+    if ae_model.preset_ae_method in ['no_encoding', 'combined_vae']:
+        ae_out_audio, ae_out_preset = ae_out_0, ae_out_0
+    elif ae_model.preset_ae_method == 'no_audio':
+        ae_out_audio, ae_out_preset = None, ae_out_0
+    else:
+        raise NotImplementedError()
+
+    # always log "preset-related" latent metrics (in the end, we'll be interested in presets only)
+    #    they are often the same as "audio-related" latent metrics (also true during pre-training without presets)
+    super_metrics['LatentMetric' + suffix].append_hierarchical_latent(ae_out_preset, label)
+
     # Losses (some of them are computed on 1 GPU using the non-parallel original model instance)
-    audio_log_prob_loss = ae_out.x_target_NLL.mean()
-    scalars['Audio/LogProbLoss' + suffix].append(audio_log_prob_loss)
-    lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out, scalars['Sched/VAE/beta'].get(epoch))
+    if ae_out_audio is not None:
+        audio_log_prob_loss = ae_out_audio.x_target_NLL.mean()
+        scalars['Audio/LogProbLoss' + suffix].append(audio_log_prob_loss)
+    else:
+        audio_log_prob_loss = torch.zeros((1,), device=main_device)
+    # TODO which AE_OUT to use for 2-pass models???
+    #    compute both, then average?
+    #    use a different beta
+    lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out_0, scalars['Sched/VAE/beta'].get(epoch))
+    if ae_out_1 is not None:
+        raise NotImplementedError()
     scalars['Latent/Loss' + suffix].append(lat_loss)
     scalars['Latent/BackpropLoss' + suffix].append(lat_backprop_loss)  # Includes beta
     if training:
@@ -389,7 +418,8 @@ def process_minibatch(
     else:
         extra_lat_reg_loss = 0.0
     if not ae_model.pre_training_audio:
-        u_categorical_nll, u_numerical_nll = ae_out.u_categorical_nll.mean(), ae_out.u_numerical_nll.mean()
+        # TODO use a ae_out_preset for this ?
+        u_categorical_nll, u_numerical_nll = ae_out_preset.u_categorical_nll.mean(), ae_out_preset.u_numerical_nll.mean()
         preset_loss = u_categorical_nll + u_numerical_nll
         scalars['Preset/NLL/Total' + suffix].append(preset_loss)
         preset_loss *= ae_model.params_loss_compensation_factor
@@ -401,13 +431,15 @@ def process_minibatch(
     preset_reg_loss = torch.zeros((1,), device=main_device)  # No regularization yet....
 
     with torch.no_grad():  # Monitoring-only losses
-        scalars['Audio/MSE' + suffix].append(F.mse_loss(ae_out.x_sampled, x_in))
-        scalars['Latent/MMD' + suffix].append(ae_model.mmd(ae_out.get_z_sampled_no_hierarchy()))
+        scalars['Latent/MMD' + suffix].append(ae_model.mmd(ae_out_preset.get_z_sampled_no_hierarchy()))
         if not ae_model.pre_training_audio:
-            scalars['Preset/Accuracy' + suffix].append(ae_out.u_accuracy.mean())
-            scalars['Preset/L1error' + suffix].append(ae_out.u_l1_error.mean())
-        scalars['VAELoss/Total' + suffix].append(ae_model.audio_vae_loss(audio_log_prob_loss, x_in.shape, ae_out))
-        scalars['VAELoss/Backprop' + suffix].append(audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss)
+            scalars['Preset/Accuracy' + suffix].append(ae_out_preset.u_accuracy.mean())
+            scalars['Preset/L1error' + suffix].append(ae_out_preset.u_l1_error.mean())
+        if ae_out_audio is not None:
+            scalars['Audio/MSE' + suffix].append(F.mse_loss(ae_out_audio.x_sampled, x_in))
+            scalars['VAELoss/Total' + suffix].append(ae_model.audio_vae_loss(
+                audio_log_prob_loss, x_in.shape, ae_out_audio))
+            scalars['VAELoss/Backprop' + suffix].append(audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss)
 
     if training:
         utils.exception.check_nan_values(
@@ -416,7 +448,7 @@ def process_minibatch(
         (audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss + preset_loss + preset_reg_loss).backward()
         ae_model.optimizers_step()
 
-    return ae_out
+    return ae_out_audio, ae_out_preset
 
 
 # FIXME move to a different .py file?

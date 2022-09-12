@@ -205,7 +205,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                 i_to_plot = np.random.default_rng(seed=epoch).integers(0, len(dataloader['validation'])-1)
                 for i, minibatch in enumerate(dataloader['validation']):
                     x_in, v_in, uid, notes, label = [m.to(device) for m in minibatch]
-                    ae_out = model.hierarchicalvae.process_minibatch(
+                    ae_out_audio, ae_out_preset = model.hierarchicalvae.process_minibatch(
                         ae_model, ae_model_parallel, device,
                         x_in, v_in, uid, notes, label,
                         epoch, scalars, super_metrics
@@ -213,12 +213,14 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
                     # Validation plots
                     if logger.should_plot:
                         v_in_backup.append(v_in)  # Full-batch error storage - will be used later
-                        v_out_backup.append(ae_out.u_out)
-                        if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
-                            logger.plot_spectrograms(x_in, ae_out.x_sampled, uid, notes, validation_audio_dataset)
-                            logger.plot_decoder_interpolation(
-                                ae_model, ae_model.flatten_latent_values(ae_out.z_sampled),
-                                uid, validation_audio_dataset, audio_channel=model_config.main_midi_note_index)
+                        v_out_backup.append(ae_out_preset.u_out)
+                        if ae_out_audio is not None:
+                            if i == i_to_plot:  # random mini-batch plot (validation dataset is not randomized)
+                                logger.plot_spectrograms(
+                                    x_in, ae_out_audio.x_sampled, uid, notes, validation_audio_dataset)
+                                logger.plot_decoder_interpolation(
+                                    ae_model, ae_model.flatten_latent_values(ae_out_audio.z_sampled),
+                                    uid, validation_audio_dataset, audio_channel=model_config.main_midi_note_index)
             scalars['Latent/MaxAbsVal/Valid'].set(np.abs(super_metrics['LatentMetric/Valid'].get_z('zK')).max())
 
         ae_model.schedulers_step()

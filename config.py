@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'preset_dont_enc__refactored'
+        self.run_name = 'no_audio_01'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -99,7 +99,7 @@ class ModelConfig:
         #    - TODO "independent_vae": the preset VAE and audio VAE are trained as independent models, but a loss
         #           (e.g. contrastive, Dkl, ... TODO TBD) is computed using the two latent representations
         #    - "no_audio": the preset alone is auto-encoded, audio is discarded
-        self.preset_ae_method = "no_encoding"
+        self.preset_ae_method = "no_audio"
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector
