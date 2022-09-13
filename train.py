@@ -256,7 +256,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     # ========== "Manual GC" (to try to prevent random CUDA out-of-memory between enqueued runs) ==========
     # This should not have any effect by Python is supposed to store objects as reference-counted, but this
     # seems to be effective... maybe because pytorch keeps some internal references, and some CUDA tensors stay alive?
-    del ae_model_parallel, ae_model, ae_out
+    del ae_model_parallel, ae_model, ae_out_audio, ae_out_preset
     locals_names = copy.deepcopy(list(locals().keys()))
     for k in locals_names:  # get all local variables, delete any tensor variable
         if not k.startswith('_') and isinstance(locals()[k], torch.Tensor):

@@ -30,7 +30,8 @@ class PresetEncoder(nn.Module):
                 batch_first=True, dropout=dropout_p, activation=get_transformer_act(self.arch_args)
             )
             self.tfm = nn.TransformerEncoder(tfm_layer, self.n_layers)  # No output norm
-            self.embedding = PresetEmbedding(hidden_size, preset_helper)
+            max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None
+            self.embedding = PresetEmbedding(hidden_size, preset_helper, max_norm)
             self.n_output_tokens = 2 * dim_z // hidden_size
 
         elif self.arch['name'] == 'mlp':

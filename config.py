@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'no_audio_01'
+        self.run_name = 'combined_vae__fftoken_NOnorm'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -81,7 +81,7 @@ class ModelConfig:
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
         #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
         #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
-        self.vae_preset_architecture = 'tfm_6l_ff_memmlp'  # tfm_6l_memmlp_ff
+        self.vae_preset_architecture = 'tfm_6l_ff_memmlp_fftoken'  # tfm_6l_memmlp_ff
         # "before_latent_cell" (encoded preset will be the same size as encoded audio, both will be added)
         # or "after_latent_cell"" (encoded preset size will be 2*dim_z, and will be added to z_mu and z_sigma)
         self.vae_preset_encode_add = "after_latent_cell"
@@ -96,10 +96,10 @@ class ModelConfig:
         #    - "combined_vae": preset is encoded with audio, their hidden representations are then summed or mixed
         #           together
         #    - TODO "asp+vae": hybrid method/training: TODO DOC
-        #    - TODO "independent_vae": the preset VAE and audio VAE are trained as independent models, but a loss
+        #    - "independent_vae": the preset VAE and audio VAE are trained as independent models, but a loss
         #           (e.g. contrastive, Dkl, ... TODO TBD) is computed using the two latent representations
         #    - "no_audio": the preset alone is auto-encoded, audio is discarded
-        self.preset_ae_method = "no_audio"
+        self.preset_ae_method = "combined_vae"
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector

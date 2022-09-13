@@ -1,6 +1,7 @@
 """
 General classes and methods for modelling presets (can be used by preset encoders and decoders, or other modules).
 """
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -22,6 +23,8 @@ def parse_preset_model_architecture(full_architecture: str):
         'relu': False,  # if no activation is given, defaults to this
         'gelu': False,
         'ff': False,  # feed-forward (non-autoregressive) - for RNN, Transformers only
+        'fftoken': False,  # use custom input tokens for a feed-forward RNN/transformer decoder
+        'embednorm': False,   # set a limit on embeddings norm
         'memmlp': False,  # Transformer decoder only: uses an (res-)MLP to double the number of memory tokens
         # 'gated': False,  # (Self-)gating ("light attention") mechanisms can be added to some architectures
         # 'att': False,  # SAGAN-like self-attention
@@ -54,7 +57,7 @@ def get_transformer_act(arch_args):
 
 
 class PresetEmbedding(nn.Module):
-    def __init__(self, hidden_size: int, preset_helper: Preset2dHelper):
+    def __init__(self, hidden_size: int, preset_helper: Preset2dHelper, max_norm: Optional[float] = None):
         super().__init__()
         self.hidden_size, self.preset_helper = hidden_size, preset_helper
 
@@ -101,20 +104,17 @@ class PresetEmbedding(nn.Module):
                     self.categorical_embed_easy_index[start_easy_idx+i] = n_categorical_embeddings
                     n_categorical_embeddings += 1
         # TODO double-check indexing (with repeats)
-        self.categorical_embedding = nn.Embedding(n_categorical_embeddings, hidden_size, max_norm=None)
+        self.categorical_embedding = nn.Embedding(n_categorical_embeddings, hidden_size, max_norm=max_norm)
 
         # Save other masks - they are will be moved to the GPU
         self._matrix_categorical_bool_mask = self.preset_helper.matrix_categorical_bool_mask.clone()
         self._matrix_numerical_bool_mask = self.preset_helper.matrix_numerical_bool_mask.clone()
 
         # Precompute the largest "normal sequence" embedding: seq w/ start and end tokens
-        #   FIXME
         self.pos_embed_L_plus_2 = self.get_sin_cos_positional_embedding(seq_len=self.seq_len + 2)
 
-        # TODO unit test: assert that all embeddings are different (after random init)
-
         # Special tokens: use a different embedding (self.categorical_embedding indexing is complicated enough)
-        self.special_token_embedding = nn.Embedding(65, hidden_size, max_norm=None)  # Including start token
+        self.special_token_embedding = nn.Embedding(65, hidden_size, max_norm=max_norm)  # Including start token
 
     @property
     def seq_len(self):

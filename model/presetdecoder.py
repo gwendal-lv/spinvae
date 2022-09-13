@@ -445,10 +445,6 @@ class TransformerDecoder(ChildDecoderBase):
     def __init__(self, parent_dec: PresetDecoder, n_head=4, dropout_p=0.0):
         """
         TODO doc
-
-        TODO AR ctor arg (AR_forward, AR_backward.. BIDIR Transformer?)
-                Bidirectional: won't actually be AR (we'll have different forward/backward predictions,
-                which would to be "merged" somehow - ensembling approach?)
         """
         super().__init__(parent_dec, dropout_p)
         self.n_head = n_head
@@ -466,6 +462,14 @@ class TransformerDecoder(ChildDecoderBase):
         else:
             self.input_memory_mlp = None
 
+        # Maybe use custom input tokens (added to pos encodings) for non-AR
+        if self.arch_args['fftoken']:
+            assert not self.autoregressive, "_fftoken arg must be used with a non-AR transformer decoder"
+            max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None
+            self.custom_in_tokens = nn.Embedding(self.seq_len, self.hidden_size, max_norm=max_norm)
+        else:
+            self.custom_in_tokens = None
+
         # Transformer decoder
         # Final (3rd) dropout could impair regression, but this does not seem to happen in practice
         tfm_layer = nn.TransformerDecoderLayer(
@@ -480,10 +484,11 @@ class TransformerDecoder(ChildDecoderBase):
         N, device = z_multi_level[0].shape[0], z_multi_level[0].device  # minibatch size, current device
         # Build memory from z
         z_flat = self.flatten_z_multi_level(z_multi_level)
-        # FIXME Very simple memory: 1-token sequence (FIXME use latent space of size hidden_dim not to use this linear)
+        # ery simple memory: 1-token sequence (use latent space of size hidden_dim not to use this linear)
         #  Build memory token(s)
         #     - ICCV21 "3D human motion transformer VAE" seems to use the raw latent vector as a single memory token
         #          https://github.com/Mathux/ACTOR
+        #     - or: input memory mlp (small general improvement...)
         memory_in = z_flat.view(N, self.n_memory_tokens, self.hidden_size)
         # If requested, this MLP will double the number of memory tokens (we'll always use the raw latent token(s))
         if self.input_memory_mlp is not None:
@@ -501,7 +506,10 @@ class TransformerDecoder(ChildDecoderBase):
             # non-AR transformer: pos encoding input only
             else:
                 u_input_embeds = torch.unsqueeze(self.embedding.pos_embed_L.to(device), dim=0)  # Add batch dimension
-                u_input_embeds = u_input_embeds.expand(N, -1, -1)
+                u_input_embeds = u_input_embeds.expand(N, -1, -1).clone()
+                if self.custom_in_tokens is not None:
+                    custom_tokens = self.custom_in_tokens(torch.arange(0, self.seq_len, dtype=torch.long).to(device))
+                    u_input_embeds += custom_tokens.unsqueeze(dim=0).expand(N, -1, -1)
                 if self.scheduled_sampling_p > 0.0:
                     warnings.warn("Scheduled sampling probability > 0.0 can't be applied w/ this non-AR decoder.")
 
