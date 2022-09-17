@@ -11,10 +11,10 @@ from utils import config_confidential
 
 class InterpEvalConfig:
     def __init__(self):
-        self.device = 'cpu'
+        self.device = 'cpu'  # FIXME does not seem to do anything... a model loaded on GPU stays on GPU
         self.dataset_type = 'validation'
         self.num_steps = 9
-        self.use_reduced_dataset = True  # fast debugging (set to False during actual eval)
+        self.use_reduced_dataset = False  # fast debugging (set to False during actual eval)
         self.force_re_eval_all = True
         self.skip_audio_render = False  # don't re-render audio, recompute interpolation features/metrics only
 
@@ -37,31 +37,15 @@ class InterpEvalConfig:
         # List of models and eval configs for each model
         #    the config of the first model will be used to load the dataset used by the reference model
         self.other_models: List[Dict[str, Any]] = [
-            {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.50',
+            {'base_model_name': 'pAE/combin_embnrm_beta1.6e-05_mixt3',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'pAE/combin_embnrm_beta5.0e-05_mixt3',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'pAE/combin_embnrm_beta1.6e-04_mixt3',
+             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'pAE/combin_embnrm_beta5.0e-04_mixt3',
              'u_curve': 'linear', 'latent_interp': 'linear'},
         ]
-        """
-        self.other_models: List[Dict[str, Union[str, Path, bool]]] = [
-            {'base_model_name': 'presetAE/combined_vae_beta1.6e-03_presetfactor1.00',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.6e-03_presetfactor0.50',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.6e-03_presetfactor0.20',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.6e-04_presetfactor1.00',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.50',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.60e-04_presetfactor0.20',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.6e-05_presetfactor1.00',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.60e-05_presetfactor0.50',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'presetAE/combined_vae_beta1.60e-05_presetfactor0.20',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-        ]
-        """
         # Auto duplicate everything to try arcsin u curves
         if False:
             other_models_duplicates = copy.deepcopy(self.other_models)
@@ -69,7 +53,7 @@ class InterpEvalConfig:
                 m_config['u_curve'] = 'arcsin'
             self.other_models += other_models_duplicates
         # Auto duplicate everything to try all z refinement options
-        if True:
+        if False:
             other_models_backup = copy.deepcopy(self.other_models)
             for refine_lvl in [1, 2]:
                 other_models_duplicates = copy.deepcopy(other_models_backup)

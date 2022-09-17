@@ -1,3 +1,6 @@
+
+from datetime import datetime
+
 from evalconfig import InterpEvalConfig
 from evaluation.load import ModelLoader
 from evaluation.interpbase import NaivePresetInterpolation
@@ -5,6 +8,9 @@ from evaluation.interp import SynthPresetLatentInterpolation
 
 
 def run(eval_config: InterpEvalConfig):
+
+    t_start = datetime.now()
+    n_actually_processed = 0
 
     assert eval_config.dataset_type == 'validation' or eval_config.dataset_type == 'test'
     model_loader = ModelLoader(
@@ -18,8 +24,9 @@ def run(eval_config: InterpEvalConfig):
     else:
         raise NotImplementedError()
     ref_preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset
-    ref_preset_interpolator.try_process_dataset(
-        eval_config.ref_model_force_re_eval or eval_config.force_re_eval_all, eval_config.skip_audio_render)
+    was_processed = ref_preset_interpolator.try_process_dataset(
+        (eval_config.ref_model_force_re_eval or eval_config.force_re_eval_all), eval_config.skip_audio_render)
+    n_actually_processed += was_processed
 
     # Evaluate all "other" (i.e. non-reference) models
     for m_config in eval_config.other_models:
@@ -36,7 +43,13 @@ def run(eval_config: InterpEvalConfig):
         except KeyError:  # Default: don't force re-evaluate
             force_re_eval = False
         force_re_eval = force_re_eval or eval_config.force_re_eval_all
-        preset_interpolator.try_process_dataset(force_re_eval, eval_config.skip_audio_render)
+        was_processed = preset_interpolator.try_process_dataset(force_re_eval, eval_config.skip_audio_render)
+        n_actually_processed += was_processed
+
+    duration_minutes = (datetime.now() - t_start).total_seconds() / 60.0
+    print("\n\nFinished evaluation, {:.1f} min / model ({} models were actually evaluated, {:.1f} h total)".
+          format((duration_minutes / n_actually_processed if n_actually_processed > 0 else "inf"),
+                 n_actually_processed, duration_minutes / 60.0))
 
 
 if __name__ == "__main__":

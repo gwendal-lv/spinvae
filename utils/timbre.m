@@ -105,17 +105,34 @@ function rc = timbre(directories_list_file)
             [~, fileName, fileExt] = fileparts(filelist(i).name);
             if ~isempty(fileName) && fileName(1) ~= '.' && (any(strcmp(fileExt(2:end), acceptedFormats)) || (length(filelist) == 1 && strcmp(fileExt(2:end), 'raw')))
                 sound = SoundFile([soundsDirectory '/' fileName fileExt], sndConfig);
-                sound.Eval(evalConfig);
-                if ~isempty(csvDirectory)
-                    sound.ExportCSV(csvConfig);
+                % catch sound.Eval Error
+                sound_was_eval = false;
+                try
+                    sound.Eval(evalConfig);
+                    sound_was_eval = true;
+                % when timbre toolbox bugs with low-volume samples: general Error, nothing more specific....
+                % so we'll have to catch all Error
+                catch Error
+                    stats_file = strcat(soundsDirectory, '/', fileName, '_stats.csv')   % FIXME temp
+                    fid = fopen(stats_file, 'w');
+                    warning("000000000000000000000 - sound.Eval has raised an Error - an empty .csv file will be written - 00000000000000000000000000000");
+                    fprintf(fid, "Evaluation Error");
+                    fclose(fid);
                 end
-                if ~isempty(matDirectory)
-                    sound.Save(matConfig);
-                end
-                if ~isempty(pltDirectory)
-                    sound.Plot(plotConfig);
-                    close all;
-                    clc
+
+                if sound_was_eval
+                    % write files - code from the original timbre toolbox demo file
+                    if ~isempty(csvDirectory)
+                        sound.ExportCSV(csvConfig);
+                    end
+                    if ~isempty(matDirectory)
+                        sound.Save(matConfig);
+                    end
+                    if ~isempty(pltDirectory)
+                        sound.Plot(plotConfig);
+                        close all;
+                        clc
+                    end
                 end
                 clear 'sound';
             end

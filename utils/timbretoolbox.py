@@ -233,13 +233,22 @@ class InterpolationTimbreToolbox(ToolboxLogger):
                 if step_index != csv_index:
                     raise ValueError("Inconsistent indices. Expected step index: {}; found: {} in {}"
                                      .format(step_index, csv_index, csv_file))
-                sequence_descriptors.append(self.read_stats_csv(csv_file))
+                sequence_descriptors.append(self.read_stats_csv(csv_file))  # might append None (very rare)
             # Aggregate per-file descriptors and stats, into a per-sequence dict
             aggregated_seq_data = dict()
             aggregated_seq_data['step_index'] = list(range(len(sequence_descriptors)))
-            for descriptor_name in sequence_descriptors[0].keys():
-                aggregated_seq_data[descriptor_name] \
-                    = [audio_file_data[descriptor_name] for audio_file_data in sequence_descriptors]
+            # Retrieve descriptors' name - very rarely, some (zero-only) audio files can't be processed at all
+            all_descriptors_names = None
+            for audio_file_data in sequence_descriptors:
+                if audio_file_data is not None:
+                    all_descriptors_names = audio_file_data.keys()
+                    break
+            for descriptor_name in all_descriptors_names:
+                # use zero-only descriptors values is TT could not compute actual values
+                aggregated_seq_data[descriptor_name] = [
+                    audio_file_data[descriptor_name] if audio_file_data is not None else 0.0
+                    for audio_file_data in sequence_descriptors
+                ]
             # convert data for each sequence to DF
             aggregated_seq_data = pd.DataFrame(aggregated_seq_data)
             with open(sub_dir.joinpath('tt_sequence_features.pkl'), 'wb') as f:
@@ -336,11 +345,21 @@ class InterpolationTimbreToolbox(ToolboxLogger):
 
     def read_stats_csv(self, csv_file: pathlib.Path):
         """
-        :return: A Dict of descriptors. Some of them
+        :return: A Dict of descriptors, or None if the Evaluation could not be performed by TimbreToolbox
         """
         descr_data = dict()
         with open(csv_file, 'r') as f:
             lines = [line.rstrip() for line in f.readlines()]
+            # if lines if a single-item array, the CSV is supposed to correspond to an "Evaluation Error" case
+            if len(lines) == 1 or (len(lines) == 2 and len(lines[1]) <= 2):
+                if lines[0] == 'Evaluation Error':
+                    warnings.warn("File {} contains 'Evaluation Error' - the Matlab script could not "
+                                  "evaluate the associated audio file".format(csv_file))
+                    return None
+                else:
+                    raise ValueError("{} contains only 1 line: '{}' (should be audio features, or 'Evaluation Error')"
+                                     .format(csv_file, lines[0]))
+            # Otherwise, usual case: CSVs written by TimbreToolbox are not tabular data, but 1-item-per-line CSVs
             current_repr, current_descr = None, None
             for i, line in enumerate(lines):
                 if len(line) > 0:  # Non-empty line

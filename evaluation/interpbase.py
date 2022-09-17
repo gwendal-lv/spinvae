@@ -70,14 +70,18 @@ class InterpBase(ABC):
         return "[{}] '{}' --> [{}] '{}'".format(start_UID, start_name, end_UID, end_name)
 
     def try_process_dataset(self, force_re_eval=False, skip_audio_render=False):
+        """ Returns True if the evaluation is actually performed, False otherwise. """
         if force_re_eval:
             self.process_dataset(skip_audio_render)
+            return True
         else:
             if os.path.exists(self.storage_path):
                 print("[{}] Some results were already stored in '{}' - dataset won't be re-evaluated"
                       .format(type(self).__name__, self.storage_path))
+                return False
             else:
                 self.process_dataset(skip_audio_render)
+                return True
 
     def process_dataset(self, skip_audio_render=False):
         if not skip_audio_render:
