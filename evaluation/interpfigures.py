@@ -19,6 +19,7 @@ def interp_results_boxplots(
         eval_config: Optional[InterpEvalConfig] = None,
         reference_model_idx=0,
         display_wilcoxon_tests=False,
+        compact_display=True, figsize=None, legend_ax_idx=None,
 ):
     """
 
@@ -29,6 +30,8 @@ def interp_results_boxplots(
     :param exclude_features:
     :param eval_config: if given, will be used to exclude_min_max, exclude_features, ....
     :param reference_model_idx: The model to be considered as the reference for normalization of all metrics.
+    :param compact_display: Smaller optimized graph for paper print
+    :param legend_ax_idx: if not None, only the axis designated by this index will have a legend
     :return:
     """
     # auto create model names if not given (use parent's name)
@@ -49,7 +52,12 @@ def interp_results_boxplots(
                               for k, results_df in reference_results.items()}
 
     # Detailed boxplots: each metric has its own subplots
-    fig, axes = plt.subplots(len(metrics_to_plot), 1, figsize=(12, len(metrics_to_plot) * 5))  # FIXME size
+    fig, axes = plt.subplots(
+        len(metrics_to_plot), 1,
+        figsize=((12, len(metrics_to_plot) * 5) if figsize is None else figsize),
+        sharex=('col' if compact_display else None)
+    )
+    # TODO if needed: rename models in the dataframe itself
     if len(metrics_to_plot) == 1:
         axes = [axes]  # Add singleton dimension, for compatibility
     for metric_idx, metric_name in enumerate(metrics_to_plot):
@@ -72,24 +80,30 @@ def interp_results_boxplots(
             errwidth=1.0, marker='.', scale=0.5, ci="sd", dodge=0.4, join=False,  # SD instead of 95% CI
         )
         '''
-        axes[metric_idx].set(title=metric_name)
+        axes[metric_idx].set(xlabel='', ylabel=metric_name.title())
         axes[metric_idx].tick_params(axis='x', labelrotation=90)
-        # axes[metric_idx].set_yscale('log')
+        if compact_display:
+            axes[metric_idx].get_legend().set(title=None)
+        if legend_ax_idx is not None and metric_idx != legend_ax_idx:
+            axes[metric_idx].get_legend().remove()
         # If 2 models only, we may perform the wilcoxon paired test
         if len(models_interp_results) == 2:
             if display_wilcoxon_tests:
-                # p_value < 0.05 if model [1] has significantly LOWER values than model [0] (reference)
-                p_values, has_improved = utils.stat.wilcoxon_test(
-                    models_interp_results[0][metric_name], models_interp_results[1][metric_name])
-                p_values, has_deteriorated = utils.stat.wilcoxon_test(
-                    models_interp_results[1][metric_name], models_interp_results[0][metric_name])
-                axes[metric_idx].set(
-                    title="{} - Wilcoxon test: {}/{} improved, {}/{} deteriorated features"
-                    .format(
-                        metric_name, np.count_nonzero(has_improved.values), len(has_improved),
-                        np.count_nonzero(has_deteriorated.values), len(has_deteriorated)
+                if not compact_display:
+                    # p_value < 0.05 if model [1] has significantly LOWER values than model [0] (reference)
+                    p_values, has_improved = utils.stat.wilcoxon_test(
+                        models_interp_results[0][metric_name], models_interp_results[1][metric_name])
+                    p_values, has_deteriorated = utils.stat.wilcoxon_test(
+                        models_interp_results[1][metric_name], models_interp_results[0][metric_name])
+                    axes[metric_idx].set(
+                        title="{} - Wilcoxon test: {}/{} improved, {}/{} deteriorated features"
+                        .format(
+                            metric_name, np.count_nonzero(has_improved.values), len(has_improved),
+                            np.count_nonzero(has_deteriorated.values), len(has_deteriorated)
+                        )
                     )
-                )
+                else:
+                    warnings.warn("Can't display wilcoxon test results because compact_display is True")
         else:
             if display_wilcoxon_tests:
                 warnings.warn("The Wilcoxon test requires to provide only 2 models (reference and another)")
