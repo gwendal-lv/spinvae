@@ -44,22 +44,26 @@ def gaussian_unitvar_log_probability(samples, mu, add_log_2pi_term=True):
                    torch.sum( ((samples - mu)**2), dim=1))
 
 
-def standard_gaussian_dkl(mu, var, reduction='none'):
-    """
-    Computes the Dkl between a factorized gaussian distribution (given in input args as 2D tensors) and
-    the standard gaussian distribution.
-
-    :param reduction: If 'none', return a batch of KLDs (1 value / batch item). If 'mean', returns a single
-        batch-averaged KLD value.
-    """
-    assert len(mu.shape) == 2 and len(var.shape) == 2, "This method accepts flat (2D) batched tensors only"
-    Dkl = 0.5 * torch.sum(var + torch.square(mu) - torch.log(var) - 1.0, dim=1)
+def reduce_dkl_vectors(Dkl, reduction: str):
     if reduction == 'none':
         return Dkl
     elif reduction == 'mean':
         return torch.mean(Dkl)
     else:
         raise NotImplementedError(reduction)
+
+
+def standard_gaussian_dkl(mu, var, reduction='none'):
+    """
+    Computes the Dkl between a factorized gaussian distribution (given in input args as 2D tensors) and
+    the standard gaussian distribution.
+
+    :param reduction: If 'none', return a batch of KLDs (1 value / batch item). If 'mean', returns a single
+        KLD value averaged over all batches.
+    """
+    assert len(mu.shape) == 2 and len(var.shape) == 2, "This method accepts flat (2D) batched tensors only"
+    Dkl = 0.5 * torch.sum(var + torch.square(mu) - torch.log(var) - 1.0, dim=1)
+    return reduce_dkl_vectors(Dkl, reduction)
 
 
 def standard_gaussian_dkl_2d(mu, var, dim=(1, 2, 3), reduction='none'):
@@ -80,6 +84,29 @@ def standard_gaussian_dkl_2d(mu, var, dim=(1, 2, 3), reduction='none'):
         return torch.mean(Dkl, dim=0)
     else:
         raise NotImplementedError(reduction)
+
+
+def gaussian_dkl(mu1, var1, mu2, var2, reduction='none'):
+    """ Returns the KLD between two multivariate gaussian with diagonal covariance matrices, so var1 and var2
+     are expected to be vectors (same shape as mu1 and mu2).
+
+     This KLD is the sum of the KLDs of all univariate distributions (simplified formula w/ diag covar matrices)
+    :param reduction: If 'none', return a batch of KLDs (1 value / batch item). If 'mean', returns a single
+        KLD value averaged over all batches.
+     """
+    assert len(mu1.shape) == len(var1.shape) == len(mu2.shape) == len(var2.shape) == 2
+    Dkl = 0.5 * torch.sum(torch.log(var2) - torch.log(var1) + (var1 + torch.square(mu2 - mu1)) / var2 - 1, dim=1)
+    return reduce_dkl_vectors(Dkl, reduction)
+
+
+def symmetric_gaussian_dkl(mu1, var1, mu2, var2, reduction='none'):
+    """ Computes 0.5( KLD(P||Q) + KLD(Q||P) ).
+     See gaussian_dkl(...) about input args.  """
+    assert len(mu1.shape) == len(var1.shape) == len(mu2.shape) == len(var2.shape) == 2
+    mu_squared_diff = torch.square(mu2 - mu1)
+    Dkl = 0.25 * torch.sum((var1 + mu_squared_diff) / var2 + (var2 + mu_squared_diff) / var1 - 2, dim=1)
+    return reduce_dkl_vectors(Dkl, reduction)
+
 
 
 class ProbabilityDistribution:

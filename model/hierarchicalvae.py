@@ -102,17 +102,21 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         # Pre-process configuration
         self.main_conv_arch = model.ladderbase.parse_main_conv_architecture(model_config.vae_main_conv_architecture)
         self.latent_arch = parse_latent_extract_architecture(model_config.vae_latent_extract_architecture)
-        self.preset_ae_method = model_config.preset_ae_method if not train_config.pretrain_audio_only else "none"
+        self.preset_ae_method = model_config.preset_ae_method
+        self._alignment_criterion = train_config.preset_alignment_criterion
 
         # Configuration checks
         if model_config.dim_z > 0:
             warnings.warn("model_config.dim_z cannot be enforced (requested value: {}) and will automatically be set "
                           "by the HierarchicalVAE during its construction.".format(model_config.dim_z))
-        if self.preset_ae_method not in ['no_encoding', 'combined_vae', 'no_audio']:
-            raise ValueError("preset_ae_method '{}' not available".format(self.preset_ae_method))
-        if self.preset_ae_method == 'independent_vae':
-            assert model_config.vae_preset_encode_add == 'after_latent_cell', \
-                "Independent VAEs should not share the latent cells "
+        if not train_config.pretrain_audio_only:
+            if self.preset_ae_method not in ['no_encoding', 'combined_vae', 'no_audio', 'aligned_vaes']:
+                raise ValueError("preset_ae_method '{}' not available".format(self.preset_ae_method))
+            if self.preset_ae_method == 'aligned_vaes':
+                assert model_config.vae_preset_encode_add == 'after_latent_cell', \
+                    "Independent VAEs should not share the latent cells "
+        else:
+            assert self.preset_ae_method is None
 
         # Build encoder and decoder
         self._preset_helper = preset_helper
@@ -190,18 +194,18 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
                 x_input, u_input = x_target, None
             elif self.preset_ae_method == 'combined_vae':
                 x_input, u_input = x_target, u_target
-            elif self.preset_ae_method == 'independent_vae':
-                x_input, u_input = x_target, None  # 1st pass: audio only
-                u_target = None  # disable preset loss computation
+            elif self.preset_ae_method == 'aligned_vaes':
+                x_input, u_input = None, u_target  # 1st default pass: preset (s.t. default always outputs a preset)
+                x_target = None  # will disable computation of x outputs (audio distribution and samples)
             elif self.preset_ae_method == 'no_audio':
                 x_input, u_input = None, u_target
                 x_target = None  # will disable computation of x outputs (audio distribution and samples)
             else:
                 raise NotImplementedError(self.preset_ae_method)
         elif pass_index == 1:  # - - - - -  2nd pass (optional) - - - - -
-            if self.preset_ae_method == 'independent_vae':
-                x_input, u_input = None, u_target
-                x_target = None  # will disable computation of x outputs (audio distribution and samples)
+            if self.preset_ae_method == 'aligned_vaes':
+                x_input, u_input = x_target, None  # 2nd pass: audio only
+                u_target = None  # disable preset loss computation
             else:
                 raise AssertionError("This model's training procedure is single-pass.")
         else:
@@ -320,6 +324,27 @@ class HierarchicalVAE(model.base.TrainableMultiGroupModel):
         ae_out.z_loss = z_loss
         return z_loss, z_loss * beta
 
+    def latent_alignment_loss(self, ae_out_audio: HierarchicalVAEOutputs, ae_out_preset: HierarchicalVAEOutputs, beta):
+        """ Returns a loss that should be minimized to better align two parallel VAEs (one preset-VAE, one audio-VAE),
+            or returns 0.0 if self.preset_ae_method != 'aligned_vaes' """
+        if self.preset_ae_method != 'aligned_vaes':
+            assert self._alignment_criterion is None
+            return 0.0
+        else:
+            mu_audio = self.flatten_latent_values(ae_out_audio.z_mu)
+            var_audio = self.flatten_latent_values(ae_out_audio.z_var)
+            mu_preset = self.flatten_latent_values(ae_out_preset.z_mu)
+            var_preset = self.flatten_latent_values(ae_out_preset.z_var)
+            if self._alignment_criterion == 'kld':  # KLD ( q(z|preset) || q(z|audio) )
+                loss = utils.probability.gaussian_dkl(mu_preset, var_preset, mu_audio, var_audio, reduction='mean')
+            elif self._alignment_criterion == 'symmetric_kld':
+                loss = utils.probability.symmetric_gaussian_dkl(
+                    mu_preset, var_preset, mu_audio, var_audio, reduction='mean')
+            # TODO implement 2-Wasserstein distance (and MMD?)
+            else:
+                raise NotImplementedError(self._alignment_criterion)
+        return loss * beta
+
     def audio_vae_loss(self, audio_log_prob_loss, x_shape, ae_out: HierarchicalVAEOutputs):
         """
         Returns a total loss that corresponds to the ELBO if this VAE is a vanilla VAE with Dkl.
@@ -381,7 +406,7 @@ def process_minibatch(
     # 1- or 2-pass forward
     ae_out_0 = ae_model_parallel(x_in, v_in, uid, notes, pass_index=0)
     ae_out_0 = ae_model.parse_outputs(ae_out_0)
-    if ae_model.preset_ae_method == 'independent_vae':
+    if ae_model.preset_ae_method == 'aligned_vaes':
         ae_out_1 = ae_model_parallel(x_in, v_in, uid, notes, pass_index=1)
         ae_out_1 = ae_model.parse_outputs(ae_out_1)
     else:
@@ -391,6 +416,8 @@ def process_minibatch(
         ae_out_audio, ae_out_preset = ae_out_0, ae_out_0
     elif ae_model.preset_ae_method == 'no_audio':
         ae_out_audio, ae_out_preset = None, ae_out_0
+    elif ae_model.preset_ae_method == 'aligned_vaes':
+        ae_out_audio, ae_out_preset = ae_out_1, ae_out_0
     else:
         raise NotImplementedError()
 
@@ -399,6 +426,7 @@ def process_minibatch(
     super_metrics['LatentMetric' + suffix].append_hierarchical_latent(ae_out_preset, label)
 
     # Losses (some of them are computed on 1 GPU using the non-parallel original model instance)
+    beta = scalars['Sched/VAE/beta'].get(epoch)
     if ae_out_audio is not None:
         audio_log_prob_loss = ae_out_audio.x_target_NLL.mean()
         scalars['Audio/LogProbLoss' + suffix].append(audio_log_prob_loss)
@@ -407,16 +435,15 @@ def process_minibatch(
     # TODO which AE_OUT to use for 2-pass models???
     #    compute both, then average?
     #    use a different beta
-    lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out_0, scalars['Sched/VAE/beta'].get(epoch))
+    lat_loss, lat_backprop_loss = ae_model.latent_loss(ae_out_0, beta)
     if ae_out_1 is not None:
-        raise NotImplementedError()
+        lat_loss_1, lat_backprop_loss_1 = ae_model.latent_loss(ae_out_1, beta)
+        lat_loss += lat_loss_1  # don't average - would be equivalent to reducing beta for each VAE
+        lat_backprop_loss += lat_backprop_loss_1
     scalars['Latent/Loss' + suffix].append(lat_loss)
     scalars['Latent/BackpropLoss' + suffix].append(lat_backprop_loss)  # Includes beta
-    if training:
-        extra_lat_reg_loss = 0.0  # Can be used for extra regularisation, contrastive loss...
-        extra_lat_reg_loss *= scalars['Sched/VAE/beta'].get(epoch)
-    else:
-        extra_lat_reg_loss = 0.0
+    align_loss = ae_model.latent_alignment_loss(ae_out_audio, ae_out_preset, beta)
+    scalars['Latent/AlignLoss' + suffix].append(align_loss)
     if not ae_model.pre_training_audio:
         # TODO use a ae_out_preset for this ?
         u_categorical_nll, u_numerical_nll = ae_out_preset.u_categorical_nll.mean(), ae_out_preset.u_numerical_nll.mean()
@@ -439,13 +466,13 @@ def process_minibatch(
             scalars['Audio/MSE' + suffix].append(F.mse_loss(ae_out_audio.x_sampled, x_in))
             scalars['VAELoss/Total' + suffix].append(ae_model.audio_vae_loss(
                 audio_log_prob_loss, x_in.shape, ae_out_audio))
-            scalars['VAELoss/Backprop' + suffix].append(audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss)
+            scalars['VAELoss/Backprop' + suffix].append(audio_log_prob_loss + lat_backprop_loss)
 
     if training:
         utils.exception.check_nan_values(
-            epoch, audio_log_prob_loss, lat_backprop_loss, extra_lat_reg_loss, preset_loss, preset_reg_loss)
+            epoch, audio_log_prob_loss, lat_backprop_loss, align_loss, preset_loss, preset_reg_loss)
         # Backprop and optimizers' step (before schedulers' step)
-        (audio_log_prob_loss + lat_backprop_loss + extra_lat_reg_loss + preset_loss + preset_reg_loss).backward()
+        (audio_log_prob_loss + lat_backprop_loss + align_loss + preset_loss + preset_reg_loss).backward()
         ae_model.optimizers_step()
 
     return ae_out_audio, ae_out_preset

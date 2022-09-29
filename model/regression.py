@@ -1,4 +1,6 @@
 """
+FIXME DEPRECATED - remove this whole file?
+
 Neural networks classes for synth parameters regression, and related utility functions.
 
 These regression models can be used on their own, or passed as constructor arguments to

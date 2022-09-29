@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'combined_vae__fftoken_NOnorm'
+        self.run_name = 'STRONGaligned_vaes__symkld'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -81,7 +81,7 @@ class ModelConfig:
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
         #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
         #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
-        self.vae_preset_architecture = 'tfm_6l_ff_memmlp_fftoken'  # tfm_6l_memmlp_ff
+        self.vae_preset_architecture = 'tfm_6l_ff_memmlp_fftoken_embednorm'  # tfm_6l_memmlp_ff
         # "before_latent_cell" (encoded preset will be the same size as encoded audio, both will be added)
         # or "after_latent_cell"" (encoded preset size will be 2*dim_z, and will be added to z_mu and z_sigma)
         self.vae_preset_encode_add = "after_latent_cell"
@@ -96,7 +96,7 @@ class ModelConfig:
         #    - "combined_vae": preset is encoded with audio, their hidden representations are then summed or mixed
         #           together
         #    - TODO "asp+vae": hybrid method/training: TODO DOC
-        #    - "independent_vae": the preset VAE and audio VAE are trained as independent models, but a loss
+        #    - "aligned_vaes": the preset VAE and audio VAE are trained as independent models, but a loss
         #           (e.g. contrastive, Dkl, ... TODO TBD) is computed using the two latent representations
         #    - "no_audio": the preset alone is auto-encoded, audio is discarded
         self.preset_ae_method = "combined_vae"
@@ -149,7 +149,6 @@ class ModelConfig:
         # Dexed-specific auto rename: '*' in 'al*_op*_lab*' will be replaced by the actual algos, operators and labels
         self.synth_args_str = 'al*_op*_lab*'  # Auto-generated string (see end of script)
         self.synth_params_count = -1  # Will be set automatically - see data.build.get_full_and_split_datasets
-        # FIXME Modeling of synth controls probability distributions - RE-IMPLEMENT, SHOULD BE A MODEL ARGUMENT
         # flags/values to describe the dataset to be used
         self.dataset_labels = None  # tuple of labels (e.g. ('harmonic', 'percussive')), or None to use all labels
         # Dexed: Preset Algorithms, and activated Operators (Lists of ints, None to use all)
@@ -218,7 +217,6 @@ class TrainConfig:
 
         # - - - Synth parameters losses - - -
         # - General options
-        self.params_model_additional_regularization = None  # 'inverse_log_prob' available for Flow-based models
         # applied to the preset loss FIXME because MSE loss of the VAE is much lower (approx. 1e-2)
         self.params_loss_compensation_factor = 0.5
         self.params_loss_exclude_useless = False  # if True, sets to 0.0 the loss related to 0-volume oscillators
@@ -230,6 +228,12 @@ class TrainConfig:
         self.preset_sched_sampling_max_p = 0.0  # Set to zero for FF decoder
         # self.preset_sched_sampling_start_epoch = 40  # TODO IMPLEMENT Required for the embeddings to train properly?
         self.preset_sched_sampling_warmup_epochs = 100
+        # Alignment loss:
+        #   - 'kld': q(z|preset) regularized towards q(z|audio) through KLD
+        #   - 'symmetric_kld'
+        #   TODO optional arg:
+        #       - implement "__sgaudio" (stop audio-VAE gradient)
+        self.preset_alignment_criterion = 'symmetric_kld'
 
         # ------------------------------------------- Optimizer + scheduler -------------------------------------------
         # Different optimizer parameters can be used for the pre-trained AE and the regression networks
@@ -298,6 +302,7 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
     if train_config.pretrain_audio_only:
         model_config.comet_tags.append('pretrain')
         model_config.params_regression_architecture = 'None'
+        model_config.preset_ae_method = None
         train_config.lr_warmup_epochs = train_config.lr_warmup_epochs // 2
         train_config.lr_warmup_start_factor *= 2
     else:
@@ -335,6 +340,10 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
         train_config.scheduler_patience = 1 + train_config.scheduler_patience // N
         train_config.scheduler_cooldown = 1 + train_config.scheduler_cooldown // N
         train_config.beta_warmup_epochs = 1 + train_config.beta_warmup_epochs // N
+
+    # Hparams that may be useless, depending on some other hparams
+    if train_config.pretrain_audio_only or model_config.preset_ae_method != 'aligned_vaes':
+        train_config.preset_alignment_criterion = None
 
     # Automatic model.synth string update - to summarize this info into 1 Tensorboard string hparam
     if model_config.synth == "dexed":
