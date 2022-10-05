@@ -251,5 +251,6 @@ class TrainableMultiGroupModel(nn.Module):
                 group_module.load_state_dict(submodel_checkpoint['model_state_dict'])
                 if self._train_config.verbosity >= 1:
                     print("[TrainableMultiGroupModel] Loaded '{}' model_state_dict from {}".format(k, checkpoints_path))
-                if reload_opt_sched:
+                if reload_opt_sched:  # FIXME TODO???
                     raise NotImplementedError("Can only load some models at the moment (not the optimizers or scheds")
+

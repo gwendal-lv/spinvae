@@ -81,8 +81,9 @@ class ModelConfig:
         #   '_ff': feed-forward, non-AR decoding - applicable to sequential models: RNN, Transformer (pos enc only)
         #   '_memmlp': doubles the number of Transformer decoder memory tokens using a "Res-MLP" on the latent vector
         #              -> seems to improves perfs a bit (lower latent loss, quite similar auto synth prog losses)
+        #   '_fftoken': learned positional embeddings (input tokens) for a non-autoregressive transformer decoder
         self.vae_preset_architecture = 'tfm_6l_ff_memmlp_fftoken_embednorm'  # tfm_6l_memmlp_ff
-        # "before_latent_cell" (encoded preset will be the same size as encoded audio, both will be added)
+        # "before_latent_cell" (encoded preset will be the same size as encoded audio, added then processed together)
         # or "after_latent_cell"" (encoded preset size will be 2*dim_z, and will be added to z_mu and z_sigma)
         self.vae_preset_encode_add = "after_latent_cell"
         # Size of the hidden representation of 1 synth parameter
@@ -92,7 +93,7 @@ class ModelConfig:
         self.preset_decoder_numerical_distribution = 'logistic_mixt3'
         # Describes how (if) the presets should be auto-encoded:
         #    - "no_encoding": presets are inferred from audio but are not encoded (not provided at
-        #               encoder input). Corresponds to an ASP (Automatic Synthesizer Programming) situation.
+        #               encoder input). Corresponds to a Sound Matching (or automatic synth programming) task.
         #    - "combined_vae": preset is encoded with audio, their hidden representations are then summed or mixed
         #           together
         #    - TODO "asp+vae": hybrid method/training: TODO DOC
@@ -103,7 +104,7 @@ class ModelConfig:
 
         # --------------------------------------------- Latent space -----------------------------------------------
         # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concat to the latent vector
-        self.concat_midi_to_z = None  # See update_dynamic_config_params()
+        self.concat_midi_to_z = None  # See update_dynamic_config_params() - FIXME deprecated
         # Latent space dimension  ********* this dim is automatically set when using a Hierarchical VAE *************
         self.dim_z = -1
         self.approx_requested_dim_z = 256  # Hierarchical VAE will try to get close to this, will often be higher
@@ -112,8 +113,7 @@ class ModelConfig:
         #    - set to None to disable latent space flow transforms: will build a BasicVAE or MMD-VAE
         #    - options: _BNinternal (batch norm between hidden MLPs, to compute transform coefficients),
         #               _BNbetween (between flow layers), _BNoutput (BN on the last two layers, or not)
-        self.latent_flow_arch = None
-        # self.latent_flow_arch = 'realnvp_6l300_BNinternal_BNbetween'
+        self.latent_flow_arch = None  # FIXME deprecated
 
         # ------------------------------------------------ Audio -------------------------------------------------
         # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
@@ -199,7 +199,7 @@ class TrainConfig:
         # where Dx is the input dimensionality (257 * 251 = 64 507 for 1 spectrogram)
         # E.g. here: beta = 1 corresponds to beta_VAE = 6.5 e+4
         #            ELBO loss is obtained by using beta = 1.55 e-5 (for 1 spectrogram)
-        self.beta = 1.6e-5  # FIXME With 6 specs, this corresponds to beta=6
+        self.beta = 5.0e-6  # FIXME With 6 specs, 1.6e-5 corresponds to beta=6
         # Should not be zero with Normalizing Flows or with a multi-layer structure for extracting latent values
         # (risk of a very unstable training)
         self.beta_start_value = self.beta * 1e-3
@@ -221,8 +221,8 @@ class TrainConfig:
         self.params_loss_compensation_factor = 0.5
         self.params_loss_exclude_useless = False  # if True, sets to 0.0 the loss related to 0-volume oscillators
         self.params_loss_with_permutations = False  # Backprop loss only; monitoring losses always use True
-        # - Cross-Entropy loss (deactivated when using dequantized outputs)
-        self.preset_CE_label_smoothing = 0.1  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
+        # - Cross-Entropy loss
+        self.preset_CE_label_smoothing = 0.0  # torch.nn.CrossEntropyLoss: label smoothing since PyTorch 1.10
         self.preset_CE_use_weights = False
         # Probability to use the model's outputs during training (AR decoder)
         self.preset_sched_sampling_max_p = 0.0  # Set to zero for FF decoder

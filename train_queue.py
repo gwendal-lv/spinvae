@@ -44,36 +44,17 @@ Please write two lists of dicts, such that:
 """
 model_config_mods, train_config_mods = list(), list()
 
-
-
-# Train arrêté à hvae/8x2_dimz100_lvls1_big_att_lat2l_k3x3__dklgammaFalse (trop long...)
-# c'était le 7/24 de la série des "attention"
-i = 0
-for dim_z in [100]:
-    for conv_layers in ['8x2']:  # '8x1' already done
-        for big in ['_big_att', '_att']:
-            for latent_arch in ['conv_1l_k1x1_gated', 'conv_2l_k3x3_gated']:
-                for num_levels in [1, 2, 3]:
-                    for dkl_auto_gamma in [False, True]:
-                        i += 1
-                        if i <= 7:  # entraînements déjà faits dans cette série
-                            continue
-
-                        conv_arch = 'specladder' + conv_layers + '_res' + big
-                        model_config_mods.append(
-                            {'comet_tags': ['conv_hpar_sweep'],
-                             'run_name': '{}_dimz{}_lvls{}{}_lat{}__dklgamma{}'
-                                 .format(conv_layers, dim_z, num_levels, big, latent_arch[5:12], dkl_auto_gamma),
-                             'vae_latent_levels': num_levels,
-                             'approx_requested_dim_z': dim_z,
-                             'vae_latent_extract_architecture': latent_arch,
-                             'vae_main_conv_architecture': conv_arch,
-
-                             }
-                        )
-                        train_config_mods.append({'dkl_auto_gamma': dkl_auto_gamma})
-
-
+# E.g:
+for dlm_components in [2, 4]:
+    for beta in [5.0e-7, 1.6e-7, 5.0e-6, 1.6e-6, 5.0e-5, 1.6e-5, 5.0e-4, 1.6e-4]:
+        model_config_mods.append({
+            'name': 'ablation',
+            'run_name': 'dlm{}_beta{:.1e}'.format(dlm_components, beta),
+            'preset_decoder_numerical_distribution': 'logistic_mixt{}'.format(dlm_components)
+        })
+        train_config_mods.append({
+            'beta': beta
+        })
 
 
 if __name__ == "__main__":

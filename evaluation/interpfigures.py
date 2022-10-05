@@ -19,7 +19,7 @@ def interp_results_boxplots(
         eval_config: Optional[InterpEvalConfig] = None,
         reference_model_idx=0,
         display_wilcoxon_tests=False,
-        compact_display=True, figsize=None, legend_ax_idx=None,
+        compact_display=False, figsize=None, legend_ax_idx=None,
 ):
     """
 
@@ -55,7 +55,7 @@ def interp_results_boxplots(
     fig, axes = plt.subplots(
         len(metrics_to_plot), 1,
         figsize=((12, len(metrics_to_plot) * 5) if figsize is None else figsize),
-        sharex=('col' if compact_display else None)
+        sharex=('col' if compact_display else 'none')
     )
     # TODO if needed: rename models in the dataframe itself
     if len(metrics_to_plot) == 1:
@@ -80,7 +80,7 @@ def interp_results_boxplots(
             errwidth=1.0, marker='.', scale=0.5, ci="sd", dodge=0.4, join=False,  # SD instead of 95% CI
         )
         '''
-        axes[metric_idx].set(xlabel='', ylabel=metric_name.title())
+        axes[metric_idx].set(xlabel='', ylabel=(metric_name.title() + ' (scaled)'))
         axes[metric_idx].tick_params(axis='x', labelrotation=90)
         if compact_display:
             axes[metric_idx].get_legend().set(title=None)
@@ -114,21 +114,14 @@ def interp_results_boxplots(
     return fig, axes
 
 
-def plot_improvements_vs_ref(improvements_df: pd.DataFrame, hparams: Optional[List[str]] = None):
+def plot_improvements_vs_ref(
+        improvements_df: pd.DataFrame,
+        hparams: Optional[List[str]] = None
+):
     measurements_to_plot = ['wilcoxon_improved_features', 'wilcoxon_deteriorated_features',
                             'median_variation_vs_ref', 'mean_variation_vs_ref']
 
     # 1) Plot numeric general improvement
-    # auto-adapt height
-    n_models = len(set(improvements_df['model'].values))
-    """
-    fig1, axes1 = plt.subplots(1, len(measurements_to_plot),
-                               figsize=(15, 1 + 0.25 * n_models), sharey=True)
-    for j, measurement_name in enumerate(measurements_to_plot):
-        sns.barplot(data=improvements_df, y="model", x=measurement_name, ax=axes1[j], hue="metric")
-    fig1.tight_layout()
-    """
-    # TODO try cat plot...?????
     cols = list(improvements_df.columns)
     for m in measurements_to_plot:
         cols.remove(m)
@@ -146,6 +139,9 @@ def plot_improvements_vs_ref(improvements_df: pd.DataFrame, hparams: Optional[Li
             figsize=(1 + 3 * len(measurements_to_plot), 1 + 3 * len(hparams)), sharex='col', sharey='row')
         axes2 = np.expand_dims(axes2, axis=0) if len(hparams) == 1 else axes2
         for i, hparam in enumerate(hparams):
+            log_scale = hparam.endswith('___LOGSCALE')
+            if log_scale:
+                hparam = hparam.replace('___LOGSCALE', '')
             for j, measurement_name in enumerate(measurements_to_plot):
                 # draw the evolution of means using lines (as done in comet.ml)
                 h_params_values = np.unique(improvements_df[hparam].values)  # float equality: works OK with hparams
@@ -155,6 +151,8 @@ def plot_improvements_vs_ref(improvements_df: pd.DataFrame, hparams: Optional[Li
                 # Then draw the actual scatter plot
                 sns.scatterplot(data=improvements_df, x=measurement_name, y=hparam, ax=axes2[i, j],
                                 hue='model', legend=False)
+                if log_scale:
+                    axes2[i, j].set(yscale='log')
         fig2.tight_layout()
     else:
         fig2, axes2 = None, None

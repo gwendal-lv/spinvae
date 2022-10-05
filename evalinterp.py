@@ -48,7 +48,7 @@ def run(eval_config: InterpEvalConfig):
 
     duration_minutes = (datetime.now() - t_start).total_seconds() / 60.0
     print("\n\nFinished evaluation, {:.1f} min / model ({} models were actually evaluated, {:.1f} h total)".
-          format((duration_minutes / n_actually_processed if n_actually_processed > 0 else "inf"),
+          format((duration_minutes / n_actually_processed if n_actually_processed > 0 else -1.0),
                  n_actually_processed, duration_minutes / 60.0))
 
 

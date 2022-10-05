@@ -12,10 +12,10 @@ from utils import config_confidential
 class InterpEvalConfig:
     def __init__(self):
         self.device = 'cpu'  # FIXME does not seem to do anything... a model loaded on GPU stays on GPU
-        self.dataset_type = 'validation'
+        self.dataset_type = 'test'  # 'validation'
         self.num_steps = 9
         self.use_reduced_dataset = False  # fast debugging (set to False during actual eval)
-        self.force_re_eval_all = True
+        self.force_re_eval_all = False
         self.skip_audio_render = False  # don't re-render audio, recompute interpolation features/metrics only
 
         # Audio features and interpolation metrics
@@ -33,18 +33,11 @@ class InterpEvalConfig:
             'interp{}_{}'.format(self.num_steps, self.dataset_type[0:5]))
         self.ref_model_force_re_eval = False
 
-        # TODO try different u/z curves
         # List of models and eval configs for each model
-        #    the config of the first model will be used to load the dataset used by the reference model
+        #    - the config of the first model will be used to load the dataset used by the reference model
+        #    - optional fields for any config: 'u_curve': 'linear', 'latent_interp': 'linear'
         self.other_models: List[Dict[str, Any]] = [
-            {'base_model_name': 'pAE/combin_embnrm_beta1.6e-05_mixt3',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'pAE/combin_embnrm_beta5.0e-05_mixt3',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'pAE/combin_embnrm_beta1.6e-04_mixt3',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
-            {'base_model_name': 'pAE/combin_embnrm_beta5.0e-04_mixt3',
-             'u_curve': 'linear', 'latent_interp': 'linear'},
+            {'base_model_name': 'TRAINED_MODEL_NAME_IN_LOG_FOLDER'},  # TODO add others in this list
         ]
         # Auto duplicate everything to try arcsin u curves
         if False:
@@ -52,7 +45,7 @@ class InterpEvalConfig:
             for m_config in other_models_duplicates:
                 m_config['u_curve'] = 'arcsin'
             self.other_models += other_models_duplicates
-        # Auto duplicate everything to try all z refinement options
+        # Auto duplicate everything to try all z refinement options FIXME REMOVE, deprecated
         if False:
             other_models_backup = copy.deepcopy(self.other_models)
             for refine_lvl in [1, 2]:
@@ -68,6 +61,13 @@ class InterpEvalConfig:
     def set_default_config_values(self):
         """ Sets default values for some argument that can be omitted """
         for m_config in self.other_models:
+            # u (interp variable) and latent interp (z) curves
+            for curve in ['u_curve', 'latent_interp']:
+                try:
+                    curve_type = m_config[curve]
+                except KeyError:
+                    curve_type = 'linear'
+                m_config[curve] = curve_type
             # refine level: default is 0
             try:
                 refine_lvl = m_config['refine_level']
