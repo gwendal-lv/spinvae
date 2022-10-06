@@ -10,6 +10,7 @@ utils/config_confidential.py
 saved/*
 saved_archives/*
 train_queue_backup.py
+/evalconfig_backup.py
 
 # symlinks to renderman
 librenderman.so

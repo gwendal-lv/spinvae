@@ -88,7 +88,9 @@ class ModelConfig:
         self.vae_preset_encode_add = "after_latent_cell"
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
-        # Distribution for modeling (discrete-)numerical synth param values.
+        # Distribution for modeling (discrete-)numerical synth param values; available options:
+        #   - 'gaussian_unitvariance'
+        #   - 'logistic_mixtX' where X is the number of mixture components (mu, s and pi learned for each component)
         # (categorical variables always use a softmaxed categorical distribution)
         self.preset_decoder_numerical_distribution = 'logistic_mixt3'
         # Describes how (if) the presets should be auto-encoded:
