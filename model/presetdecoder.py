@@ -67,6 +67,7 @@ class PresetDecoder(nn.Module):
             prob_mass_leakage = numerical_proba_distribution.endswith('_leak')
             self.numerical_distrib = DiscretizedLogisticMixture(
                 n_mix_components, reduction='none', prob_mass_leakage=prob_mass_leakage)
+        # TODO
         else:
             raise NotImplementedError("Unknown distribution '{}'".format(numerical_proba_distribution))
         # Bias seems appropriate to get means in [0, 1], also to get small scales for mixt of discretized logistics
@@ -379,28 +380,31 @@ class RnnDecoder(ChildDecoderBase):
         super().__init__(parent_dec)
         if cell_type != 'lstm':
             raise NotImplementedError()
+        self.autoregressive = not self.arch_args['ff']
+        # Force use custom input tokens for non-AR (LSTMs are very bad at using tfm-like positional encodings)
+        if not self.autoregressive:
+            max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None
+            self.custom_in_tokens = nn.Embedding(self.seq_len, self.hidden_size, max_norm=max_norm)
+        else:
+            self.custom_in_tokens = None
+        if self.arch_args['memmlp']:
+            warnings.warn("'_memmlp' arch arg can be used with a Transformer decoder only - ignored")
         # Network to use the flattened z as hidden state
         # We use z sampled values as much as possible (in c0 then in h0) not to add another gradient to the
         # computational path. Remaining 'empty spaces' in h0 are filled using an MLP.
         if 2 * self.hidden_size <= self.dim_z:
             raise NotImplementedError()
-        self.latent_expand_mlp = nn.Linear(self.dim_z, self.n_layers * (2 * self.hidden_size - self.dim_z))
-        # TODO LSTM with attention?
-        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, self.n_layers, batch_first=True)
-        if self._dropout_p > 0.0:
-            raise NotImplementedError()
-        if self.arch_args['ff']:
-            raise NotImplementedError()
-        if self.arch_args['memmlp']:
-            warnings.warn("'_memmlp' arch arg can be used with a Transformer decoder only - ignored")
+        self.latent_expand_fc = nn.Linear(self.dim_z, self.n_layers * (2 * self.hidden_size - self.dim_z))
+        self.lstm = nn.LSTM(
+            self.hidden_size, self.hidden_size, self.n_layers,
+            batch_first=True, dropout=self._dropout_p
+        )
 
     def forward(self, z_multi_level, u_target: Optional[torch.Tensor] = None):
-        if u_target is None:
-            raise NotImplementedError()
         N, device = z_multi_level[0].shape[0], z_multi_level[0].device
         # Compute h0 and c0 hidden states for each layer - expected shapes (num_layers, N, hidden_size)
         z_flat = self.flatten_z_multi_level(z_multi_level)
-        z_expansion_split = torch.chunk(self.latent_expand_mlp(z_flat), self.n_layers, dim=1)
+        z_expansion_split = torch.chunk(self.latent_expand_fc(z_flat), self.n_layers, dim=1)
         # We fill this "merged" tensor, then we'll split it into c0 (first) and h0
         c0_h0 = torch.empty((self.n_layers, N, 2 * self.hidden_size), device=device)
         c0_h0[:, :, 0:z_flat.shape[1]] = z_flat  # use broadcasting
@@ -411,34 +415,51 @@ class RnnDecoder(ChildDecoderBase):
         # apply tanh to h0; not to c0? c_t values are not bounded in -1, +1 by LSTM cells
         h0 = torch.tanh(h0)
 
-        # Prepare data structures to store all results (will be filled token-by-token)
-        u_out, u_categorical_nll, u_numerical_nll = self.get_init_u_out_and_nlls(N, device)
-        numerical_idx, categorical_idx = 0, 0
+        # Single-call computation
+        if self.training or not self.autoregressive:
+            # Compute input embeddings
+            if not self.autoregressive:
+                input_embed = self.custom_in_tokens(torch.arange(0, self.seq_len, dtype=torch.long).to(device))
+                input_embed = input_embed.unsqueeze(dim=0).expand(N, -1, -1)
+            else:
+                assert u_target is not None, "AR RNN training requires a target to be trained on"
+                if self.scheduled_sampling_p > 0.0:
+                    raise NotImplementedError("Scheduled sampling not implemented with RNNs")
+                else:  # No scheduled sampling - don't use the RNN's own outputs, use inputs shifted right
+                    input_embed = self.embedding(u_target, start_token=True)[:, 0:self.seq_len, :]  # Discard last
+            # Then apply the RNN in a single call
+            lstm_output, (h_n, c_n) = self.lstm(input_embed, (h0, c0))
+            # Compute output params, and losses if a target was given
+            return self.compute_full_sequence_samples_and_losses(lstm_output, u_target, sample_only=(u_target is None))
 
-        # apply LSTM, token-by-token
-        embed_target = self.embedding(u_target, start_token=True)  # Inputs are shifted right
-        input_embed = embed_target[:, 0:1, :]  # Initial: Start token with zeros
-        h_t, c_t = h0, c0
-        for t in range(u_target.shape[1]):
-            output, (h_t, c_t) = self.lstm(input_embed, (h_t, c_t))
-
-            u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx \
-                = self.compute_single_token_sample_and_loss(
-                    output, u_target[:, t:t+1, :],
-                    u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
-                )
-
-            # Compute next embedding
-            if self.training and True:  # TODO teacher forcing proba
-                warnings.warn("Scheduled sampling not implemented")
-                input_embed = self.embedding.forward_single_token(u_target[:, t:t+1, :])
-            else:  # Eval or no teacher forcing: use the net's own output
-                input_embed = self.embedding.forward_single_token(u_out[:, t:t+1, :])  # expected in shape: N x 1 x 3
-
-        # Retrieve numerical and categorical samples from u_out - and return everything
-        u_categorical_samples = u_out[:, self.seq_categorical_items_bool_mask, 0].long()
-        u_numerical_samples = u_out[:, self.seq_numerical_items_bool_mask, 1]
-        return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
+        # Item-per-item computation (token-by-token auto-regressive computation)
+        else:
+            raise AssertionError()  # FIXME deprecated auto-regressive mode - reimplement properly
+            # Prepare data structures to store all results (will be filled token-by-token)
+            u_out, u_categorical_nll, u_numerical_nll = self.get_init_u_out_and_nlls(N, device)
+            numerical_idx, categorical_idx = 0, 0
+            # Input FIXME don't always use this (u_target can be None)
+            embed_target = self.embedding(u_target, start_token=True)  # Inputs are shifted right
+            # apply LSTM, token-by-token
+            input_embed = embed_target[:, 0:1, :]  # Initial: Start token with zeros
+            h_t, c_t = h0, c0
+            for t in range(u_target.shape[1]):
+                output, (h_t, c_t) = self.lstm(input_embed, (h_t, c_t))
+                u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx \
+                    = self.compute_single_token_sample_and_loss(
+                        output, u_target[:, t:t+1, :],
+                        u_out, u_categorical_nll, u_numerical_nll, categorical_idx, numerical_idx
+                    )
+                # Compute next embedding
+                if self.training and True:  # TODO teacher forcing proba
+                    warnings.warn("Scheduled sampling not implemented")
+                    input_embed = self.embedding.forward_single_token(u_target[:, t:t+1, :])  # FIXME if u_target is None ???
+                else:  # Eval or no teacher forcing: use the net's own output
+                    input_embed = self.embedding.forward_single_token(u_out[:, t:t+1, :])  # expected in shape: N x 1 x 3
+            # After the whole sequence has been processed: retrieve numerical and categorical samples from u_out
+            u_categorical_samples = u_out[:, self.seq_categorical_items_bool_mask, 0].long()
+            u_numerical_samples = u_out[:, self.seq_numerical_items_bool_mask, 1]
+            return u_out, u_categorical_nll, u_categorical_samples, u_numerical_nll, u_numerical_samples
 
 
 class TransformerDecoder(ChildDecoderBase):

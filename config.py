@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'STRONGaligned_vaes__symkld'
+        self.run_name = 'lstm4l_tmp'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -89,7 +89,6 @@ class ModelConfig:
         # Size of the hidden representation of 1 synth parameter
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values; available options:
-        #   - 'gaussian_unitvariance'
         #   - 'logistic_mixtX' where X is the number of mixture components (mu, s and pi learned for each component)
         # (categorical variables always use a softmaxed categorical distribution)
         self.preset_decoder_numerical_distribution = 'logistic_mixt3'

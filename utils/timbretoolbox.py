@@ -409,9 +409,11 @@ class InterpolationTimbreToolbox(ToolboxLogger):
     @staticmethod
     def get_default_postproc_features_stats():
         """
-        Stats from InterpNaive/interp_validation than can be used to rescale all descriptors.
-        Using these on any dataset does not lead to data leakage, because these features are used for the final
-        interpolation evaluation only.
+        Stats from InterpNaive/interp_validation than can be used to rescale all descriptors,
+         for numerical stability.
+        Using these on any dataset does not lead to data leakage, because these features are used for the
+         evaluation only (not for training), and we'll measure variations between feature values for different
+         models (so the scale does not matter.
         """
         d = {
             'mean': {

@@ -22,20 +22,35 @@ class PresetEncoder(nn.Module):
         self.hidden_size = hidden_size
         self.output_fm_shape = output_fm_shape
 
-        if self.arch['name'] == 'tfm':
-            # The Transformer encoder is much simpler than the decoder: pure parallel, feedforward, single pass
-            n_head = 4
-            tfm_layer = nn.TransformerEncoderLayer(
-                self.hidden_size, n_head, dim_feedforward=self.hidden_size*4,
-                batch_first=True, dropout=dropout_p, activation=get_transformer_act(self.arch_args)
-            )
-            self.tfm = nn.TransformerEncoder(tfm_layer, self.n_layers)  # No output norm
+        self.tfm, self.lstm = None, None
+        if self.arch['name'] in ['tfm', 'lstm']:
             max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None
             self.embedding = PresetEmbedding(hidden_size, preset_helper, max_norm)
-            self.n_output_tokens = 2 * dim_z // hidden_size
+
+            if self.arch['name'] == 'tfm':
+                # The Transformer encoder is much simpler than the decoder: pure parallel, feedforward, single pass
+                n_head = 4
+                tfm_layer = nn.TransformerEncoderLayer(
+                    self.hidden_size, n_head, dim_feedforward=self.hidden_size*4,
+                    batch_first=True, dropout=dropout_p, activation=get_transformer_act(self.arch_args)
+                )
+                self.tfm = nn.TransformerEncoder(tfm_layer, self.n_layers)  # No output norm
+                self.n_output_tokens = 2 * dim_z // hidden_size
+
+            elif self.arch['name'] == 'lstm':
+                self.lstm = nn.LSTM(
+                    input_size=self.hidden_size, hidden_size=self.hidden_size, num_layers=self.n_layers,
+                    bidirectional=True, batch_first=True, dropout=dropout_p
+                )
+                # Outputs could have the right size; however, we should not force the forward or backward pass
+                # to represent mu or sigma, respectively. So this MLP allows to "shuffle" the final hidden values.
+                self.lstm_out_mlp = nn.Sequential(
+                    nn.Linear(4 * self.hidden_size, 4 * self.hidden_size),
+                    get_act(self.arch_args),
+                    nn.Linear(4 * self.hidden_size, 2 * self.hidden_size),
+                )
 
         elif self.arch['name'] == 'mlp':
-            self.tfm = None
             self.mlp = nn.Sequential()
             n_hidden_units = 2048
             reduced_hidden_size = n_hidden_units // preset_helper.n_learnable_params
@@ -81,6 +96,17 @@ class PresetEncoder(nn.Module):
             # retrieve only the last tokens (compressed latent preset representation)
             #   discard hidden representations of each individual synth parameter
             u_hidden = u_hidden[:, -self.n_output_tokens:, :]
+
+        elif self.lstm is not None:  # Bi-LSTM
+            embed = self.embedding(u_in, n_special_end_tokens=0)  # seq2seq-like model: compute latent from final h, c
+            u_output, (h, c) = self.lstm(embed)
+            h, c = torch.transpose(h, 0, 1), torch.transpose(c, 0, 1)  # set batch first (not automatic)
+            # Doc is not unambiguous.... https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html
+            # We'll guess that h, c concatenation is done forward/backward first, then concatenate all layers' hidden.
+            # So last layer's h, c should be:
+            last_h, last_c = h[:, -2:, :], c[:, -2:, :]
+            u_hidden = torch.stack([last_h, last_c], dim=1).view(N, -1)
+            u_hidden = self.lstm_out_mlp(u_hidden)
 
         else:  # MLP
             embed = self.embedding(u_in, pos_embed=False)  # small embeds, shouldn't use pos embed anyway
