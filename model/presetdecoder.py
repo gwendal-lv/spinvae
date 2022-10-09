@@ -384,6 +384,7 @@ class RnnDecoder(ChildDecoderBase):
         if cell_type != 'lstm':
             raise NotImplementedError()
         self.autoregressive = not self.arch_args['ff']
+        self.bidirectional = not self.autoregressive
         # Force use custom input tokens for non-AR (LSTMs are very bad at using tfm-like positional encodings)
         if not self.autoregressive:
             max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None
@@ -399,8 +400,9 @@ class RnnDecoder(ChildDecoderBase):
             raise NotImplementedError()
         self.latent_expand_fc = nn.Linear(self.dim_z, self.n_layers * (2 * self.hidden_size - self.dim_z))
         self.lstm = nn.LSTM(
-            self.hidden_size, self.hidden_size, self.n_layers,
-            batch_first=True, dropout=self._dropout_p
+            self.hidden_size, self.hidden_size, self.n_layers,  # TODO only if not AR
+            batch_first=True, dropout=self._dropout_p,
+            bidirectional=self.bidirectional, proj_size=((self.hidden_size//2) if self.bidirectional else 0)
         )
 
     def forward(self, z_multi_level, u_target: Optional[torch.Tensor] = None):
@@ -414,6 +416,10 @@ class RnnDecoder(ChildDecoderBase):
         for l in range(self.n_layers):
             c0_h0[l, :, z_flat.shape[1]:] = z_expansion_split[l]
         c0, h0 = torch.chunk(c0_h0, 2, dim=2)
+        # Bidirectional: we have to reshape... without mixing batch and layer/hidden dimensions (view is risky)
+        if self.bidirectional:
+            h0 = torch.cat(torch.chunk(h0, 2, dim=2), dim=0)
+            c0 = torch.cat([c0, c0], dim=0)  # Same long-term memory provided for both directions
         c0, h0 = c0.contiguous(), h0.contiguous()
         # apply tanh to h0; not to c0? c_t values are not bounded in -1, +1 by LSTM cells
         h0 = torch.tanh(h0)
