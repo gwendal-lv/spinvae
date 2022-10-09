@@ -3,7 +3,7 @@ Utility functions and classes related to probabilities and statistics, e.g. log 
 """
 
 from abc import abstractmethod
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 
@@ -314,6 +314,60 @@ class DiscretizedLogisticMixture(ProbabilityDistribution):
         x_modes = argmax_p_x / (x_card - 1.0)  # broadcast 1D x_card over all batches
         return x_modes
 
+
+
+class SoftmaxNumerical(ProbabilityDistribution):
+    def __init__(self, cardinalities: List[int], dtype: torch.dtype, reduction='mean'):
+        """
+        Models values of discrete numerical parameters as categories.
+        Currently works for entire sequences only (optimized masking) TODO: implement single-token application
+
+        All numerical values are expected to be in [0.0, 1.0]
+        (e.g. set of values is {0.0, 0.33, 0.66, 1.0} if cardinality is 3)
+
+        :param cardinalities: The size of each parameter's set of values
+        """
+        super().__init__(reduction=reduction)
+        self.cardinalities = torch.tensor(cardinalities, dtype=torch.long)
+        self.n_tokens = self.cardinalities.shape[0]  # Number of elements (num synth param, pixel, ...) being modeled
+        # All these probability distributions have "CNN-like" data shapes
+        # (channels=distrib.params dimension is last-1, not last)
+        self.softmax_mask = torch.zeros(self.num_parameters, self.n_tokens)  # additive mask
+        masking_value = torch.finfo(dtype).min
+        for token_idx in range(self.n_tokens):
+            self.softmax_mask[self.cardinalities[token_idx]:, token_idx] = masking_value
+        # unsqueeze mask to make broadcast explicit (over the batch dimension)
+        self.softmax_mask = torch.unsqueeze(self.softmax_mask, dim=0)
+        # No label smoothing. Could help... but because of the masking method, smaller cardinalities would
+        # have a much lower amount of smoothing (unused masked logits would be smoothed also)
+        self.CEloss = nn.CrossEntropyLoss(reduction=self.reduction)
+
+    def _check_full_sequence(self, t: torch.Tensor):
+        if t.shape[2] != self.n_tokens:
+            raise NotImplementedError("Input tensors must be full-sequence ({} tokens expected)".format(self.n_tokens))
+
+    def apply_activations(self, nn_raw_output: torch.Tensor):
+        self._check_full_sequence(nn_raw_output)
+        return nn_raw_output + self.softmax_mask.to(nn_raw_output.device)
+
+    def NLL(self, distribution_parameters: torch.Tensor, x: torch.Tensor, _0: Optional[torch.Tensor] = None):
+        self._check_full_sequence(distribution_parameters)
+        self._check_full_sequence(x)
+        # Retrieve class indices from x (whose 2nd dimension is 1: single numerical value ; seq dim is 3rd)
+        with torch.no_grad():
+            target_classes = torch.round(x[:, 0, :] * (self.cardinalities - 1).to(x.device)).long()
+        return self.CEloss(distribution_parameters, target_classes)
+
+    def get_mode(self, distribution_parameters: torch.Tensor, _0: Optional[torch.Tensor] = None):
+        self._check_full_sequence(distribution_parameters)
+        inferred_classes = torch.argmax(distribution_parameters, dim=1)
+        # FIXME remove assert when debugged
+        assert (inferred_classes - self.cardinalities.to(inferred_classes.device)).max().item() < 0
+        return inferred_classes / (self.cardinalities - 1).to(inferred_classes.device)
+
+    @property
+    def num_parameters(self):
+        return self.cardinalities.max().item()
 
 
 

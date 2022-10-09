@@ -10,8 +10,7 @@ from torch.nn import functional as F
 from data.preset2d import Preset2dHelper
 from model.presetmodel import parse_preset_model_architecture, get_act, PresetEmbedding, get_transformer_act
 from synth.dexed import Dexed
-from utils.probability import GaussianUnitVariance, DiscretizedLogisticMixture
-
+from utils.probability import GaussianUnitVariance, DiscretizedLogisticMixture, SoftmaxNumerical
 
 
 class PresetDecoder(nn.Module):
@@ -66,8 +65,12 @@ class PresetDecoder(nn.Module):
             n_mix_components = int(numerical_proba_distribution[0])
             prob_mass_leakage = numerical_proba_distribution.endswith('_leak')
             self.numerical_distrib = DiscretizedLogisticMixture(
-                n_mix_components, reduction='none', prob_mass_leakage=prob_mass_leakage)
-        # TODO
+                n_mix_components, reduction='none', prob_mass_leakage=prob_mass_leakage
+            )
+        elif numerical_proba_distribution == "softmax":
+            self.numerical_distrib = SoftmaxNumerical(
+                self.preset_helper.matrix_numerical_rows_card, torch.float, reduction='none'
+            )
         else:
             raise NotImplementedError("Unknown distribution '{}'".format(numerical_proba_distribution))
         # Bias seems appropriate to get means in [0, 1], also to get small scales for mixt of discretized logistics

@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'lstm4l_tmp'
+        self.run_name = 'softmax_fastdebug'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -46,7 +46,6 @@ class ModelConfig:
 
         # ---------------------------------------- General Architecture --------------------------------------------
         # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-        # 'speccnn8l' used for the DAFx paper (based on 4x4 kernels, square-shaped deep feature maps)
         # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
         # 'specladder': ladder CNNs (cells, outputs from different levels) for spectrogram reconstruction
         #       also contains num of blocks and num of conv layers per block (e.g. 8x1)
@@ -90,6 +89,7 @@ class ModelConfig:
         self.preset_hidden_size = 256
         # Distribution for modeling (discrete-)numerical synth param values; available options:
         #   - 'logistic_mixtX' where X is the number of mixture components (mu, s and pi learned for each component)
+        #   - 'softmax' will learn values as categories - custom softmax (cardinality) for each param
         # (categorical variables always use a softmaxed categorical distribution)
         self.preset_decoder_numerical_distribution = 'logistic_mixt3'
         # Describes how (if) the presets should be auto-encoded:
