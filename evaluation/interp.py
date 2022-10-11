@@ -2,6 +2,7 @@
 Classes to generate and evaluate interpolations between samples.
 """
 import pathlib
+import warnings
 from pathlib import Path
 from typing import Tuple, Optional
 
@@ -119,6 +120,7 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
         acc_th, num_l1_th = 0.99, 0.01
 
         if self.refine_level > 0:
+            warnings.warn("'z refinement' is experimental")
             if self.refine_level == 1:
                 lr, n_steps, z_NLL_factor = 0.1, 50, 0.1
             elif self.refine_level == 2:
@@ -188,25 +190,4 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
         audio_renders = [self.dataset._render_audio(raw_preset, midi_pitch, midi_vel) for raw_preset in vst_presets]
         spectrograms = [self.dataset.compute_spectrogram(audio_wav[0]) for audio_wav in audio_renders]
         return audio_renders, spectrograms
-
-
-if __name__ == "__main__":
-    _device = 'cuda:0'
-    _root_path = Path(__file__).resolve().parent.parent
-    _model_path = _root_path.joinpath('../Data_SSD/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.50')
-    _model_loader = evaluation.load.ModelLoader(_model_path, _device, 'validation')
-
-    _num_steps = 9
-
-
-    # TODO additional path suffix for different interp hparams
-    if True:
-        _storage_path = _model_path.joinpath('DEBUG')
-        preset_interpolator = SynthPresetLatentInterpolation(
-            _model_loader, num_steps=_num_steps, u_curve='linear', latent_interp='linear',
-            storage_path=_storage_path
-        )
-        preset_interpolator.use_reduced_dataset = True
-        preset_interpolator.render_audio()
-        #preset_interpolator.process_dataset()  # audio + audio features + interp metrics
 

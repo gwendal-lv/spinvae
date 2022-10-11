@@ -384,7 +384,7 @@ class RnnDecoder(ChildDecoderBase):
         if cell_type != 'lstm':
             raise NotImplementedError()
         self.autoregressive = not self.arch_args['ff']
-        self.bidirectional = not self.autoregressive
+        self.bidirectional = False  # TODO use arch arg instead of (not self.autoregressive). Disabled, worse results
         # Force use custom input tokens for non-AR (LSTMs are very bad at using tfm-like positional encodings)
         if not self.autoregressive:
             max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None

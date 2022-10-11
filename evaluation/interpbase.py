@@ -16,13 +16,14 @@ import scipy.interpolate
 import scipy.stats
 import torch
 
-import utils.stat
 from data.preset2d import Preset2d
 from data.abstractbasedataset import PresetDataset
 import evaluation.load
 from evalconfig import InterpEvalConfig
 from evaluation.interpsequence import InterpSequence, LatentInterpSequence
 from utils.timbretoolbox import InterpolationTimbreToolbox
+import utils.stat
+import utils.math
 
 
 class InterpBase(ABC):
@@ -40,13 +41,24 @@ class InterpBase(ABC):
         self.use_reduced_dataset = False  # faster debugging
         self._reference_storage_path = reference_storage_path
 
-    def get_u_interpolated(self):
+    def get_u_interpolated(self, extrapolate_left=0, extrapolate_right=0):
+        """ Returns the interpolation 'time steps', usually in [0.0, 1.0];
+        may be < 0.0 and/or > 1.0 if extrapolation is required
+
+        :param extrapolate_left: Number of extra time steps < 0.0
+        :param extrapolate_right: Number of extra time steps > 1.0
+        """
+        linear_u = np.linspace(
+            0 - extrapolate_left, self.num_steps - 1 + extrapolate_right,
+            self.num_steps + extrapolate_left + extrapolate_right, endpoint=True
+        ) / (self.num_steps - 1)
         if self.u_curve == 'linear':
-            return np.linspace(0.0, 1.0, self.num_steps, endpoint=True)
+            return linear_u
         elif self.u_curve == 'arcsin':
+            assert extrapolate_left == 0 and extrapolate_right == 0, "arcsin u_curve shouldn't be used to extrapolate"
             return 0.5 + np.arcsin(np.linspace(-1.0, 1.0, self.num_steps, endpoint=True)) / np.pi
         elif self.u_curve == 'threshold':
-            return (np.linspace(0.0, 1.0, self.num_steps) > 0.5).astype(float)
+            return (linear_u > 0.5).astype(float)
         else:
             raise NotImplementedError('Unimplemented curve {}'.format(self.u_curve))
 
@@ -420,7 +432,9 @@ class ModelBasedInterpolation(InterpBase):
         """
         pass
 
-    def interpolate_latent(self, z_start, z_end) -> Tuple[np.ndarray, torch.Tensor]:
+    def interpolate_latent(
+            self, z_start, z_end, extrapolate_left=0, extrapolate_right=0
+    ) -> Tuple[np.ndarray, torch.Tensor]:
         """ Returns a N x D tensor of interpolated latent vectors, where N is the number of interpolation steps (here:
         considered as a batch size) and D is the latent dimension. Each latent coordinate is interpolated independently.
 
@@ -428,16 +442,29 @@ class ModelBasedInterpolation(InterpBase):
 
         :param z_start: 1 x D tensor
         :param z_end: 1 x D tensor
+        :param extrapolate_left: Number of steps to extrapolate for u < 0
+        :param extrapolate_right: Number of steps to extrapolate for u > 0
         :returns: u, interpolated_z
         """
-        # TODO allow EXTRAPOLATION
-        z_cat = torch.cat([z_start, z_end], dim=0)
-        # TODO SPHERICAL interpolation available?
-        interp_f = scipy.interpolate.interp1d(
-            [0.0, 1.0], z_cat.clone().detach().cpu().numpy(), kind=self.latent_interp_kind, axis=0,
-            bounds_error=True)  # extrapolation disabled, no fill_value
-        u_interpolated = self.get_u_interpolated()
-        z_interpolated = interp_f(u_interpolated)
+        assert extrapolate_left >= 0 and extrapolate_right >= 0
+        extrapolate = (extrapolate_left > 0 or extrapolate_right > 0)
+        u_interpolated = self.get_u_interpolated(extrapolate_left, extrapolate_right)
+
+        z_start_end = torch.cat([z_start, z_end], dim=0).clone().detach().cpu().numpy()
+        if self.latent_interp_kind == 'linear':
+            interp_f = scipy.interpolate.interp1d(
+                [0.0, 1.0], z_start_end, kind='linear', axis=0,
+                bounds_error=(not extrapolate), fill_value=("extrapolate" if extrapolate else np.nan)
+            )
+            z_interpolated = interp_f(u_interpolated)
+        elif self.latent_interp_kind == 'spherical':
+            sph_interpolator = utils.math.SphericalInterpolator(z_start_end[0, :], z_start_end[1, :])
+            z_interpolated = sph_interpolator(u_interpolated)
+        else:
+            raise AssertionError("latent interpolation '{}' not available".format(self.latent_interp_kind))
+        # FIXME remove this debug check
+        assert np.allclose(z_start_end[0, :], z_interpolated[extrapolate_left, :], atol=1e-6), "(Numerical?) error for start z"
+        assert np.allclose(z_start_end[1, :], z_interpolated[extrapolate_left + self.num_steps - 1, :], atol=1e-6), "(Numerical?) error for end z"
         return u_interpolated, torch.tensor(z_interpolated, device=self.device, dtype=torch.float32)
 
     @abstractmethod
@@ -445,19 +472,4 @@ class ModelBasedInterpolation(InterpBase):
         """ Returns a list of audio waveforms and/or a list of spectrogram corresponding to latent vectors z (given
             as a 2D mini-batch of vectors). """
         pass
-
-
-
-if __name__ == "__main__":
-    _storage_path = '/media/gwendal/Data/Interpolations/LinearNaive/interp_validation'
-    #_storage_path = '/media/gwendal/Data/Interpolations/ThresholdNaive/interp_validation'cd ../
-    _results1 = InterpBase.get_interp_results(pathlib.Path(_storage_path))
-
-    _storage_path = '/media/gwendal/Data/Logs/preset-vae/presetAE/combined_vae_beta1.60e-04_presetfactor0.20/interp_validation'
-    _results2 = InterpBase.get_interp_results(pathlib.Path(_storage_path))
-
-    _all_seqs_dfs = InterpolationTimbreToolbox.get_stored_postproc_sequences_descriptors(_storage_path)
-    _features_stats =  InterpolationTimbreToolbox.get_default_postproc_features_stats()
-    _results_dfs = InterpBase._compute_interp_metrics(_all_seqs_dfs, _features_stats)
-
 
