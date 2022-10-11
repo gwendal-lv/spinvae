@@ -15,6 +15,7 @@ IEEE ICASSP 2023 submission (under review) supplemental material
 
 # Interpolation between presets
 
+<!--
 TODO describe methods
 
 TODO describe [Dexed](https://asb2m10.github.io/dexed/)
@@ -23,7 +24,7 @@ TODO describe [Dexed](https://asb2m10.github.io/dexed/)
 Then, a linear interpolation is performed on latent vectors TODO describe transformer decode
 
 - The "naive" interpolation consists in a linear interpolation between VST parameters TODO improve description
-
+-->
 
 ### Interpolation example 1
 

@@ -24,11 +24,11 @@ description: >- # this means to ignore newlines until "baseurl:"
   IEEE ICASSP 2023 submission (under review) supplemental material
 
 # Use empty (base)url for local dev
-baseurl: ""
-url: ""
+#baseurl: ""
+#url: ""
 # Use full URL before pushing to GitHub
-#baseurl: "spinvae" # the subpath of your site, e.g. /blog
-#url: "https://gwendal-lv.github.io" # the base hostname & protocol for your site, e.g. http://example.com
+baseurl: "spinvae" # the subpath of your site, e.g. /blog
+url: "https://gwendal-lv.github.io" # the base hostname & protocol for your site, e.g. http://example.com
 
 
 #twitter_username: jekyllrb
