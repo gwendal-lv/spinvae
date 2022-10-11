@@ -5,30 +5,54 @@ Support k-fold cross validation and subtleties of multi-note (multi-layer spectr
 """
 
 from collections.abc import Iterable
-from typing import Dict
+from typing import Dict, List, Sequence
 
 import numpy as np
 import torch
 import torch.utils.data
 
-from data.abstractbasedataset import PresetDataset
+from data.abstractbasedataset import AudioDataset
 
 
-def build_subset_samplers(dataset: PresetDataset,
-                          k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
-                          random_seed=0
-                          ) -> Dict[str, torch.utils.data.SubsetRandomSampler]:
+_SEED_OFFSET = 6357396522630986725  # because PyTorch recommends to use a seed "with a lot of 0 and 1 bits"
+
+
+#
+class SubsetDeterministicSampler(torch.utils.data.Sampler):
+    r""" Samples elements from a given list of indices, without replacement. Deterministic subset sampler for
+    validation and test datasets (to replace PyTorch's SubsetRandomSampler)
+    Arguments:
+        indices (sequence): a sequence of indices
     """
-    Builds 'train', 'validation' and 'test' subset samplers
+
+    def __init__(self, indices):
+        self.indices = indices
+
+    def __iter__(self):
+        return iter(list(self.indices))
+
+    def __len__(self):
+        return len(self.indices)
+
+
+def get_subsets_indexes(dataset: AudioDataset,
+                        k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
+                        random_seed=0
+                        ) -> Dict[str, List[int]]:
+    """
+    Builds 'train', 'validation' and 'test' arrays of indexes
 
     :param dataset: Required to properly separate dataset items indexes by preset UIDs (not to split
         a multi-note preset into multiple subsets).
-    :param k_fold: Current k-fold cross-validation fold index
+    :param k_fold: Current k-fold cross-validation fold index. If -1, builds a 'special fold' that randomly assigns
+        indexes from 'normal' folds to the train and validation sets (test items are never part of those 'special'
+        train/valid sets.). The -1 value can be useful for pre-training part of a model, before doing some proper
+        k-fold cross-validation and test.
     :param k_folds_count: Total number of k-folds
     :param test_holdout_proportion: Proportion of 'test' data, excluded from cross-validation folds.
     :param random_seed: For reproducibility, always use the same seed
 
-    :returns: dict of subset_samplers
+    :returns: dict of arrays of indexes (not UIDs)
     """
     presets_count = dataset.valid_presets_count
     all_preset_indexes = np.arange(presets_count)
@@ -39,6 +63,12 @@ def build_subset_samplers(dataset: PresetDataset,
     first_test_idx = int(np.floor(presets_count * (1.0 - test_holdout_proportion)))
     non_test_preset_indexes, preset_indexes['test'] = np.split(all_preset_indexes, [first_test_idx])
     # All folds are retrieved - we'll choose only one of these as validation subset, and merge the others
+    #    'special fold' -1 for pre-training a single model: the 'validation' fold contains samples for all
+    #    normal k-folds (test held-out set is of course always excluded)
+    #    We just shuffle the indexes one more time before splitting, then arbitrarily use the 'new' first fold
+    if k_fold == -1:
+        rng.shuffle(non_test_preset_indexes)
+        k_fold = 0
     preset_indexes_folds = np.array_split(non_test_preset_indexes, k_folds_count)
     preset_indexes['validation'] = preset_indexes_folds[k_fold]
     preset_indexes['train'] = np.hstack([preset_indexes_folds[i] for i in range(k_folds_count) if i != k_fold])
@@ -53,10 +83,44 @@ def build_subset_samplers(dataset: PresetDataset,
             for preset_idx in preset_indexes[k]:
                 final_indexes[k] += [preset_idx * dataset.midi_notes_per_preset + i
                                      for i in range(dataset.midi_notes_per_preset)]
+    return final_indexes
+
+
+def build_subset_samplers(dataset: AudioDataset,
+                          k_fold=0, k_folds_count=5, test_holdout_proportion=0.2,
+                          random_seed=0
+                          ) -> Dict[str, torch.utils.data.SubsetRandomSampler]:
+    """
+    Builds 'train', 'validation' and 'test' subset samplers
+
+    Args description: see get_subsets_indexes(...)
+    """
+    final_indexes = get_subsets_indexes(dataset, k_fold, k_folds_count, test_holdout_proportion, random_seed)
+    # remove some indices from final indices (AFTER train/valid/test sets have been split)
+    indices_to_exclude = dataset.zero_volume_preset_indices()
+    excluded_UIDs_per_dataset = dict()
+    for k in final_indexes.keys():
+        excluded_UIDs_per_dataset[k] = list()
+    for preset_idx_to_exclude in indices_to_exclude:
+        for k in final_indexes.keys():
+            # TODO double check this
+            sampler_idx = np.where(final_indexes[k] == preset_idx_to_exclude)[0]
+            if len(sampler_idx) > 0:
+                sampler_idx = sampler_idx.item()
+                excluded_UIDs_per_dataset[k].append(dataset.valid_preset_UIDs[final_indexes[k][sampler_idx]])
+                final_indexes[k] = np.delete(final_indexes[k], sampler_idx)
+                break  # go to next preset idx to exclude
+    print('[sampler.py] Zero-volume preset UIDs excluded from subset samplers: {}'.format(excluded_UIDs_per_dataset))
     subset_samplers = dict()
     for k in final_indexes:
-        subset_samplers[k] = torch.utils.data.SubsetRandomSampler(final_indexes[k])
+        if k.lower() == 'train':
+            torch_rng = torch.Generator().manual_seed(_SEED_OFFSET + random_seed)
+            subset_samplers[k] = torch.utils.data.SubsetRandomSampler(final_indexes[k], generator=torch_rng)
+        else:
+            subset_samplers[k] = SubsetDeterministicSampler(final_indexes[k])
     return subset_samplers
+
+
 
 
 if __name__ == "__main__":
@@ -98,3 +162,4 @@ if __name__ == "__main__":
     test_preset_UIDs_across_subsets('validation', 'train', 'test')
 
     print("Random Samplers: OK, no preset UID dispersion across train/validation/test subsets.")
+

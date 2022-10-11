@@ -18,17 +18,17 @@
 # You can create any custom variable you would like, and they will be accessible
 # in the templates via {{ site.myvariable }}.
 
-title: Synthesizer Programming from VAEs Latent Space
-email: glevaillant@he2b.be
+title: Synthesizer Preset Interpolation using Transformer Auto-Encoders
+email: Gwendal.LEVAILLANT@umons.ac.be
 description: >- # this means to ignore newlines until "baseurl:"
-  DAFx21 paper (under review) accompanying material
+  IEEE ICASSP 2023 submission (under review) supplemental material
 
 # Use empty (base)url for local dev
-#baseurl: ""
-#url: ""
+baseurl: ""
+url: ""
 # Use full URL before pushing to GitHub
-baseurl: "preset-gen-vae" # the subpath of your site, e.g. /blog
-url: "https://gwendal-lv.github.io" # the base hostname & protocol for your site, e.g. http://example.com
+#baseurl: "spinvae" # the subpath of your site, e.g. /blog
+#url: "https://gwendal-lv.github.io" # the base hostname & protocol for your site, e.g. http://example.com
 
 
 #twitter_username: jekyllrb
@@ -45,7 +45,7 @@ plugins:
 
 minimal_mistakes_skin: "default" # "default", "air", "aqua", "contrast", "dark", "dirt", "neon", "mint", "plum" "sunrise"
 
-repository: gwendal-lv/preset-gen-vae
+repository: gwendal-lv/spinvae
 
 # TODO doesn't work
 main:

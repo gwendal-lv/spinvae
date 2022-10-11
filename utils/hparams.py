@@ -34,4 +34,7 @@ class LinearDynamicParam:
     def value(self):
         return self.get()
 
+    @property
+    def has_reached_final_value(self):
+        return self.current_epoch >= self.end_epoch
 

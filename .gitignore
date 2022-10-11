@@ -1,4 +1,7 @@
 
+# Confidential files - not to be published
+utils/config_confidential.py
+
 # Python/IPython
 *.pyc
 *.ipynb_checkpoints
@@ -6,13 +9,19 @@
 # Saved models, config, and Tensorboard run logs
 saved/*
 saved_archives/*
+train_queue_backup.py
+/evalconfig_backup.py
 
 # symlinks to renderman
 librenderman.so
 synth/librenderman.so
 
-# Folder of figures (matplotlib or others) and audio/images exports
-figures/*
+# Folder of figures (omnigraffle, ...) and audio/images exports
+figures/git_untracked/*
 exports/*
 
+# Temp and debug scripts
+debug_tests.py
 
+# Others
+/utils/TimbreToolbox_Full_Config_Example.m

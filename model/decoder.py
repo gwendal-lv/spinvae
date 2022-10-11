@@ -1,274 +1,263 @@
 
+import warnings
+from typing import Tuple, Dict, List, Optional
+from collections import OrderedDict
+
 import numpy as np
 import torch
 import torch.nn as nn
 
-from model import layer
+import model.hierarchicalvae
+import model.ladderencoder
+from model.convlayer import Conv2D, TConv2D, ResBlock3Layers
+from model import convlayer
+from model import encoder  # Contains an architecture parsing method
 
 
 class SpectrogramDecoder(nn.Module):
-    """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu/logsigma2 values"""
-    def __init__(self, architecture, dim_z, output_tensor_size, fc_dropout,
-                 force_bigger_network=False):
+    def __init__(self, conv_architecture: str,
+                 dim_z: int, output_tensor_size: Tuple[int, int, int, int],
+                 fc_dropout: float,
+                 midi_notes: Optional[Tuple[Tuple[int, int]]] = None):
         """
+        Contains a MLP to split the latent vectors into multiple inputs to reconstruct each spectrogram channel
+        (independently). TODO take latent_arch input arg and allow RNN-based latent vector splitting
 
-        :param architecture:
+        :param conv_architecture:
         :param dim_z:
         :param output_tensor_size:
         :param fc_dropout:
-        :param force_bigger_network: If True, some layers will contain more channels. Optional, should be
-            used to perform fair comparisons (same number of params) between different models.
+        :param midi_notes:
         """
         super().__init__()
-        # TODO test bigger output spectrogram - with final centered crop
         self.output_tensor_size = output_tensor_size
         # Encoder input size is desired output size for this decoder (crop if too big? not necessary at the moment)
         self.spectrogram_input_size = (self.output_tensor_size[2], self.output_tensor_size[3])
         self.spectrogram_channels = output_tensor_size[1]
         self.dim_z = dim_z  # Latent-vector size
-        self.architecture = architecture
+        self.midi_notes = midi_notes
+        self.dim_w_single_ch_cnn = 512  # TODO concat MIDI notes to the style vector?  FIXME constant size
+        if self.midi_notes is not None:
+            self.dim_w_single_ch_cnn += 2  # midi pitch/vel will be concatenated to the style vector
+        elif self.spectrogram_channels > 1:
+            warnings.warn("midi_notes argument was not given but multi-channel spectrograms are being decoded.")
+        self.conv_architecture = conv_architecture
         self.cnn_input_shape = None  # shape not including batch size
-        self.mixer_1x1conv_ch = 2048
-        self.last_4x4conv_ch = (512 if not force_bigger_network else 1800)
+
+        self.conv_arch_name, self.num_cnn_layers, self.conv_arch_args \
+            = model.hierarchicalvae.parse_main_conv_architecture(self.conv_architecture)
+        # TODO parse latent arch args
+        self.num_fc_layers = 1  # FIXME use new arch input arg
+        if self.conv_arch_name == 'speccnn8l':
+            self.mixer_1x1conv_ch = 1024
+            self.first_gt1_conv_ch = 512
+            self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 3)  # 16kHz sr: 3x3 instead of 3x4
+        elif self.conv_arch_name.startswith('sprescnn'):
+            self.mixer_1x1conv_ch = 96 if self.conv_arch_args['time+'] else 192  # Much larger feature maps?
+            self.first_gt1_conv_ch = 1024
+            # Encoder output size: 5, 16 if better_time_res else 5, 4
+            self.cnn_input_shape = (self.mixer_1x1conv_ch, 4, (16 if self.conv_arch_args['time+'] else 4))
+        else:
+            raise NotImplementedError()
         self.fc_dropout = fc_dropout
 
-        if 'speccnn8l1' not in self.architecture:
-            raise NotImplementedError("Only speccnn8l1 is currently available"
-                                      "(stacked multi-note spectograms compatibility)")
-
         # - - - - - 1) MLP output size must to correspond to encoder's MLP input size - - - -
-        if self.architecture == 'wavenet_baseline'\
-           or self.architecture == 'wavenet_baseline_lighter':
-            assert self.spectrogram_input_size == (513, 433)  # Big spectrogram only - TODO adapt
-            self.cnn_input_shape = (1024, 2, 4)
-            self.mlp = nn.Linear(self.dim_z, int(np.prod(self.cnn_input_shape)))
-        elif self.architecture == 'wavenet_baseline_shallow':
-            assert self.spectrogram_input_size == (513, 433)  # Big spectrogram only - TODO adapt
-            self.cnn_input_shape = (1024, 5, 5)
-            self.mlp = nn.Linear(self.dim_z, int(np.prod(self.cnn_input_shape)))
-        elif self.architecture == 'flow_synth':
-            if self.spectrogram_input_size == (513, 433):
-                self.cnn_input_shape = (64, 17, 14)
-            elif self.spectrogram_input_size == (257, 347):
-                self.cnn_input_shape = (64, 3, 6)
-            self.mlp = nn.Sequential(nn.Linear(self.dim_z, 1024), nn.ReLU(),  # TODO dropout
-                                     nn.Linear(1024, 1024), nn.ReLU(),
-                                     nn.Linear(1024, int(np.prod(self.cnn_input_shape))))  # TODO add last ReLU?
-        elif 'speccnn8l1' in self.architecture:
-            if self.spectrogram_input_size == (257, 347):
-                if self.architecture == 'speccnn8l1_3':
-                    self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 3)
+        self.mlp = nn.Sequential()
+        for i in range(self.num_fc_layers):
+            in_units = self.dim_z if (i == 0) else 1024
+            out_units = 1024 if (i < (self.num_fc_layers - 1)) else int(np.prod(self.cnn_input_shape))
+            self.mlp.add_module('decfc{}'.format(i), nn.Linear(in_units, out_units))
+            # No final ReLU (and leads to worse generalization, but don't know why)
+            if i < (self.num_fc_layers - 1):
+                self.mlp.add_module('decact{}'.format(i), nn.ReLU())
+            # TODO try remove this dropout? or dropout before?
+            if self.fc_dropout > 0.0:
+                self.mlp.add_module("decdrop{}".format(i), nn.Dropout(self.fc_dropout))
+
+        # - - - - - - - - - - 2) Features "un-mixer" - - - - - - - - - -
+        self.features_unmixer_cnn = Conv2D(self.mixer_1x1conv_ch, self.spectrogram_channels * self.first_gt1_conv_ch,
+                                           [1, 1], [1, 1], 0, act=nn.LeakyReLU(0.1),
+                                           )  # TODO adaIN  with all MIDI notes given to that layer?
+        # - - - - - and 3) Main CNN decoder (applied once per spectrogram channel) - - - - -
+        single_spec_output_size = list(self.output_tensor_size)
+        single_spec_output_size[1] = 1  # Single-channel output
+        self.single_ch_cnn = nn.Sequential()
+
+        if self.conv_arch_name == 'speccnn8l':
+            ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes are drastically reduced
+            (especially the last, not so useful but very GPU-expensive layer on large images) '''
+            _in_ch, _out_ch = -1, -1  # backup for res blocks
+            for i in range(1, self.num_cnn_layers):  # 'normal' channels: (1024, ) 512, 256, ...., 8
+                in_ch = self.first_gt1_conv_ch if i == 1 else 2 ** (10 - i)
+                out_ch = 2 ** (10 - (i + 1)) if (i < (self.num_cnn_layers - 1)) else 1
+                if self.conv_arch_args['bigger']:
+                    in_ch = max(in_ch, 128)
+                    if out_ch > 1:
+                        out_ch = max(out_ch, 128)
+                elif self.conv_arch_args['big']:
+                    in_ch = in_ch if in_ch > 64 else in_ch * 2
+                    if out_ch > 1:
+                        out_ch = out_ch if out_ch > 64 else out_ch * 2
+                padding, stride = (2, 2), 2
+                if i < self.num_cnn_layers - 1:
+                    kernel = (4, 4)
                 else:
-                    self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 4)
-                # No ReLU (encoder-symmetry) (and leads to very bad generalization, but don't know why)
-                self.mlp = nn.Sequential(nn.Linear(self.dim_z, int(np.prod(self.cnn_input_shape))),
-                                         nn.Dropout(self.fc_dropout))
+                    kernel = (5, 5)
+                if i in [1, 2, 3, 4]:
+                    output_padding = (1, 1)
+                elif i in [5, 6]:
+                    output_padding = (1, 0)
+                else:  # last layer
+                    output_padding = (0, 0)
+                if 0 <= i < (self.num_cnn_layers-1):
+                    act = nn.LeakyReLU(0.1)
+                    # keep using BN with some layers (don't use AdaIN only, BN is very effective)
+                    if 1 <= i <= 4:
+                        norm = 'bn+adain' if self.conv_arch_args['adain'] else 'bn'
+                    elif i == 5:  # TODO try adain on layer 6?
+                        norm = 'adain' if self.conv_arch_args['adain'] else 'bn'
+                    else:
+                        norm = 'bn'
+                else:
+                    norm = None
+                    act = nn.Identity()
+                # Don't use attention for small (useless) or big (too costly) feature maps
+                self_attention = (self.conv_arch_args['att'] and (2 <= (i - 1) < (self.num_cnn_layers - 3)),
+                                  self.conv_arch_args['att'] and (2 <= i < (self.num_cnn_layers - 3)))
+                if self.conv_arch_args['res'] and i in [1, 3, 5]:  # FIXME 5-6 RES BLOCK ????
+                    _in_ch, _out_ch = in_ch, out_ch
+                elif self.conv_arch_args['res'] and i in [2, 4, 6]:
+                    l = convlayer.ResTConv2D(
+                        _in_ch, in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
+                        adain_num_style_features=self.dim_w_single_ch_cnn, self_attention=self_attention)
+                    self.single_ch_cnn.add_module('dec_{}_{}'.format(i-1, i), l)
+                else:
+                    l = convlayer.TConv2D(
+                        in_ch, out_ch, kernel, stride, padding, output_padding, act=act, norm_layer=norm,
+                        adain_num_style_features=self.dim_w_single_ch_cnn, self_attention=self_attention[1])
+                    self.single_ch_cnn.add_module('dec{}'.format(i), l)
+
+        elif self.conv_arch_name.startswith('sprescnn'):
+            raise AssertionError("This arch must be refactored (proper decomposition into seq/non-seq networks)")
+            better_time_res = (self.conv_arch_name == 'sprescnnt')
+            norm = 'bn+adain' if self.conv_arch_args['adain'] else 'bn'
+            # See encoder.py: this decoder is quite symmetrical (not really...) to the corresponding encoder
+            # However, the "features mixer" layer is always the first
+            main_blocks_indices = [0, 1, 2, 3, 4, 5]
+            if self.conv_arch_args['big']:
+                res_blocks_counts = [3, 4, 3, 2, 1, 1]
+                res_blocks_ch = [self.first_gt1_conv_ch, 512, 256, 128, 128, 64]
             else:
-                assert NotImplementedError()
+                res_blocks_counts = [2, 3, 2, 2, 1, 1]
+                res_blocks_ch = [self.first_gt1_conv_ch, 512, 256, 128, 32, 8]
+            self.num_cnn_layers = sum(res_blocks_counts)
+            layer_idx = -1
+            for main_block_idx in main_blocks_indices:
+                for res_block_idx in range(res_blocks_counts[main_block_idx]):
+                    layer_idx += 1
+                    if layer_idx < (self.num_cnn_layers - 1):  # All layers but the last
+                        in_ch = res_blocks_ch[main_block_idx]
+                        # Last block of a main block adapts the size for the following block
+                        if res_block_idx == (res_blocks_counts[main_block_idx] - 1):
+                            out_ch = res_blocks_ch[main_block_idx + 1]
+                            if main_block_idx <= 1 and self.conv_arch_args['time+']:
+                                upsample = (True, False)  # Optional: No temporal stride for first layers
+                            else:
+                                upsample = (True, True)
+                        else:
+                            out_ch = res_blocks_ch[main_block_idx]
+                            upsample = (False, False)
+                        if main_block_idx in [3] and res_block_idx == 1:
+                            extra_padding = (1, 0)  # We need some output padding to get a larger frequency axis
+                        else:
+                            extra_padding = (0, 0)
+                        l = ResBlock3Layers(in_ch, in_ch//4, out_ch, act=nn.LeakyReLU(0.1),
+                                            upsample=upsample, extra_padding=extra_padding,
+                                            norm_layer=norm, adain_num_style_features=self.dim_w_single_ch_cnn)
+                        self.single_ch_cnn.add_module('resblk{}'.format(layer_idx), l)
+                    else:  # Last layer: no norm or act, 6x6 Tconv (https://distill.pub/2016/deconv-checkerboard/)
+                        kernel_size, padding = ((6, 6), (2, 2)) if self.conv_arch_args['big'] else ((4, 4), (1, 1))
+                        self.single_ch_cnn.add_module('tconv',
+                                                      TConv2D(res_blocks_ch[-1], 1, kernel_size, (2, 2),
+                                                              padding=padding, output_padding=(0, 0),
+                                                              act=nn.Identity(), norm_layer=None))
+
         else:
-            raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
+            raise NotImplementedError()
 
-        # - - - - - 2) Features "un-mixer" - - - - -
-        self.features_unmixer_cnn = layer.TConv2D(self.mixer_1x1conv_ch,
-                                                  self.spectrogram_channels*self.last_4x4conv_ch,
-                                                  [1, 1], [1, 1], 0,
-                                                  activation=nn.LeakyReLU(0.1), name_prefix='dec1')
+        # Final activation, for all architectures
+        self.single_ch_cnn_act = nn.Hardtanh()
 
-        # - - - - - 3) Main CNN decoder (applied once per spectrogram channel) - - - - -
-        single_spec_size = list(self.spectrogram_input_size)
-        single_spec_size[1] = 1
-        self.single_ch_cnn = SpectrogramCNN(self.architecture, single_spec_size, append_1x1_conv=False,
-                                            force_bigger_network=force_bigger_network)
-
-    def forward(self, z_sampled):
+    def forward(self, z_sampled, w_style=None):
+        if w_style is None:  # w_style can be omitted during summary writing
+            print("[decoder.py] w_style tensor is None; replaced by 0.0 (should happen during init only)")
+            w_style = torch.zeros((z_sampled.shape[0], self.dim_w_single_ch_cnn), device=z_sampled.device)
         mixed_features = self.mlp(z_sampled)
         mixed_features = mixed_features.view(-1,  # batch size auto inferred
                                              self.cnn_input_shape[0], self.cnn_input_shape[1], self.cnn_input_shape[2])
-        unmixed_features = self.features_unmixer_cnn(mixed_features)
+        unmixed_features, _ = self.features_unmixer_cnn((mixed_features, None))  # No style given to feats mixer
         # This won't work on multi-channel spectrograms with force_bigger_network==True (don't do this anyway)
-        single_ch_cnn_inputs = torch.split(unmixed_features, self.last_4x4conv_ch,  # actual multi-spec: 512ch-split
+        single_ch_cnn_inputs = torch.split(unmixed_features, self.first_gt1_conv_ch,  # actual multi-spec: 512ch-split
                                            dim=1)  # Split along channels dimension
-        single_ch_cnn_outputs = [self.single_ch_cnn(single_ch_in) for single_ch_in in single_ch_cnn_inputs]
-        return torch.cat(single_ch_cnn_outputs, dim=1)  # Concatenate all single-channel spectrograms
+        single_ch_cnn_outputs = list()
+        for i, single_ch_in in enumerate(single_ch_cnn_inputs):
+            # concat midi notes to w_style (if w_style was not None as a method argument)
+            if self.midi_notes is not None and w_style.shape[1] < self.dim_w_single_ch_cnn:
+                notes_tensor = torch.tensor(self.midi_notes[i], device=w_style.device, dtype=w_style.dtype)
+                notes_tensor = notes_tensor / 63.5 - 1.0
+                w_with_midi = torch.cat([notes_tensor.expand(w_style.shape[0], 2), w_style], dim=1)
+            else:
+                w_with_midi = w_style
+            single_ch_cnn_outputs.append(self.single_ch_cnn((single_ch_in, w_with_midi)))
+        # Remove style
+        single_ch_cnn_outputs = [x[0] for x in single_ch_cnn_outputs]
+
+        # Concatenate single-ch spectrograms, crop if necessary
+        single_ch_cnn_outputs = torch.cat(single_ch_cnn_outputs, dim=1)
+        if self.conv_arch_name.startswith('sprescnn'):  # Output is 264 x 256 ; target is 257 x 251 (+ 4.7% pixels)
+            single_ch_cnn_outputs = single_ch_cnn_outputs[:, :, 3:3+257, 2:2+251]
+
+        # Final activation
+        return self.single_ch_cnn_act(single_ch_cnn_outputs)
+
+    def set_attention_gamma(self, gamma):
+        self.features_unmixer_cnn.set_attention_gamma(gamma)
+        for mod in self.single_ch_cnn:
+            mod.set_attention_gamma(gamma)
+
+    def get_fc_layers_parameters(self) -> Dict[str, Dict[str, np.ndarray]]:
+        """ Returns a dict of dicts: weights and biases of all FC layers at the decoder's input.
+        1st dict keys are layers names, 2nd dict keys are 'weight' and 'bias'. To be used for Tensorboard hists.
+
+        Clones are returned (can be used in a different thread - don't need another copy). """
+        layers_params = OrderedDict()
+        fc_index = 0
+        for layer in self.mlp:
+            if isinstance(layer, nn.Linear):
+                w = layer.weight.clone().detach().cpu().numpy().flatten()
+                layers_params['FC{}'.format(fc_index)] \
+                    = {'weight': w, 'weight_abs': np.abs(w),
+                       'bias': layer.bias.clone().detach().cpu().numpy().flatten()}
+                fc_index += 1
+        return layers_params
 
 
-class SpectrogramCNN(nn.Module):
-    """ A decoder CNN network for spectrogram output """
 
-    def __init__(self, architecture, spectrogram_input_size, output_activation=nn.Hardtanh(),
-                 append_1x1_conv=True, force_bigger_network=False):
-        """ Defines a decoder given the specified architecture. """
-        super().__init__()
-        self.architecture = architecture
-        if not append_1x1_conv:
-            assert self.architecture == 'speccnn8l1_bn'  # Only this arch is fully-supported at the moment
-        self.spectrogram_input_size = spectrogram_input_size
-        assert self.spectrogram_input_size[1] == 1  # This decoder is single-channel output
+if __name__ == "__main__":
 
-        if self.architecture == 'wavenet_baseline':  # https://arxiv.org/abs/1704.01279
-            ''' Symmetric layer output sizes (compared to the encoder).
-            No activation and batch norm after the last up-conv.
-            
-            Issue: this architecture induces a huge number of ops within the 2 last layers.
-            Unusable with reducing the spectrogram or getting 8 or 16 GPUs. '''
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
-                                        layer.TConv2D(512, 512, [4, 4], [2, 1], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
-                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
-                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec8'),
-                                        layer.TConv2D(128, 128, [5, 5], [2, 2], 2, output_padding=[0, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec9'),
-                                        nn.ConvTranspose2d(128, 1, [5, 5], [2, 2], 2)  # TODO bounded activation
-                                        )
+    import torchinfo
+    output_size = (160, 1, 257, 251)
+    dim_z = 200
+    dec = SpectrogramDecoder('speccnn8l1_res_att', dim_z, output_size, 0.1)  # sprescnn_time+
+    dec.set_attention_gamma(0.7)
+    p = dec.get_fc_layers_parameters()
 
-        elif self.architecture == 'wavenet_baseline_lighter':
-            ''' Lighter decoder compared to wavenet baseline, but keeps an acceptable number
-            of GOPs for last transpose-conv layers '''
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
-                                        layer.TConv2D(512, 512, [4, 4], [2, 1], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec8'),
-                                        layer.TConv2D(32, 16, [5, 5], [2, 2], 2, output_padding=[0, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec9'),
-                                        nn.ConvTranspose2d(16, 1, [5, 5], [2, 2], 2)  # TODO bounded activation
-                                        )
+    #out_test = dec(torch.zeros((160, dim_z)))
+    #_ = torchinfo.summary(dec, input_size=(160, dim_z), depth=3)
 
-        elif self.architecture == 'wavenet_baseline_shallow':  # Inspired from wavenet_baseline
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec1'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec2'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec3'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec4'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec5'),
-                                        layer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec6'),
-                                        layer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=nn.LeakyReLU(0.1), name_prefix='dec7'),
-                                        nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2)  # TODO bounded activation
-                                        )
+    # test plot layers weights (matplotlib, not tensorboard)
+    from utils import figures
+    import matplotlib.pyplot as plt
+    figures.plot_network_parameters(p)
+    plt.show()
 
-        elif self.architecture == 'flow_synth':
-            ''' This decoder seems as GPU-heavy as wavenet_baseline?? '''
-            n_lay = 64  # 128/2 for paper's comparisons consistency. Could be larger
-            k7 = [7, 7]  # Kernel of size 7
-            if spectrogram_input_size == (513, 433):
-                pads = [3, 3, 3, 3, 2]  # FIXME
-                out_pads = None
-            elif spectrogram_input_size == (257, 347):  # 7.7 GB (RAM), 6.0 GMultAdd (batch 256) (inc. linear layers)
-                pads = [3, 3, 3, 3, 2]
-                out_pads = [0, [1, 0], [0, 1], [1, 0]]  # No output padding on last layer
-            self.dec_nn = nn.Sequential(layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[0], out_pads[0], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec1'),
-                                        layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[1], out_pads[1], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec2'),
-                                        layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[2], out_pads[2], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec3'),
-                                        layer.TConv2D(n_lay, n_lay, k7, [2, 2], pads[3], out_pads[3], [2, 2],
-                                                      activation=nn.ELU(), name_prefix='dec4'),
-                                        nn.ConvTranspose2d(n_lay, 1, k7, [2, 2], pads[4]),
-                                        output_activation
-                                        )
-
-        elif self.architecture == 'speccnn8l1'\
-            or self.architecture == 'speccnn8l1_bn':  # 1.8 GB (RAM) ; 0.36 GMultAdd  (batch 256)
-            ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes are drastically reduced
-            (especially the last, not so useful but very GPU-expensive layers on large images) '''
-            act = nn.LeakyReLU
-            act_p = 0.1  # Activation param
-            self.dec_nn = nn.Sequential(layer.TConv2D((512 if not force_bigger_network else 1800),
-                                                      256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec3'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec7'),
-                                        nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2),
-                                        output_activation
-                                        )
-            if append_1x1_conv:  # 1x1 "un-mixing" conv inserted as first conv layer
-                assert False  # FIXME 1024ch should not be constant
-                self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1 ,1], [1 ,1], 0,
-                                                          activation=act(act_p), name_prefix='dec1'),
-                                            self.dec_nn)
-
-        elif self.architecture == 'speccnn8l1_2':  # 5.8 GB (RAM) ; 2.4 GMultAdd  (batch 256)
-            act = nn.LeakyReLU
-            act_p = 0.1  # Activation param
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1, 1], [1, 1], 0,
-                                                      activation=act(act_p), name_prefix='dec1'),
-                                        layer.TConv2D(512, 256, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.TConv2D(256, 256, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec3'),
-                                        layer.TConv2D(256, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(128, 128, [4, 4], [2, 2], 2, output_padding=[1, 1],
-                                                      activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 0],
-                                                      activation=act(act_p), name_prefix='dec7'),
-                                        nn.ConvTranspose2d(32, 1, [5, 5], [2, 2], 2),
-                                        output_activation
-                                        )
-        elif self.architecture == 'speccnn8l1_3':  # XXX GB (RAM) ; XXX GMultAdd  (batch 256)
-            ''' Inspired by the wavenet baseline spectral autoencoder, but all sizes drastically reduced '''
-            act = nn.LeakyReLU
-            act_p = 0.1  # Activation param
-            ker = [5, 5]
-            self.dec_nn = nn.Sequential(layer.TConv2D(1024, 512, [1, 1], [1, 1], 0,
-                                                      activation=act(act_p), name_prefix='dec1'),
-                                        layer.TConv2D(512, 256, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec2'),
-                                        layer.TConv2D(256, 128, ker, [2, 2], 2, output_padding=[0, 0],
-                                                      activation=act(act_p), name_prefix='dec3'),
-                                        layer.TConv2D(128, 64, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(64, 32, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(32, 16, ker, [2, 2], 2, output_padding=[0, 0],
-                                                      activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(16, 8, ker, [2, 2], 2, output_padding=[0, 1],
-                                                      activation=act(act_p), name_prefix='dec7'),
-                                        nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2),
-                                        output_activation
-                                        )
-
-        else:
-            raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
-
-    def forward(self, x_spectrogram):
-        return self.dec_nn(x_spectrogram)

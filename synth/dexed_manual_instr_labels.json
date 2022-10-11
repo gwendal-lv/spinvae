@@ -1,0 +1,22 @@
+{
+  "6118": ["vocal"],
+  "6119": ["guitar", "pluck"],
+  "6120": ["brass", "lead"],
+  "6121": ["guitar", "pluck"],
+  "6127": ["brass"],
+  "6128": ["string"],
+  "6129": ["harmonic_perc"],
+  "6134": ["sfx"],
+  "6135": ["sfx"],
+  "6136": ["sfx"],
+  "6138": ["harmonic_perc"],
+  "6142": ["organ"],
+  "6143": ["bass", "pad"],
+  "6145": ["guitar", "pluck"],
+  "6146": ["pluck"],
+  "6147": ["bass", "pluck"],
+  "6148": ["guitar", "pluck"],
+  "6151": ["sfx"],
+  "6152": ["harmonic_perc"],
+  "6154": ["string"]
+}

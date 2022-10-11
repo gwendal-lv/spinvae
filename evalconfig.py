@@ -2,31 +2,90 @@
 Allows easy modification of all configuration parameters required to perform a series of models evaluations.
 This script is not intended to be run, it only describes parameters.
 """
+import copy
+from pathlib import Path
+from typing import List, Dict, Union, Any
+
+from utils import config_confidential
 
 
-import datetime
-from utils.config import EvalConfig
+class InterpEvalConfig:
+    def __init__(self):
+        self.device = 'cpu'  # FIXME does not seem to do anything... a model loaded on GPU stays on GPU
+        self.dataset_type = 'test'  # 'validation'
+        self.num_steps = 9
+        self.use_reduced_dataset = False  # fast debugging (set to False during actual eval)
+        self.force_re_eval_all = False
+        self.skip_audio_render = False  # don't re-render audio, recompute interpolation features/metrics only
+
+        # Audio features and interpolation metrics
+        self.exclude_min_max_interp_features = True  # the TimbreToolbox paper advises to use IQR and medians only
+        # Features to be rejected
+        #    - Noisiness features seem badly estimated for the DX7 (because of the FM?). They are quite constant
+        #      equal to 1.0 (absurd) and any slightly < 1.0 leads to diverging values after 1-std normalization
+        self.excluded_interp_features = ('Noisiness', )
+
+        # Reference model
+        self.logs_root_dir = Path(config_confidential.logs_root_dir)
+        # Reference data can be stored anywhere (they don't use a trained NN)
+        self.reference_model_path = self.logs_root_dir.parent.joinpath('RefInterp/LinearNaive')
+        self.ref_model_interp_path = self.reference_model_path.joinpath(
+            'interp{}_{}'.format(self.num_steps, self.dataset_type[0:5]))
+        self.ref_model_force_re_eval = False
+
+        # List of models and eval configs for each model
+        #    - the config of the first model will be used to load the dataset used by the reference model
+        #    - optional fields for any config: 'u_curve': 'linear', 'latent_interp': 'linear'
+        self.other_models: List[Dict[str, Any]] = [
+            {'base_model_name': 'TRAINED_MODEL_NAME_IN_LOG_FOLDER'},  # TODO add others in this list
+        ]
+        # Auto duplicate everything to try arcsin u curves
+        if False:
+            other_models_duplicates = copy.deepcopy(self.other_models)
+            for m_config in other_models_duplicates:
+                m_config['u_curve'] = 'arcsin'
+            self.other_models += other_models_duplicates
+        # Auto duplicate everything to try all z refinement options FIXME REMOVE, deprecated
+        if False:
+            other_models_backup = copy.deepcopy(self.other_models)
+            for refine_lvl in [1, 2]:
+                other_models_duplicates = copy.deepcopy(other_models_backup)
+                for m_config in other_models_duplicates:
+                    m_config['refine_level'] = refine_lvl
+                self.other_models += other_models_duplicates
+
+        self.set_default_config_values()
+        self.build_models_storage_path()
 
 
-eval = EvalConfig()  # (shadows unused built-in name)
-eval.start_datetime = datetime.datetime.now().isoformat()
+    def set_default_config_values(self):
+        """ Sets default values for some argument that can be omitted """
+        for m_config in self.other_models:
+            # u (interp variable) and latent interp (z) curves
+            for curve in ['u_curve', 'latent_interp']:
+                try:
+                    curve_type = m_config[curve]
+                except KeyError:
+                    curve_type = 'linear'
+                m_config[curve] = curve_type
+            # refine level: default is 0
+            try:
+                refine_lvl = m_config['refine_level']
+            except KeyError:
+                refine_lvl = 0
+            m_config['refine_level'] = refine_lvl
 
-# Names must be include experiment folder and run name (_kf suffix must be omitted is all_k_folds is True)
-eval.models_names = [  # - - - 30k samples full dataset ('b' suffix means 'big') - - -
-                     'FlVAE3/11b_dex6op_numonly_1midi',
-                     'FlVAE3/13b_dex6op_vstcat_1midi',
-                     'FlVAE3/14b_dex3op_all<=32_1midi',
-                     'FlVAE3/15b_dex6op_all<=32_1midi',
-                     'FlVAE3/44b_dex3op_all<=32_6stack',
-                     'FlVAE3/45b_dex6op_all<=32_6stack',
-                     ]
-eval.dataset = 'test'  # Do not use 'test' dataset during models development
-eval.override_previous_eval = False  # If True, all models be re-evaluated (might be very long)
-eval.k_folds_count = 5  # 5  # 0 means do not automatically all k-folds trains
+    def build_models_storage_path(self):
+        """ auto build eval data paths from the model name and interp-hyperparams """
+        for m_config in self.other_models:
+            m_config['base_model_path'] = self.logs_root_dir.joinpath(m_config['base_model_name'])
+            interp_name = 'interp{}'.format(self.num_steps)
+            interp_name += '_' + self.dataset_type[0:5]
+            interp_name += '_u' + m_config['u_curve'][0:3].capitalize()
+            interp_name += '_z' + m_config['latent_interp'][0:3].capitalize()
+            refine_lvl = m_config['refine_level']
+            interp_name += '_refi{}'.format(refine_lvl) if refine_lvl > 0 else ''
+            # Set paths and names
+            m_config['interp_storage_path'] = m_config['base_model_path'].joinpath(interp_name)
+            m_config['model_interp_name'] = m_config['base_model_name'] + '/' + interp_name
 
-eval.minibatch_size = 1  # Reduced mini-batch size not to reserve too much GPU RAM. 1 <=> per-preset metrics
-eval.device = 'cpu'
-# Don't use too many cores, numpy uses multi-threaded MKL (in each process)
-eval.multiprocess_cores_ratio = 0.1  # ratio of CPU cores to be used (if 1.0: use all os.cpu_count() cores)
-eval.verbosity = 2
-eval.load_from_archives = False  # Load from ./saved_archives instead of ./saved

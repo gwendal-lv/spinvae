@@ -27,7 +27,7 @@ import logs.metrics
 import model.build
 import model.loss
 import utils.audio
-import utils.config
+import utils.configutils
 import synth.dexed
 
 
@@ -72,7 +72,8 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
     # Special forced multi-note eval?
     if '__MULTI_NOTE__' in path_to_model_dir.name:
-        forced_midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
+        forced_midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))  # FIXME
+        raise AssertionError()
         # We'll load the original model - quite dirty path modification
         path_to_model_dir = Path(path_to_model_dir.__str__().replace('__MULTI_NOTE__', ''))
         if eval_config.verbosity >= 1:
@@ -83,7 +84,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     # Reload model and train config
     model_config, train_config = utils.config.get_config_from_file(path_to_model_dir.joinpath('config.json'))
     if eval_config.load_from_archives:
-        model_config.logs_root_dir = "saved_archives"
+        model_config.logs_root_dir = "saved_archives"  # FIXME
     # Eval file to be created
     eval_pickle_file_path = get_eval_pickle_file_path(path_to_model_dir, eval_config.dataset,
                                                       force_multi_note=(forced_midi_notes is not None))
@@ -112,6 +113,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     checkpoint = logs.logger.get_model_last_checkpoint(root_path, model_config, device=device)
     _, _, _, extended_ae_model = model.build.build_extended_ae_model(model_config, train_config,
                                                                      dataset.preset_indexes_helper)
+    raise AssertionError()  # FIXME models should load their own checkpoints
     extended_ae_model.load_state_dict(checkpoint['ae_model_state_dict'])
     extended_ae_model = extended_ae_model.to(device).eval()
     ae_model, reg_model = extended_ae_model.ae_model, extended_ae_model.reg_model
@@ -131,11 +133,9 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     preset_UIDs = list()
     synth_params_GT = list()
     synth_params_inferred = list()
-    # Parameters criteria
-    controls_num_mse_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
-                                                                         numerical_loss=nn.MSELoss(reduction='mean'))
-    controls_num_mae_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
-                                                                         numerical_loss=nn.L1Loss(reduction='mean'))
+    # Parameters criteria FIXME new combined L1/Accuracy loss
+    controls_num_mse_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper, loss_type='MSE')
+    controls_num_mae_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper, loss_type='L1')
     controls_accuracy_criterion = model.loss.CategoricalParamsAccuracy(dataset.preset_indexes_helper,
                                                                        reduce=True, percentage_output=True)
     # Controls related to MIDI key and velocity (to compare single- and multi-channel spectrograms models)
@@ -144,8 +144,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     else:
         raise NotImplementedError("")
     dynamic_controls_num_mae_crit = \
-        model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
-                                                numerical_loss=nn.L1Loss(reduction='mean'),
+        model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper, loss_type='L1',
                                                 limited_vst_params_indexes=dynamic_vst_controls_indexes)
     dynamic_controls_acc_crit = \
         model.loss.CategoricalParamsAccuracy(dataset.preset_indexes_helper, reduce=True, percentage_output=True,

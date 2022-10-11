@@ -1,95 +1,22 @@
 """
-Audio utils (spectrograms, G&L phase reconstruction, ...)
-"""
+Audio utils, mostly based on librosa functionalities
 
+Do not import torch_spectrograms to prevent multi-processing issues
+"""
+import multiprocessing
 import os
-import warnings
+from datetime import datetime
 from typing import Iterable, Sequence, Optional
 import pathlib
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-import torch
-import torch.fft
 import librosa
 import librosa.display
 import soundfile as sf
 
-
-class Spectrogram:
-    """ Class for dB spectrogram computation from a raw audio waveform.
-    The min spectrogram value must be provided.
-    The default windowing function is Hann. """
-    def __init__(self, n_fft, fft_hop, min_dB, dynamic_range_dB=None, log_scale=True):
-        self.n_fft = n_fft
-        self.fft_hop = fft_hop
-        self.log_scale = log_scale
-        self.min_dB = min_dB
-        self.dynamic_range_dB = dynamic_range_dB
-        self.window = torch.hann_window(self.n_fft, periodic=False)
-        self.spectrogram_norm_factor = torch.fft.rfft(self.window).abs().max().item()
-
-    def get_stft(self, x_wav):
-        """ Returns the complex, non-normalized STFT computed from given audio. """
-        warnings.filterwarnings("ignore", category=UserWarning)  # Deprecation warning from PyTorch compiled-code
-        spectrogram = torch.stft(torch.tensor(x_wav, dtype=torch.float32), n_fft=self.n_fft, hop_length=self.fft_hop,
-                                 window=self.window, center=True,
-                                 pad_mode='constant', onesided=True, return_complex=True)
-        warnings.filterwarnings("default", category=UserWarning)
-        return spectrogram
-
-    def __call__(self, x_wav):
-        """ Returns the log-scale spectrogram of x_wav audio, with defined minimum 'floor' dB value. """
-        spectrogram = self.get_stft(x_wav).abs()
-        # normalization of spectrogram module vs. Hann window weight
-        spectrogram = spectrogram / self.spectrogram_norm_factor
-        if self.log_scale:
-            return self.linear_to_log_scale(spectrogram)
-        else:
-            return spectrogram
-
-    def linear_to_log_scale(self, spectrogram):
-        spectrogram = torch.maximum(spectrogram, torch.ones(spectrogram.size()) * 10 ** (self.min_dB / 20.0))
-        return 20.0 * torch.log10(spectrogram)
-
-    def log_to_linear_scale(self, spectrogram):
-        """ Reverses the log-scale applied to a Tensor spectrogram built by this class
-
-        :returns: the corresponding usual STFT-amplitude spectrogram """
-        stft = torch.pow(10.0, spectrogram/20.0)
-        return stft * self.spectrogram_norm_factor
-
-    def linear_to_log_scale_with_dynamic_range(self, spectrogram):
-        # TODO remove? Dynamic range might be a bad idea for VAEs... (need to reconstruct the 'floor' value)
-        assert self.dynamic_range_dB is not None  # Dynamic range not provided? It might be counterproductive anyway
-        spectrogram = torch.maximum(spectrogram, torch.ones(spectrogram.size()) * 10 ** (self.min_dB / 20.0))
-        spectrogram = 20.0 * torch.log10(spectrogram)
-        return torch.maximum(spectrogram,
-                             torch.ones(spectrogram.size()) * (torch.max(spectrogram) - self.dynamic_range_dB))
-
-
-
-class MelSpectrogram(Spectrogram):
-    def __init__(self, n_fft, fft_hop, min_dB, n_mel_bins, Fs):
-        super().__init__(n_fft, fft_hop, min_dB, log_scale=True)
-        # TODO add fmin, fmax arguments
-        self.Fs = Fs
-        self.n_mel_bins = n_mel_bins
-
-    def __call__(self, x_wav):
-        """ Returns a log-scale spectrogram with limited dynamic range """
-        spectrogram = self.get_stft(x_wav).abs()
-        spectrogram = spectrogram / self.spectrogram_norm_factor
-        # Torch-Numpy arrays share the same memory location (very fast convert)
-        spectrogram = librosa.feature.melspectrogram(S=spectrogram, n_mels=self.n_mel_bins,
-                                                     norm=None)  # for linear/mel specs magnitude compatibility
-        return self.linear_to_log_scale(torch.from_numpy(spectrogram))
-
-    def mel_dB_to_STFT(self, mel_spectrogram):
-        """ Inverses the Mel-filters and and log-amplitude transformations applied to a spectrogram. """
-        spectrogram = self.log_to_linear_scale(mel_spectrogram)
-        return librosa.feature.inverse.mel_to_stft(spectrogram.numpy(), n_fft=self.n_fft, power=1.0, norm=None)
+from data.abstractbasedataset import AudioDataset
 
 
 class SimilarityEvaluator:
@@ -162,7 +89,6 @@ class SimilarityEvaluator:
 
 
 
-
 class SimpleSampleLabeler:
     def __init__(self, x_wav, Fs, hpss_margin=3.0, perc_duration_ms=250.0):
         """ Class to attribute labels or a class to sounds, mostly based on librosa hpss and empirical thresholds.
@@ -175,7 +101,7 @@ class SimpleSampleLabeler:
         """
         assert Fs == 22050  # Librosa defaults must be used at the moment
         self.x_wav = x_wav
-        self.Fs = Fs
+        self.Fs = Fs  # FIXME 22 or 16 kHz
         self.hpss_margin = hpss_margin
         self.perc_duration_ms = perc_duration_ms
         # Pre-computation of spectrograms and energies
@@ -183,7 +109,7 @@ class SimpleSampleLabeler:
         self.energy, self.energy_ratio = self._get_energy_ratios()
         # Energies on attack (to identify perc sounds)
         # Perc content supposed to be found in the first 10s of ms. Hop: default librosa 256
-        limit_index = int(np.ceil(self.perc_duration_ms * self.Fs / 256.0 / 1000.0))
+        limit_index = int(np.ceil(self.perc_duration_ms * self.Fs / 256.0 / 1000.0))  # FIXME 22 or 16 kHz
         self.attack_specs = dict()
         self.attack_energies = dict()
         for k in self.specs:
@@ -273,6 +199,48 @@ class SimpleSampleLabeler:
 
 
 
+def average_f0(dataset: AudioDataset, midi_pitch, midi_vel, num_workers: Optional[int] = None,
+               print_time=True):
+    """ Computes the f0 pitch of the given note, for each preset of the dataset.
+    -1 pitches correspond to no pitch detected by librosa.pyin.
+
+    Uses multiprocessing even if num_workers == 1. """
+    t_start = datetime.now()
+    presets_indexes = np.arange(len(dataset))
+    if num_workers is None:
+        num_workers = os.cpu_count()
+    split_presets_indexes = np.array_split(presets_indexes, num_workers)
+    workers_args = list()
+    for indexes in split_presets_indexes:
+        workers_args.append((dataset, midi_pitch, midi_vel, indexes))
+    with multiprocessing.Pool(num_workers) as p:
+        f0_split = p.map(_average_f0, workers_args)
+    f0_merged = list()
+    for f0 in f0_split:
+        f0_merged += f0
+    delta_t = (datetime.now() - t_start).total_seconds()
+    if print_time:
+        print("{} note f0 pitch estimatates computed in {:.1f} min ({:.1f} ms / note)"
+              .format(len(presets_indexes), delta_t/60.0, 1000.0*delta_t/len(presets_indexes)))
+    return f0_merged
+
+
+def _average_f0(worker_args):
+    dataset, midi_pitch, midi_vel, presets_indexes = worker_args
+    f0_list = list()
+    for preset_index in presets_indexes:
+        preset_UID = dataset.valid_preset_UIDs[preset_index]
+        audio, Fs = dataset.get_wav_file(preset_UID, midi_pitch, midi_vel, variation=0)
+        f0, voiced_flag, voiced_prob = librosa.pyin(audio, fmin=librosa.midi_to_hz(midi_pitch - 24),
+                                                    fmax=librosa.midi_to_hz(midi_pitch + 24), sr=dataset.Fs)
+        if f0[voiced_flag].shape[0] > 0:
+            f0_list.append(f0[voiced_flag].mean())
+        else:
+            f0_list.append(-1.0)
+    return f0_list
+
+
+
 def write_wav_and_mp3(base_path: pathlib.Path, base_name: str, samples, sr):
     """ Writes a .wav file and converts it to .mp3 using command-line ffmpeg (which must be available). """
     wav_path_str = "{}".format(base_path.joinpath(base_name + '.wav'))
@@ -280,4 +248,79 @@ def write_wav_and_mp3(base_path: pathlib.Path, base_name: str, samples, sr):
     mp3_path_str = "{}".format(base_path.joinpath(base_name + '.mp3'))
     # mp3 320k will be limited to 160k for mono audio - still too much loss for HF content
     os.system("ffmpeg -i {} -b:a 320k -y {}".format(wav_path_str, mp3_path_str))
+
+
+
+def get_spectrogram_from_audio(audio_samples_path: pathlib.Path, audio_name: str, midi_notes: Sequence):
+    """
+    Builds a dataset-like tensor of spectrogram(s) by loading external audio sample(s).
+    Files to be loaded must be: BASENAME_xxx_yyy.wav where xxx and yyy are the MIDI pitch and velocity.
+
+    :param audio_samples_path: Path to the folder that contains all audio files to be loaded
+    :param audio_name: base name of file(s) to be loaded
+    :param midi_notes: List of tuples of (midi_pitch, midi_velocity) int values. Length of that list will be the
+        number of output tensor spectrogram channels
+    :return: 3d tensor of spectrogram(s)
+    """
+    raise NotImplementedError()
+
+
+
+def dataset_samples_rms(dataset: AudioDataset, outliers_min: Optional[int] = None,
+                        num_workers=os.cpu_count(), print_analysis_duration=True):
+    """ Computes a list of RMS stats (min/avg/max) for each audio file available from the given dataset.
+    Also returns outliers (each outlier as a (UID, pitch, vel, var) tuple) if min/max values are given, else None.
+
+    :returns: (rms_stats list of dicts, outliers list of tuples) """
+    if print_analysis_duration:
+        print("Starting dataset RMS computation...")
+    t_start = datetime.now()
+    if num_workers < 1:
+        num_workers = 1
+    if num_workers == 1:
+        audio_rms_stats, outliers = _dataset_samples_rms((dataset, dataset.valid_preset_UIDs, outliers_min))
+    else:
+        split_preset_UIDs = np.array_split(dataset.valid_preset_UIDs, num_workers)
+        workers_args = [(dataset, UIDs, outliers_min) for UIDs in split_preset_UIDs]
+        with multiprocessing.Pool(num_workers) as p:  # automatically closes and joins all workers
+            results = p.map(_dataset_samples_rms, workers_args)
+            # Structure of results:
+            #     list of length num_workers
+            #         dict of 3 lists (1 list for 'min', etc....)
+            #         list of outliers (1 tuple / outlier)
+        audio_rms_stats = dict()
+        for k in results[0][0]:  # keys detected automatically (defined in _dataset_samples_rms)
+            audio_rms_stats[k] = list()
+        outliers = list()
+        for r in results:
+            for k in audio_rms_stats:
+                audio_rms_stats[k] += r[0][k]
+            outliers += r[1]  # merges the 2 lists
+    delta_t = (datetime.now() - t_start).total_seconds()
+    if print_analysis_duration:
+        print("Dataset RMS computation finished. {:.1f} min total ({:.1f} ms / wav, {} audio files)"
+              .format(delta_t / 60.0, 1000.0 * delta_t / dataset.nb_valid_audio_files, dataset.nb_valid_audio_files))
+    return audio_rms_stats, outliers
+
+
+def _dataset_samples_rms(worker_args):
+    dataset, preset_UIDs, outliers_min = worker_args
+    """ Auxiliary function for dataset_samples_rms: computes a single batch (multiproc or not). """
+    audio_rms_stats = {'min': list(), 'avg': list(), 'max': list()}
+    outliers = list()
+    for preset_UID in preset_UIDs:
+        for midi_note in dataset.midi_notes:
+            midi_pitch, midi_vel = midi_note
+            for variation in range(dataset.get_nb_variations_per_note(preset_UID)):
+                audio, Fs = dataset.get_wav_file(preset_UID, midi_pitch, midi_vel, variation=variation)
+                rms_frames = librosa.feature.rms(audio)  # type: np.ndarray
+                rms_frames = rms_frames[0]
+                audio_rms_stats['min'].append(rms_frames.min())
+                audio_rms_stats['avg'].append(rms_frames.mean())
+                audio_rms_stats['max'].append(rms_frames.max())
+                if outliers_min is not None:
+                    if audio_rms_stats['max'][-1] < outliers_min:  # If max RMS is very small: outlier
+                        outliers.append((preset_UID, midi_pitch, midi_vel, variation))
+    return audio_rms_stats, outliers
+
 

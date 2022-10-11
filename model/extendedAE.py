@@ -1,11 +1,17 @@
 """
+Deprecated, see hierarchicalvae.py
+
 Defines 'Extended Auto-Encoders', which are basically spectrogram VAEs with an additional neural network
 which infers synth parameters values from latent space values.
 """
 
+from typing import Optional
+
+import torch
 import torch.nn as nn
 
 from model import VAE
+import model.base
 import model.regression
 from data.preset import PresetIndexesHelper
 
@@ -13,31 +19,24 @@ from data.preset import PresetIndexesHelper
 class ExtendedAE(nn.Module):
     """ Model based on any compatible Auto-Encoder and Regression models. """
 
-    def __init__(self, ae_model, reg_model, idx_helper: PresetIndexesHelper, dropout_p=0.0):
+    def __init__(self, ae_model: nn.Module, reg_model: Optional[nn.Module] = None):
         super().__init__()
-        self.idx_helper = idx_helper  # unused at the moment
         self.ae_model = ae_model
-        if isinstance(self.ae_model, VAE.BasicVAE):
-            self._is_flow_based_latent_space = False
-        elif isinstance(self.ae_model, VAE.FlowVAE):
-            self._is_flow_based_latent_space = True
-        else:
-            raise TypeError("Unrecognized auto-encoder model")
         self.reg_model = reg_model
-        if isinstance(self.reg_model, model.regression.FlowRegression):
-            self._is_flow_based_regression = True
-        elif isinstance(self.reg_model, model.regression.MLPRegression):
-            self._is_flow_based_regression = False
-        else:
-            raise TypeError("Unrecognized synth params regression model")
 
     @property
     def is_flow_based_latent_space(self):
-        return self._is_flow_based_latent_space
+        return self.ae_model.is_flow_based_latent_space
 
     @property
     def is_flow_based_regression(self):
-        return self._is_flow_based_regression
+        if isinstance(self.reg_model, model.regression.FlowControlsRegression):
+            return True
+        elif isinstance(self.reg_model, model.regression.MLPControlsRegression)\
+                or isinstance(self.reg_model, model.base.DummyModel):
+            return False
+        else:
+            raise TypeError("Unrecognized synth params regression model")
 
     def forward(self, x, sample_info=None):
         """
@@ -50,3 +49,7 @@ class ExtendedAE(nn.Module):
     def latent_loss(self, z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac):
         return self.ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
 
+    def find_preset_inverse(self, x_in, sample_info, target_u_out):
+        """ Returns the latent code z corresponding to the target output preset, as well as the corresponding
+        accuracy and numerical error. """
+        pass

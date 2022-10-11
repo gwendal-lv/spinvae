@@ -1,0 +1,35 @@
+# This file contains UIDs of patches that should be excluded from the dataset
+# UIDs are valid for the dataset auto-generated using all presets available in Surge version 1.9.0.91069f8d Linux
+
+
+# ========== Filter-only patches (only process some input audio) ==========
+# From factory/templates
+598, 599, 600, 601
+# From argitoth/templates
+645, 646
+
+
+# ========== Other patches ==========
+# ----- The following patches produce a null sound, for all notes
+# 'UID': 675, 'author': 'Bluelight', 'instrument_category': 'Keys', 'patch_name': 'Ghost Glass Harmonium'
+# 'UID': 712, 'author': 'Bluelight', 'instrument_category': 'Pads', 'patch_name': 'Ghost Glass Harmonium'
+675, 712
+# ----- Small-volume and no understandable relation between pitch and output
+# 'UID': 1411, 'author': 'Inigo Kennedy', 'instrument_category': 'Pads', 'patch_name': 'Hangars 5'
+# 'UID': 1702, 'author': 'Kyurumi', 'instrument_category': 'FX', 'patch_name': 'Technological Sine'
+1411, 1702
+
+
+# ========== Very low volume for 1 note only ========
+# Approx. 40 patches (see surge_db_explore.ipynb)
+
+
+# ========== Very low output volume, but produce actual sounds ========
+# 'UID': 1962, 'author': 'Roger Linn (MPE)', 'instrument_category': 'Leads', 'patch_name': 'LS Blues Harmonica'
+# 'UID': 2132, 'author': 'Vospi', 'instrument_category': 'Keys', 'patch_name': 'Picked Driven Synth'
+
+
+# ========= Crackling / white noise / etc... sounds =========
+# TODO list....
+# 'UID': 84, 'author': 'patches_factory', 'instrument_category': 'FX', 'patch_name': 'Crackling'
+# 'UID': 777, 'author': 'Damon Armani', 'instrument_category': 'Drums', 'patch_name': 'FX Glitch'

@@ -1,16 +1,24 @@
 """
+DEPRECATED - these classes extended preset into bigger 1D representations, which led to many small
+operations on tensor (very slow) and is harder to use.
+However we don't throw this code away yet, in case we go back to 1D normalizing flows in the future...
+
+See preset2d.py
+
 Classes to store and transform batches of synth presets. Some functionalities are:
 - can be initialized from a full preset or an inferred (incomplete) preset
 - retrieve only learnable params of full presets, or fill un-learned (not inferred) values
 - transform some linear parameter into categorical, and reverse this transformation
 """
-
+import warnings
 from enum import Enum
-from typing import Optional, Iterable, Sequence
+from typing import Optional, Iterable, Sequence, List
 import numpy as np
 
 import torch
 import torch.nn.functional
+
+import synth.dexed
 
 
 # Should be used instead of the str synth name to reduce loss functions computation times
@@ -113,6 +121,17 @@ class PresetIndexesHelper:
                     assert isinstance(self._num_idx_learned_as_cat[vst_idx], Iterable)
                 else:
                     raise ValueError("Unknown learnable representation '{}'".format(learnable_model))
+
+        try:
+            self.cat_params_class_samples_count = dataset.cat_params_class_samples_count  # FIXME
+        except FileNotFoundError:  # build default count if classes samples counts were not computed yet
+            warnings.warn("[PresetIndexesHelper] Number of class samples for each categorical-learned were not "
+                          "computed. Using default counts of 1. Please re-compute dataset learnable presets. (ignore "
+                          "this message if synth presets are not used, e.g. during pre-train)")
+            self.cat_params_class_samples_count = dict()
+            for vst_idx, learn_indices in enumerate(self.full_to_learnable):
+                if self.vst_param_learnable_model[vst_idx] == 'cat':
+                    self.cat_params_class_samples_count[vst_idx] = np.ones((len(learn_indices), ), dtype=int)
 
     def __str__(self):
         learnable_count = sum([(0 if learn_model is None else 1) for learn_model in self._vst_param_learnable_model])
@@ -264,8 +283,15 @@ class PresetIndexesHelper:
             op_params_base_vst_indexes = [23, 24, 25, 26, 27, 28, 29, 30,
                                           32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
             for op_i, vst_volume_idx in enumerate([31 + 22*i for i in range(6)]):
-                if isinstance(self.full_to_learnable[vst_volume_idx], int):  # numerical
-                    if preset_GT[self.full_to_learnable[vst_volume_idx]].item() < 1e-3:  # OP zero-volume?
+                if self.full_to_learnable[vst_volume_idx] is None:
+                    pass
+                else:
+                    if isinstance(self.full_to_learnable[vst_volume_idx], int):  # numerical
+                        op_zero_volume = preset_GT[self.full_to_learnable[vst_volume_idx]].item() < 0.005
+                    else:
+                        op_volume_one_hot = preset_GT[self.full_to_learnable[vst_volume_idx]]
+                        op_zero_volume = op_volume_one_hot[0] > 0.5
+                    if op_zero_volume:
                         # add all operator-related indexes
                         cur_op_params_vst_indexes = [idx + op_i*22 for idx in op_params_base_vst_indexes]
                         for vst_idx in cur_op_params_vst_indexes:
@@ -274,13 +300,125 @@ class PresetIndexesHelper:
                                 useless_num_learn_param_indexes.append(learn_idx)
                             elif isinstance(learn_idx, list):  # cat: only first cat probability output is appended
                                 useless_cat_learn_param_indexes.append(learn_idx[0])
-                elif self.full_to_learnable[vst_volume_idx] is None:
-                    pass
-                else:  # TODO If volume is categorical, we must convert....
-                    raise NotImplementedError("Dexed Operator output volume learned as categorical")
             return useless_num_learn_param_indexes, useless_cat_learn_param_indexes
         else:
             return [], []
+
+    def vst_indices_range_to_learnable_range(self, vst_indices_ranges: range):
+        learnable_indices = list()
+        for vst_idx in vst_indices_ranges:
+            _learn_indices = self.full_to_learnable[vst_idx]
+            if isinstance(_learn_indices, int):
+                learnable_indices += [_learn_indices]
+            elif isinstance(_learn_indices, list):
+                learnable_indices += _learn_indices
+        learnable_indices = sorted(set(learnable_indices))
+        for i in range(len(learnable_indices) - 1):
+            if learnable_indices[i+1] - learnable_indices[i] != 1:
+                raise RuntimeError("Cannot build a range from the given set of learnable indices: {}"
+                                   .format(learnable_indices))
+        return range(min(learnable_indices), max(learnable_indices)+1)
+
+    def get_u_in_permutations(self, u_in: torch.Tensor) -> (List[range], torch.Tensor):
+        """ Returns permutations groups and u_in with symmetries (permutations of oscillators). """
+        if self._synth == _Synth.DEXED:
+            # 1st pass: get all information about the input preset (algorithms, feedback or not, ...)
+            #    and compute the final number of presets (including symmetrized duplicates)
+            # We use cloned CPU tensors here because we don't need the gradient (and we'll do many small operations)
+            u_in_cpu = u_in.detach().clone().cpu()
+            # Retrieve all algorithms - algorithm indexes in [0, 31]
+            if self.vst_param_learnable_model[4] == 'cat':
+                u_in_algos = u_in_cpu[:, self.cat_idx_learned_as_cat[4]]
+                u_in_algos = torch.argmax(u_in_algos, dim=1, keepdim=False).numpy()
+            elif self.vst_param_learnable_model[4] == 'num':
+                u_in_algos = u_in_cpu[:, self.cat_idx_learned_as_num[4]] * 31.0
+                u_in_algos = np.asarray(torch.round(u_in_algos).numpy(), dtype=int)
+            else:
+                raise AssertionError("Dexed algorithm is not a learnable parameter.")
+            # Feedback as a boolean (either 0.0, or non-negligible feedback)
+            if self.vst_param_learnable_model[5] == 'cat':
+                u_in_feedback = u_in_cpu[:, self.num_idx_learned_as_cat[5]]
+                u_in_feedback = (torch.argmax(u_in_feedback, dim=1, keepdim=False).numpy() > 0)
+            elif self.vst_param_learnable_model[5] == 'num':
+                u_in_feedback = (u_in_cpu[:, self.num_idx_learned_as_num[5]].numpy() > 0)
+            else:
+                raise AssertionError("Dexed feedback is not a learnable parameter.")
+            # Now, we can compute the symmetric duplicates
+            # List of (algos, operators permutations) tuples
+            permutations = [synth.dexed.Dexed.get_algorithms_and_oscillators_permutations(u_in_algos[i], u_in_feedback[i])
+                            for i in range(u_in_algos.shape[0])]
+            all_algos_permutations = np.hstack([permutations[i][0] for i in range(len(permutations))])
+            permutations_groups = list()
+            next_permutation_index = 0
+            for i in range(len(permutations)):
+                permutations_groups.append(range(next_permutation_index,
+                                                 next_permutation_index + permutations[i][0].shape[0]))
+                next_permutation_index += permutations[i][0].shape[0]
+
+            # 2nd pass: properly store symmetrized u_in duplicates (CPU ops only, no gradient)
+            u_in_permutations_cpu = torch.empty((len(all_algos_permutations), u_in_cpu.shape[1])) * -1.0
+            # 2a) set algo of all permutations
+            algo_learn_indices = self.full_to_learnable[4]
+            if self.vst_param_learnable_model[4] == 'num':
+                u_in_permutations_cpu[:, algo_learn_indices] = all_algos_permutations
+            elif self.vst_param_learnable_model[4] == 'cat':
+                u_in_permutations_cpu[:, algo_learn_indices] = \
+                    torch.nn.functional.one_hot(torch.tensor(all_algos_permutations), 32).float()
+            else:
+                raise AssertionError("Dexed algorithm is not a learnable parameter.")
+            # 2b) and 2c) - All of those indices will be copied (algorithm excluded, unlearned won't be copied)
+            unchanged_vst_indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+            unchanged_learn_indices = list()
+            for vst_idx in unchanged_vst_indices:
+                learnable_indexes = self.full_to_learnable[vst_idx]
+                if learnable_indexes is not None:  # int (num) of list of ints (cat)
+                    if isinstance(learnable_indexes, int):
+                        learnable_indexes = [learnable_indexes]
+                    unchanged_learn_indices += learnable_indexes
+            # pre-compute groups of param indexes for each operator
+            op_params_vst_ranges = synth.dexed.Dexed.get_operators_params_indexes_groups()
+            op_params_ranges = [self.vst_indices_range_to_learnable_range(r) for r in op_params_vst_ranges]
+            for old_preset_idx, new_preset_range in enumerate(permutations_groups):
+                # 2b) copy values of general parameters (e.g. feedback, LFO, main pitch, ...)
+                u_in_partial = torch.unsqueeze(u_in_cpu[old_preset_idx, unchanged_learn_indices], 0) \
+                    .expand(len(new_preset_range), -1)
+                u_in_permutations_cpu[new_preset_range.start:new_preset_range.stop, unchanged_learn_indices] \
+                    = u_in_partial
+                # 2c) copy operators' values, for each permutation
+                for permutation_idx, new_preset_idx in enumerate(new_preset_range):
+                    for old_op_idx in range(6):
+                        new_op_idx = permutations[old_preset_idx][1][permutation_idx, old_op_idx]
+                        u_in_permutations_cpu[new_preset_idx,
+                                              op_params_ranges[new_op_idx].start:op_params_ranges[new_op_idx].stop] \
+                            = u_in_cpu[old_preset_idx,
+                                       op_params_ranges[old_op_idx].start:op_params_ranges[old_op_idx].stop]
+            return permutations_groups, u_in_permutations_cpu.to(u_in.device)
+        else:
+            raise NotImplementedError()
+
+    def get_u_out_permutations(self, permutations_groups: List[range], u_out: torch.Tensor) -> torch.Tensor:
+        """ Returns permutations of output presets, given permutations groups previously computed (from target presets
+        u_in). """
+        # Duplicate each output preset the appropriate number of times, WITHOUT BREAKING COMPUTATIONAL PATH
+        # Build a list of expanded tensors, stack them together
+        u_out_expanded = [u_out[i:i + 1, :].expand(len(r), -1) for i, r in enumerate(permutations_groups)]
+        return torch.vstack(u_out_expanded)
+
+    def get_symmetrical_learnable_presets(self, u_out: torch.Tensor, u_in: torch.Tensor) \
+            -> (List[range], torch.Tensor, torch.Tensor):
+        """ Computes all symmetric presets for each learnable preset from the u_in input tensor.
+        Each preset from u_out will be duplicated the appropriate number of times such that u_out_with_duplicates
+        contains the same number of presets as u_in_with_symmetries does.
+
+        :returns: permutations_groups, u_out_with_duplicates, u_in_with_symmetries
+        """
+        if self._synth == _Synth.DEXED:
+            permutations_groups, u_in_w_s = self.get_u_in_permutations(u_in)
+            return permutations_groups, self.get_u_out_permutations(permutations_groups, u_out), u_in_w_s
+        else:
+            warnings.warn("Presets permutations for synth '{}' are not implemented.".format(self._synth))
+            return [range(i, i+1) for i in range(u_in.shape[0])], u_out, u_in
+
 
 
 class PresetsParams:
@@ -312,7 +450,7 @@ class PresetsParams:
         self._learnable_params_idx = dataset.learnable_params_idx
         self._default_constrained_values = dataset.params_default_values
         self._params_cardinality = [dataset.get_preset_param_cardinality(idx)
-                                    for idx in range(dataset.total_nb_params)]
+                                    for idx in range(dataset.total_nb_vst_params)]
         # Size checks - 2D Tensors only
         if self._full_presets is not None:
             assert len(self._full_presets.size()) == 2
@@ -390,10 +528,6 @@ class PresetsParams:
         else:
             return self._learnable_presets
 
-    # TODO learnable representation, numerical-only (no category)
-
-    # TODO quantize learned representation
-
 
 
 class DexedPresetsParams(PresetsParams):
@@ -411,7 +545,7 @@ class DexedPresetsParams(PresetsParams):
     def get_full(self, apply_constraints=True) -> torch.Tensor:
         full_presets = super().get_full(apply_constraints)
         if not self.is_from_full_presets and self._limited_algos:
-            assert False  # FIXME this whole limited-algorithms section breaks non-limited algorithms
+            raise AssertionError()  # FIXME this whole limited-algorithms section breaks non-limited algorithms
             if self.idx_helper.vst_param_learnable_model[4] == 'num':  # algo learnable: rescale needed (to 32 values)
                 # Direct tensor-column modification
                 algo_col = full_presets[:, 4]  # Vector (len = batch size)
@@ -434,7 +568,7 @@ class DexedPresetsParams(PresetsParams):
         learnable_presets = super().get_learnable()
         # Algo rescale not needed if this class was built from inferred presets
         if self.is_from_full_presets and self._limited_algos:
-            assert False  # FIXME this whole limited-algorithms section breaks non-limited algorithms
+            raise AssertionError()  # FIXME this whole limited-algorithms section breaks non-limited algorithms
             # TODO deactivate the "algo rescale" feature? it should be rewritten from scratch or discarded
             # Numerical algo representation is a bad idea anyways
             if self._algo_learnable_index is not None:
