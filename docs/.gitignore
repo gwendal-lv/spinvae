@@ -4,4 +4,4 @@ _site
 .jekyll-metadata
 vendor
 
-preset-gen-vae_gh_pages.code-workspace
+*.code-workspace
