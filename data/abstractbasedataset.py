@@ -25,8 +25,6 @@ import numpy as np
 
 import utils.torchspectrograms
 
-from data.preset import PresetsParams, PresetIndexesHelper
-
 # See https://github.com/pytorch/audio/issues/903
 # torchaudio.set_audio_backend("sox_io")
 

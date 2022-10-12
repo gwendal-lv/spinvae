@@ -11,7 +11,7 @@ from utils import config_confidential
 
 class InterpEvalConfig:
     def __init__(self):
-        self.device = 'cpu'  # FIXME does not seem to do anything... a model loaded on GPU stays on GPU
+        self.device = 'cpu'  # even 'cpu' uses some CUDA memory because we load a model that was on GPU
         self.dataset_type = 'test'  # 'validation'
         self.num_steps = 9
         self.use_reduced_dataset = False  # fast debugging (set to False during actual eval)

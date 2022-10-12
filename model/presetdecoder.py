@@ -9,7 +9,7 @@ from torch.nn import functional as F
 
 from data.preset2d import Preset2dHelper
 from model.presetmodel import parse_preset_model_architecture, get_act, PresetEmbedding, get_transformer_act
-from synth.dexed import Dexed
+from synth.dexedbase import DexedCharacteristics
 from utils.probability import GaussianUnitVariance, DiscretizedLogisticMixture, SoftmaxNumerical
 
 
@@ -141,7 +141,7 @@ class PresetDecoder(nn.Module):
         if self.preset_helper.synth_name.lower() == "dexed":
             with torch.no_grad():
                 # get index of volume parameters
-                vst_output_level_indices = Dexed.get_op_output_level_indices()
+                vst_output_level_indices = DexedCharacteristics.get_op_output_level_indices()
                 # retrieve the matrix of numerical values, get a bool matrix of zero-volume operators
                 target_output_level_rows = [self.preset_helper._vst_idx_to_matrix_row[idx]
                                             for idx in vst_output_level_indices]

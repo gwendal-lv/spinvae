@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from synth.dexed import Dexed
+from synth.dexedbase import DexedCharacteristics
 from .abstractbasedataset import PresetDataset
 
 
@@ -143,7 +143,7 @@ class Preset2dHelper:
                 [torch.zeros((self.n_learnable_categorical_params, ), dtype=torch.bool) for _ in range(6)]
             self.dexed_operators_numerical_bool_masks = \
                 [torch.zeros((self.n_learnable_numerical_params, ), dtype=torch.bool) for _ in range(6)]
-            operators_vst_indices_groups = Dexed.get_operators_params_indexes_groups()
+            operators_vst_indices_groups = DexedCharacteristics.get_operators_params_indexes_groups()
             operators_matrix_rows_groups = \
                 [self._vst_idx_to_matrix_row[vst_range.start:vst_range.stop]
                  for vst_range in operators_vst_indices_groups]

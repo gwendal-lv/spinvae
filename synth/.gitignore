@@ -11,3 +11,5 @@ diva_presets/*
 # temp backup sqlite DBs
 *.backup
 
+librenderman.so.dylib
+librenderman.so
