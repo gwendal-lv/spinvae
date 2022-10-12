@@ -21,9 +21,6 @@ from data.abstractbasedataset import AudioDataset, PresetDataset
 from data.preset import PresetIndexesHelper
 from data.preset2d import Preset2d, Preset2dHelper
 
-import model.regression
-import model.loss
-
 import utils.stat
 
 
@@ -593,7 +590,9 @@ def plot_synth_preset_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper:
     # init
     warnings.warn("DEPRECATED - does not supports preset 2D", category=DeprecationWarning)
     if apply_softmax_to_v_out:
-        act = model.regression.PresetActivation(idx_helper, cat_hardtanh_activation=False, cat_softmax_activation=True)
+        raise NotImplementedError("'apply_softmax_to_v_out' as using the deprecated preset activation.... "
+                                  "but activations are now handled by probability distributions themselves")
+        act = None  # FIXME
         param_batch_errors = act(v_out) - v_in
     else:
         param_batch_errors = v_out - v_in
@@ -651,9 +650,11 @@ def plot_synth_preset_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper:
 
 
 def plot_synth_preset_vst_error(v_out: torch.Tensor, v_in: torch.Tensor, idx_helper: PresetIndexesHelper):
-    eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
-        idx_helper, reduce_num_loss=False,reduce_accuracy=False, percentage_accuracy_output=False,
-        compute_symmetrical_presets=True)
+    raise NotImplementedError("Deprecated, does not supports Preset2D")
+    #eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(
+    #    idx_helper, reduce_num_loss=False,reduce_accuracy=False, percentage_accuracy_output=False,
+    #    compute_symmetrical_presets=True)
+    eval_criterion = None
     accuracies, num_losses = eval_criterion(v_out, v_in)
     acc_vst_indices, num_vst_indices = list(accuracies.keys()), list(num_losses.keys())
     all_learned_vst_indices = acc_vst_indices + num_vst_indices

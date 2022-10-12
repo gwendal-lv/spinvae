@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 
 from data.dataset import DexedDataset
-import model.loss
 
 
 class TestDexedDatasetLoader:
@@ -131,10 +130,11 @@ class LossTest(unittest.TestCase):
         total_cat_params = len(idx_helper.cat_idx_learned_as_cat) + len(idx_helper.cat_idx_learned_as_num)
         total_num_params = len(idx_helper.num_idx_learned_as_cat) + len(idx_helper.num_idx_learned_as_num)
         print("\nLearned params: {} VST-numerical, {} VST-categorical".format(total_num_params, total_cat_params))
-        eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(idx_helper, numerical_loss_type='L1',
-                                                                      compute_symmetrical_presets=True)
-        backprop_criterion = model.loss.SynthParamsLoss(idx_helper, normalize_losses=True, cat_softmax=True,
-                                                        compute_symmetrical_presets=True)
+        raise NotImplementedError("This test is deprecated, was based on obsolete synth param losses")
+        #eval_criterion = model.loss.AccuracyAndQuantizedNumericalLoss(idx_helper, numerical_loss_type='L1',
+        #                                                              compute_symmetrical_presets=True)
+        #backprop_criterion = model.loss.SynthParamsLoss(idx_helper, normalize_losses=True, cat_softmax=True,
+        #                                                compute_symmetrical_presets=True)
         # TODO backprop loss
         # we test presets with all available algorithms
         preset_UIDs_and_algo = get_presets_for_all_algorithms(ds)

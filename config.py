@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'softmax_fastdebug'
+        self.run_name = 'dummy_dev_test'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -45,10 +45,10 @@ class ModelConfig:
         self.comet_tags = []
 
         # ---------------------------------------- General Architecture --------------------------------------------
-        # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-        # 'sprescnn': Spectral Res-CNN (based on 1x1->3x3->1x1 res conv blocks)
-        # 'specladder': ladder CNNs (cells, outputs from different levels) for spectrogram reconstruction
-        #       also contains num of blocks and num of conv layers per block (e.g. 8x1)
+        # See model/ladderencoder.py to view available architecture(s).
+        # Decoder architecture will be as symmetric as possible.
+        #    'specladder': ladder CNNs (cells, outputs from different levels) for spectrogram reconstruction
+        #                   also contains num of blocks and num of conv layers per block (e.g. 8x1)
         # Arch args:
         #    '_adain' some BN layers are replaced by AdaIN (fed with a style vector w, dim_w < dim_z)
         #    '_att' self-attention in deep conv layers

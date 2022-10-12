@@ -1,7 +1,8 @@
 """
 DEPRECATED - these classes extended preset into bigger 1D representations, which led to many small
 operations on tensor (very slow) and is harder to use.
-However we don't throw this code away yet, in case we go back to 1D normalizing flows in the future...
+However we don't throw this code away yet, because it implements **permutations** of Dexed synth params
+(symmetrical presets which sound exactly the same)
 
 See preset2d.py
 

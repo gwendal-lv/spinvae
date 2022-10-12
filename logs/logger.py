@@ -22,7 +22,6 @@ import humanize
 import config
 from data.abstractbasedataset import AudioDataset
 import model.base
-import model.VAE
 import utils
 import utils.figures
 import utils.stat
