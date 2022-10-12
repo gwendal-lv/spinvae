@@ -1,10 +1,11 @@
-
 # Confidential files - not to be published
 utils/config_confidential.py
 
 # Python/IPython
 *.pyc
 *.ipynb_checkpoints
+# PyCharm project files
+.idea/*
 
 # Saved models, config, and Tensorboard run logs
 saved/*
