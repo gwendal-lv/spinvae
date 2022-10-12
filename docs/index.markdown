@@ -11,9 +11,14 @@ classes: wide
 
 IEEE ICASSP 2023 submission (under review) supplemental material
 
+[View source code on Github](https://github.com/gwendal-lv/spinvae)
+
 ---
 
+For the best audio listening experience, please use Chrome (preferred) or Safari.
+
 # Interpolation between presets
+
 
 <!--
 TODO describe methods
@@ -466,6 +471,146 @@ Then, a linear interpolation is performed on latent vectors TODO describe transf
             <td>
                 <audio controls="" class=small_control><source src="assets/interpolation/00018reflinear_audio_step08.mp3" type="audio/mp3" /></audio><br/>
                 <img src="assets/interpolation/00018reflinear_spectrogram_step08.png"/>
+            </td>
+        </tr>
+    </table>
+</div>
+
+
+# Extrapolation
+
+### SPINVAE extrapolation example 1
+
+<div class="figure">
+    <table>
+        <tr>
+            <th colspan="2" class=centered_th><--- Extrapolation</th>
+            <th>Preset</th>
+            <th></th>
+            <th></th>
+            <th></th>
+            <th></th>
+            <th>Preset</th>
+            <th colspan="2" class=centered_th>Extrapolation ---></th>
+        </tr>
+        <tr>
+            <td></td>
+            <td></td>
+            <td>"PnoCk Ep9"</td>
+            <td colspan="4" class=centered_th><---------- Interpolation ----------></td>
+            <td>"SYNTH 7"</td>
+            <td></td>
+            <td></td>
+        </tr>
+        <tr> <!-- SPINVAE interp -->
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_extrap_m2.mp3" type="audio/mp3" /></audio><br />
+                <img src="assets/extrapolation/080100to074548_spectrogram_extrap_m2.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_extrap_m1.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_extrap_m1.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_interp_00.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_interp_00.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_interp_01.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_interp_01.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_interp_02.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_interp_02.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_interp_03.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_interp_03.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_interp_04.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_interp_04.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_interp_05.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_interp_05.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_extrap_p1.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_extrap_p1.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/080100to074548_audio_extrap_p2.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/080100to074548_spectrogram_extrap_p2.png"/>
+            </td>
+        </tr>
+    </table>
+</div>
+
+
+### SPINVAE extrapolation example 2
+
+<div class="figure">
+    <table>
+        <tr>
+            <th colspan="2" class=centered_th><--- Extrapolation</th>
+            <th>Preset</th>
+            <th></th>
+            <th></th>
+            <th></th>
+            <th></th>
+            <th>Preset</th>
+            <th colspan="2" class=centered_th>Extrapolation ---></th>
+        </tr>
+        <tr>
+            <td></td>
+            <td></td>
+            <td>"BOUM"</td>
+            <td colspan="4" class=centered_th><---------- Interpolation ----------></td>
+            <td>"fuzzerro"</td>
+            <td></td>
+            <td></td>
+        </tr>
+        <tr> <!-- SPINVAE interp -->
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_extrap_m2.mp3" type="audio/mp3" /></audio><br />
+                <img src="assets/extrapolation/199874to016527_spectrogram_extrap_m2.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_extrap_m1.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_extrap_m1.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_interp_00.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_interp_00.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_interp_01.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_interp_01.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_interp_02.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_interp_02.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_interp_03.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_interp_03.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_interp_04.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_interp_04.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_interp_05.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_interp_05.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_extrap_p1.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_extrap_p1.png"/>
+            </td>
+            <td>
+                <audio controls="" class=small_control><source src="assets/extrapolation/199874to016527_audio_extrap_p2.mp3" type="audio/mp3" /></audio><br/>
+                <img src="assets/extrapolation/199874to016527_spectrogram_extrap_p2.png"/>
             </td>
         </tr>
     </table>

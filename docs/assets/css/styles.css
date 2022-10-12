@@ -2,3 +2,7 @@
 .small_control {
     width: 100px
 }
+
+.centered_th {
+    text-align: center;
+}
