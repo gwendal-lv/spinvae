@@ -99,7 +99,7 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     # ========== Load weights from pre-trained models? ==========
     if not pretrain_audio:
         if model_config.pretrained_VAE_checkpoint is not None:
-            ae_model.load_checkpoints(model_config.pretrained_VAE_checkpoint)
+            ae_model.load_checkpoints(model_config.pretrained_VAE_checkpoint)  # FIXME specify device for map_location
         else:
             if train_config.verbosity >= 1:
                 print("Training starts from scratch (model_config.pretrained_VAE_checkpoint is None).")

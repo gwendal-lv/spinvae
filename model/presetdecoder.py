@@ -642,12 +642,13 @@ class MultiCardinalCategories(nn.Module):
                 nn.Dropout(dropout_p),
                 nn.Conv1d(hidden_size, card, 1, bias=False)
             )
-            # Compute some "merged class counts" or "weights". We don't instantiate a CE loss because we don't know
-            # the device yet (and Pytorch's CE class is a basic wrapper that calls F.cross_entropy)
-            class_counts = self.preset_helper.categorical_groups_class_samples_counts[card] + 10  # 10 is an "epsilon"
-            weights = 1.0 - (class_counts / class_counts.sum())
-            # average weight will be 1.0
-            self.cross_entropy_weights[card] = torch.tensor(weights / weights.mean(), dtype=torch.float)
+            if self.use_ce_weights:
+                # Compute some "merged class counts" or "weights". We don't instantiate a CE loss because we don't know
+                # the device yet (and Pytorch's CE class is a basic wrapper that calls F.cross_entropy)
+                class_counts = self.preset_helper.categorical_groups_class_samples_counts[card] + 10  # 10 is an "epsilon"
+                weights = 1.0 - (class_counts / class_counts.sum())
+                # average weight will be 1.0
+                self.cross_entropy_weights[card] = torch.tensor(weights / weights.mean(), dtype=torch.float)
 
         # This dict allows nn parameters to be registered by PyTorch
         self._mods_dict = nn.ModuleDict(

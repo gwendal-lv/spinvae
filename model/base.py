@@ -240,10 +240,10 @@ class TrainableMultiGroupModel(nn.Module):
             print("[RunLogger] Saved checkpoint (models, optimizers, schedulers) to {}"
                   .format(model_dir.joinpath("checkpoint.tar")))
 
-    def load_checkpoints(self, checkpoints_path: pathlib.Path, reload_opt_sched=False):
+    def load_checkpoints(self, checkpoints_path: pathlib.Path, reload_opt_sched=False, map_location=None):
         """ Loads weights from pre-trained submodels (dicts corresponding to non-pretrained sub-models are set
         to None values). """
-        checkpoint_dict = torch.load(checkpoints_path)
+        checkpoint_dict = torch.load(checkpoints_path, map_location=map_location)
         for k, submodel_checkpoint in checkpoint_dict.items():
             assert k in self.param_group_names  # e.g. 'audio', 'latent' or 'preset'
             if submodel_checkpoint is not None and submodel_checkpoint['model_state_dict'] is not None:
