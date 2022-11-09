@@ -103,9 +103,31 @@ class InterpBase(ABC):
                 print("[{}] Skip audio render - will compute interpolation metrics only".format(type(self).__name__))
         self.compute_and_save_interpolation_metrics()
 
+    def on_render_audio_begins(self):
+        self.create_storage_directory()
+        self._audio_render_t_start = datetime.now()
+
     @abstractmethod
     def render_audio(self):
         pass
+
+    def on_render_audio_minibatch_ends(self, batch_idx: int, num_batches: int):
+        """
+        :return: forced_stop (usually False, may be True during debug to evaluate quickly)
+        """
+        if self.verbose:
+            print("[{}] Minibatch {}/{} rendered to audio files ({:.0f} %)"
+                  .format(type(self).__name__, batch_idx+1, num_batches, 100.0 * (batch_idx+1) / num_batches))
+        if self.use_reduced_dataset and batch_idx >= 0:  # during debug: process a few mini-batch(es) only
+            warnings.warn("self.use_reduced_dataset is True; finished rendering audio files")
+            return True
+        return False
+
+    def on_render_audio_ends(self, num_interp_sequences: int):
+        if self.verbose:
+            delta_t = (datetime.now() - self._audio_render_t_start).total_seconds()
+            print("[{}] Finished rendering audio for {} interpolations in {:.1f}min total ({:.1f}s / interpolation)"
+                  .format(type(self).__name__, num_interp_sequences, delta_t / 60.0, delta_t / num_interp_sequences))
 
     def get_stored_postproc_sequences_descriptors(self) -> List[pd.DataFrame]:
         """ Returns the dataframes of sequences descriptors (audio features) previously computed for this model. """
@@ -136,7 +158,7 @@ class InterpBase(ABC):
     def compute_store_timbre_toolbox_features(self):
         _timbre_toolbox_path = '~/Documents/MATLAB/timbretoolbox'
         timbre_proc = InterpolationTimbreToolbox(
-            _timbre_toolbox_path, self.storage_path, num_matlab_proc=12, remove_matlab_csv_after_usage=True)
+            _timbre_toolbox_path, self.storage_path, num_matlab_proc=8, remove_matlab_csv_after_usage=True)
         timbre_proc.run()
         timbre_proc.post_process_features(self.storage_path)
 
@@ -261,8 +283,7 @@ class NaivePresetInterpolation(InterpBase):
 
     def render_audio(self):
         """ Generates interpolated sounds using the 'naïve' linear interpolation between VST preset parameters. """
-        self.create_storage_directory()
-        t_start = datetime.now()
+        self.on_render_audio_begins()
 
         current_sequence_index = 0
         # Retrieve all latent vectors that will be used for interpolation
@@ -271,8 +292,6 @@ class NaivePresetInterpolation(InterpBase):
             end_sequence_with_next_item = False  # If True, the next item is the 2nd (last) of an InterpSequence
             v_in, uid = minibatch[1], minibatch[2]
             for i in range(v_in.shape[0]):
-                if self.verbose:
-                    print("Processing item {}".format(current_sequence_index*2 + (i%2)))
                 if not end_sequence_with_next_item:
                     end_sequence_with_next_item = True
                 else:
@@ -294,12 +313,10 @@ class NaivePresetInterpolation(InterpBase):
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
-            if self.use_reduced_dataset and batch_idx >= 1:  # during debug: process 2 mini-batches only
+            forced_stop = self.on_render_audio_minibatch_ends(batch_idx, len(self.dataloader))
+            if forced_stop:
                 break
-        if self.verbose:
-            delta_t = (datetime.now() - t_start).total_seconds()
-            print("[{}] Finished rendering audio for interpolations in {:.1f}min "
-                  .format(type(self).__name__, delta_t / 60.0))
+        self.on_render_audio_ends(current_sequence_index)
 
     def get_interpolated_presets(self, u: np.ndarray, start_end_presets: np.ndarray):
         interp_f = scipy.interpolate.interp1d(
@@ -356,8 +373,7 @@ class ModelBasedInterpolation(InterpBase):
         """ Performs an interpolation over the whole given dataset (usually validation or test), using pairs
         of items from the dataloader. Dataloader should be deterministic. Total number of interpolations computed:
         len(dataloder) // 2. """
-        self.create_storage_directory()
-        t_start = datetime.now()
+        self.on_render_audio_begins()
         self.ae_model = self.ae_model.to(self.device)
 
         # to store all latent-specific stats (each sequence is written to SSD before computing the next one)
@@ -384,8 +400,6 @@ class ModelBasedInterpolation(InterpBase):
             N = x_in.shape[0]
             for i in range(N):
                 if not end_sequence_with_next_item:
-                    if self.verbose:
-                        print("Item {} (mini-batch {}/{})".format(i + batch_idx * N, batch_idx+1, len(self.dataloader)))
                     end_sequence_with_next_item = True
                 else:
                     # It's easier to compute interpolations one-by-one (all data might not fit into RAM)
@@ -408,7 +422,8 @@ class ModelBasedInterpolation(InterpBase):
 
                     current_sequence_index += 1
                     end_sequence_with_next_item = False
-            if self.use_reduced_dataset and batch_idx >= 1:  # during debug: process 2 mini-batches only
+            forced_stop = self.on_render_audio_minibatch_ends(batch_idx, len(self.dataloader))
+            if forced_stop:
                 break
 
         z_refinement_results['z_first_guess'] = torch.vstack(z_ae).detach().clone().cpu().numpy()
@@ -416,11 +431,7 @@ class ModelBasedInterpolation(InterpBase):
         z_refinement_results['z_estimated'] = all_z_endpoints
         with open(self.storage_path.joinpath('z_refinement_results.pkl'), 'wb') as f:
             pickle.dump(z_refinement_results, f)
-        if self.verbose:
-            delta_t = (datetime.now() - t_start).total_seconds()
-            print("[{}] Finished rendering audio for {} interpolations in {:.1f}min total ({:.1f}s / interpolation)"
-                  .format(type(self).__name__, all_z_endpoints.shape[0] // 2, delta_t / 60.0,
-                          delta_t / (all_z_endpoints.shape[0] // 2)))
+        self.on_render_audio_ends(current_sequence_index)
 
     @abstractmethod
     def compute_latent_vector(self, x_in, v_in, uid, notes) \

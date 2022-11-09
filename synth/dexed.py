@@ -17,18 +17,18 @@ from typing import Iterable, List, Dict
 import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime
+import pathlib
 
 import librosa
 import numpy as np
-from scipy.io import wavfile
 import sqlite3
 import io
 import pandas as pd
 
-import pathlib
-
 import synth.dexedbase
 import librenderman as rm  # A symbolic link to the actual librenderman.so must be found in the current folder
+
+import utils.text
 
 
 # Pickled numpy arrays storage in sqlite3 DB
@@ -378,7 +378,8 @@ class Dexed(synth.dexedbase.DexedCharacteristics):
                  plugin_path="/home/gwendal/Jupyter/AudioPlugins/Dexed.so",
                  midi_note_duration_s=3.0, render_duration_s=4.0,
                  buffer_size=512, fft_size=512,
-                 fadeout_duration_s=0.0,  # Default: disabled
+                 fadeout_duration_s=0.0,  # Default: disabled,
+                 filter_plugin_loading_errors=True,
                  ):
         super().__init__()
         self.fadeout_duration_s = fadeout_duration_s  # To reduce STFT discontinuities with long-release presets
@@ -392,7 +393,8 @@ class Dexed(synth.dexedbase.DexedCharacteristics):
         self.fft_size = fft_size  # FFT not used
 
         self.engine = rm.RenderEngine(self.render_Fs, self.buffer_size, self.fft_size)
-        self.engine.load_plugin(self.plugin_path)
+        with utils.text.hidden_prints(filter_stderr=True) if filter_plugin_loading_errors else None:
+            self.engine.load_plugin(self.plugin_path)  # filter the "No protocol specified" double error msg
 
         # A generator preset is a list of (int, float) tuples.
         self.preset_gen = rm.PatchGenerator(self.engine)  # 'RenderMan' generator
