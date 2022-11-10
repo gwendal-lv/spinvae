@@ -28,7 +28,8 @@ import utils.math
 
 class InterpBase(ABC):
     def __init__(self, num_steps=7, u_curve='linear', verbose=True,
-                 reference_storage_path: Optional[pathlib.Path] = None):
+                 reference_storage_path: Optional[pathlib.Path] = None,
+                 verbose_postproc=True):
         """
         Base attributes and methods of any interpolation engine.
 
@@ -38,6 +39,7 @@ class InterpBase(ABC):
         self.num_steps = num_steps
         self.u_curve = u_curve
         self.verbose = verbose
+        self.verbose_postproc = verbose_postproc
         self.use_reduced_dataset = False  # faster debugging
         self._reference_storage_path = reference_storage_path
 
@@ -158,7 +160,9 @@ class InterpBase(ABC):
     def compute_store_timbre_toolbox_features(self):
         _timbre_toolbox_path = '~/Documents/MATLAB/timbretoolbox'
         timbre_proc = InterpolationTimbreToolbox(
-            _timbre_toolbox_path, self.storage_path, num_matlab_proc=8, remove_matlab_csv_after_usage=True)
+            _timbre_toolbox_path, self.storage_path, num_matlab_proc=8, remove_matlab_csv_after_usage=True,
+            verbose=self.verbose_postproc
+        )
         timbre_proc.run()
         timbre_proc.post_process_features(self.storage_path)
 
@@ -270,8 +274,9 @@ class InterpBase(ABC):
 
 class NaivePresetInterpolation(InterpBase):
     def __init__(self, dataset, dataset_type, dataloader, storage_path: Union[str, pathlib.Path],
-                 num_steps=7, u_curve='linear', verbose=True, reference_storage_path: Optional[pathlib.Path] = None):
-        super().__init__(num_steps, u_curve, verbose, reference_storage_path)
+                 num_steps=7, u_curve='linear', verbose=True, verbose_postproc=True,
+                 reference_storage_path: Optional[pathlib.Path] = None):
+        super().__init__(num_steps, u_curve, verbose, reference_storage_path, verbose_postproc=verbose_postproc)
         self.dataset = dataset
         self.dataset_type = dataset_type
         self.dataloader = dataloader
@@ -336,7 +341,8 @@ class ModelBasedInterpolation(InterpBase):
     def __init__(
             self, model_loader: Optional[evaluation.load.ModelLoader] = None, device='cpu', num_steps=7,
             u_curve='linear', latent_interp_kind='linear', verbose=True,
-            storage_path: Optional[pathlib.Path] = None, reference_storage_path: Optional[pathlib.Path] = None
+            storage_path: Optional[pathlib.Path] = None, reference_storage_path: Optional[pathlib.Path] = None,
+            verbose_postproc=True
     ):
         """
         A class for performing interpolations using a neural network model whose inputs are latent vectors.
@@ -345,7 +351,7 @@ class ModelBasedInterpolation(InterpBase):
          dataset) will be ignored.
         """
         super().__init__(num_steps=num_steps, verbose=verbose, u_curve=u_curve,
-                         reference_storage_path=reference_storage_path)
+                         reference_storage_path=reference_storage_path, verbose_postproc=verbose_postproc)
         self.latent_interp_kind = latent_interp_kind
         self._storage_path = storage_path
         if model_loader is not None:

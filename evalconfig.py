@@ -12,10 +12,13 @@ from utils import config_confidential
 class InterpEvalConfig:
     def __init__(self):
         self.device = 'cpu'  # even 'cpu' uses some CUDA memory because we load a model that was on GPU
-        self.dataset_type = 'test'  # 'validation'
+        self.dataset_type = 'validation'
         self.num_steps = 9
-        self.use_reduced_dataset = False  # fast debugging (set to False during actual eval)
-        self.force_re_eval_all = False
+        self.verbose = True  # General information about progress, CPU time / item, ...
+        self.verbose_postproc = False  # Detailed (Matlab) post-processing outputs
+
+        self.use_reduced_dataset = True  # fast debugging (set to False during actual eval)
+        self.force_re_eval_all = True
         self.skip_audio_render = False  # don't re-render audio, recompute interpolation features/metrics only
 
         # Audio features and interpolation metrics

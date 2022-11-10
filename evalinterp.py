@@ -19,7 +19,8 @@ def run(eval_config: InterpEvalConfig):
     if eval_config.reference_model_path.name == 'LinearNaive':
         ref_preset_interpolator = NaivePresetInterpolation(
             model_loader.dataset, model_loader.dataset_type, model_loader.dataloader,
-            eval_config.ref_model_interp_path, num_steps=eval_config.num_steps, u_curve='linear'
+            eval_config.ref_model_interp_path, num_steps=eval_config.num_steps, u_curve='linear',
+            verbose=eval_config.verbose, verbose_postproc=eval_config.verbose_postproc
         )
     else:
         raise NotImplementedError()
@@ -35,7 +36,8 @@ def run(eval_config: InterpEvalConfig):
         preset_interpolator = SynthPresetLatentInterpolation(
             model_loader, storage_path=m_config['interp_storage_path'],
             num_steps=eval_config.num_steps, u_curve=m_config['u_curve'], latent_interp=m_config['latent_interp'],
-            reference_storage_path=eval_config.ref_model_interp_path, refine_level=m_config['refine_level']
+            reference_storage_path=eval_config.ref_model_interp_path, refine_level=m_config['refine_level'],
+            verbose=eval_config.verbose, verbose_postproc=eval_config.verbose_postproc
         )
         preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset
         try:
