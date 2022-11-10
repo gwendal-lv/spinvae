@@ -5,11 +5,10 @@ Functions and classes to easily load models or data for evaluation.
 from pathlib import Path
 import pickle
 
-import torch.cuda
+import torch
 
 import config
 import data.build
-import logs.logger
 import model.hierarchicalvae
 
 
@@ -44,7 +43,8 @@ class ModelLoader:
         self.model_config.dim_z = -1  # Will be set by the hVAE itself
         self.ae_model = model.hierarchicalvae.HierarchicalVAE(
             self.model_config, self.train_config, self.dataset.preset_indexes_helper)
-        self.ae_model.load_checkpoints(self.path_to_model_dir.joinpath("checkpoint.tar"))  # FIXME specify device
+        self.ae_model.load_checkpoints(
+            self.path_to_model_dir.joinpath("checkpoint.tar"), map_location=torch.device(device))
 
         if device == 'cpu':
             torch.cuda.empty_cache()  # Checkpoints were usually GPU tensors (originally)
