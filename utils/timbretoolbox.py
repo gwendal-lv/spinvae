@@ -77,7 +77,7 @@ class TimbreToolboxProcess:
         # FIXME this seems quite useless.... subprocess.run seems to do exactly this
         proc = subprocess.Popen(proc_args, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Retrieve std::cout and std::cerr from Threads (to raise an exception is any Matlab error happens)
+        # Retrieve std::cout and std::cerr from Threads (to raise an exception if any Matlab error happens)
         std_out_queue, std_err_queue = queue.Queue(), queue.Queue()
         self.continue_queue_threads = True
         std_out_thread = threading.Thread(target=self._enqueue_std_output, args=(proc.stdout, std_out_queue))

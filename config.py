@@ -31,7 +31,7 @@ class ModelConfig:
         self.logs_root_dir = config_confidential.logs_root_dir
         self.name = "dev"  # experiment base name
         # experiment run: different hyperparams, optimizer, etc... for a given exp
-        self.run_name = 'dummy_dev_test'
+        self.run_name = 'autoeval_00'
         self.pretrained_VAE_checkpoint = \
             self.logs_root_dir + "/hvae/8x1_freebits0.250__6notes_dimz256/checkpoint.tar"
             #self.logs_root_dir + "/hvae/8x1_freebits0.125__3notes_dimz256/checkpoint.tar"
@@ -165,7 +165,10 @@ class ModelConfig:
 class TrainConfig:
     def __init__(self):
         self.pretrain_audio_only = False  # Should we pre-train the audio+latent parts of the auto-encoder model only?
+        # Interpolation will be evaluated vs. a reference model, which must have been evaluated first
+        self.evaluate_interpolation_after_training = True  # Parallel eval (long, CPU-intensive)
         self.start_datetime = datetime.datetime.now().isoformat()
+
         # 256 is okay for smaller conv structures - reduce to 64 to fit '_big' models into 24GB GPU RAM
         self.minibatch_size = 64  # reduce for big models - also smaller N seems to improve VAE pretraining perfs...
         self.main_cuda_device_idx = 0  # CUDA device for nonparallel operations (losses, ...)
@@ -174,7 +177,7 @@ class TrainConfig:
         self.current_k_fold = 0  # k-folds are not used anymore, but we'll keep the training/validation/test splits
         self.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load the last saved checkpoint
         # Total number of epochs (including previous training epochs).  275 for StepLR regression model training
-        self.n_epochs = 170  # See update_dynamic_config_params().
+        self.n_epochs = 170  # See update_dynamic_config_params()
         # The max ratio between the number of items from each synth/instrument used for each training epoch (e.g. Dexed
         # has more than 30x more instruments than NSynth). All available data will always be used for validation.
         self.pretrain_synths_max_imbalance_ratio = 10.0  # Set to -1 to disable the weighted sampler.
@@ -203,7 +206,7 @@ class TrainConfig:
         self.beta = 5.0e-6  # FIXME With 6 specs, 1.6e-5 corresponds to beta=6
         # Should not be zero with Normalizing Flows or with a multi-layer structure for extracting latent values
         # (risk of a very unstable training)
-        self.beta_start_value = self.beta * 1e-3
+        self.beta_start_value = 1.6e-8
         # Epochs of warmup increase from start_value to beta TODO increase to reduce posterior collapse
         self.beta_warmup_epochs = 50  # Used during both pre-train and fine-tuning
         # VAE Kullback-Leibler divergence weighting during warmup, to try to prevent posterior collapse of some
@@ -304,6 +307,8 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
         model_config.comet_tags.append('pretrain')
         model_config.params_regression_architecture = 'None'
         model_config.preset_ae_method = None
+
+        train_config.evaluate_interpolation_after_training = False
         train_config.lr_warmup_epochs = train_config.lr_warmup_epochs // 2
         train_config.lr_warmup_start_factor *= 2
     else:
@@ -312,7 +317,7 @@ def update_dynamic_config_params(model_config: ModelConfig, train_config: TrainC
 
     # stack_spectrograms must be False for 1-note datasets - security check
     model_config.stack_spectrograms = model_config.stack_spectrograms and (len(model_config.midi_notes) > 1)
-    # Artificially increased data size?
+    # Artificially increased data size? FIXME remove - we'll always stack now
     model_config.increased_dataset_size = (len(model_config.midi_notes) > 1) and not model_config.stack_spectrograms
     model_config.concat_midi_to_z = (len(model_config.midi_notes) > 1) and not model_config.stack_spectrograms
     # Mini-batch size can be smaller for the last mini-batches and/or during evaluation

@@ -19,11 +19,11 @@ import numpy as np
 import mkl
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim
 import torch.profiler
 
 import config
+import evalinterp
 import model.base
 import model.hierarchicalvae
 import logs.logger
@@ -265,6 +265,12 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     except UnboundLocalError:
         pass
     gc.collect()
+
+
+    # ========== Evaluate interpolation performance ==========
+    # Parallel, will use saved checkpoint
+    if train_config.evaluate_interpolation_after_training:
+        evalinterp.eval_single_model("{}/{}".format(model_config.name, model_config.run_name))
 
 
 

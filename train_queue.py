@@ -45,16 +45,13 @@ Please write two lists of dicts, such that:
 model_config_mods, train_config_mods = list(), list()
 
 # E.g:
-for dlm_components in [2, 4]:
-    for beta in [5.0e-7, 1.6e-7, 5.0e-6, 1.6e-6, 5.0e-5, 1.6e-5, 5.0e-4, 1.6e-4]:
-        model_config_mods.append({
-            'name': 'ablation',
-            'run_name': 'dlm{}_beta{:.1e}'.format(dlm_components, beta),
-            'preset_decoder_numerical_distribution': 'logistic_mixt{}'.format(dlm_components)
-        })
-        train_config_mods.append({
-            'beta': beta
-        })
+for dlm_components in [2, 3, 4]:
+    model_config_mods.append({
+        'name': 'dev',
+        'run_name': 'autoeval2_dlm{}_betastart1.6e-8'.format(dlm_components),
+        'preset_decoder_numerical_distribution': 'logistic_mixt{}'.format(dlm_components)
+    })
+    train_config_mods.append({})
 
 
 if __name__ == "__main__":

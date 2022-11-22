@@ -4,7 +4,7 @@ This script is not intended to be run, it only describes parameters.
 """
 import copy
 from pathlib import Path
-from typing import List, Dict, Union, Any
+from typing import List, Dict, Union, Any, Optional
 
 from utils import config_confidential
 
@@ -12,13 +12,13 @@ from utils import config_confidential
 class InterpEvalConfig:
     def __init__(self):
         self.device = 'cpu'  # even 'cpu' uses some CUDA memory because we load a model that was on GPU
-        self.dataset_type = 'validation'
+        self.dataset_type = 'test'
         self.num_steps = 9
         self.verbose = True  # General information about progress, CPU time / item, ...
         self.verbose_postproc = False  # Detailed (Matlab) post-processing outputs
 
-        self.use_reduced_dataset = True  # fast debugging (set to False during actual eval)
-        self.force_re_eval_all = True
+        self.use_reduced_dataset = False  # fast debugging (set to False during actual eval)
+        self.force_re_eval_all = False
         self.skip_audio_render = False  # don't re-render audio, recompute interpolation features/metrics only
 
         # Audio features and interpolation metrics
@@ -32,15 +32,22 @@ class InterpEvalConfig:
         self.logs_root_dir = Path(config_confidential.logs_root_dir)
         # Reference data can be stored anywhere (they don't use a trained NN)
         self.reference_model_path = self.logs_root_dir.parent.joinpath('RefInterp/LinearNaive')
-        self.ref_model_interp_path = self.reference_model_path.joinpath(
-            'interp{}_{}'.format(self.num_steps, self.dataset_type[0:5]))
+        self.ref_model_interp_path: Optional[str] = None
         self.ref_model_force_re_eval = False
 
         # List of models and eval configs for each model
         #    - the config of the first model will be used to load the dataset used by the reference model
         #    - optional fields for any config: 'u_curve': 'linear', 'latent_interp': 'linear'
         self.other_models: List[Dict[str, Any]] = [
-            {'base_model_name': 'TRAINED_MODEL_NAME_IN_LOG_FOLDER'},  # TODO add others in this list
+            {'base_model_name': 'dev/autoeval_dlm2'},  # TODO add others in this list
+            {'base_model_name': 'dev/autoeval_dlm2_betastart1.6e-8'},
+            {'base_model_name': 'dev/autoeval2_dlm2_betastart1.6e-8'},
+            {'base_model_name': 'dev/autoeval_dlm3'},
+            {'base_model_name': 'dev/autoeval_dlm3_betastart1.6e-8'},
+            {'base_model_name': 'dev/autoeval2_dlm3_betastart1.6e-8'},
+            {'base_model_name': 'dev/autoeval_dlm4'},
+            {'base_model_name': 'dev/autoeval_dlm4_betastart1.6e-8'},
+            {'base_model_name': 'dev/autoeval2_dlm4_betastart1.6e-8'},
         ]
         # Auto duplicate everything to try arcsin u curves
         if False:
@@ -80,6 +87,8 @@ class InterpEvalConfig:
 
     def build_models_storage_path(self):
         """ auto build eval data paths from the model name and interp-hyperparams """
+        self.ref_model_interp_path = self.reference_model_path.joinpath(
+            'interp{}_{}'.format(self.num_steps, self.dataset_type[0:5]))
         for m_config in self.other_models:
             m_config['base_model_path'] = self.logs_root_dir.joinpath(m_config['base_model_name'])
             interp_name = 'interp{}'.format(self.num_steps)

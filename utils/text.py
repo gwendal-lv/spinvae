@@ -1,6 +1,6 @@
 import os
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 
 
 # from https://stackoverflow.com/questions/5081657/how-do-i-prevent-a-c-shared-library-to-print-on-stdout-in-python
@@ -42,3 +42,29 @@ def hidden_prints(to=os.devnull, filter_stderr=False):
         finally:
             # restore stdout. buffering and flags such as CLOEXEC may be different
             _redirect_std_stream(to=old_stdout, filter_stderr=filter_stderr)
+
+
+# from https://stackoverflow.com/questions/71024919/how-to-capture-prints-in-real-time-from-function
+class StdOutPrefixAdder:
+
+    def __init__(self, prefix: str):
+        self.buf = ""
+        self.prefix = prefix
+        self.real_stdout = sys.stdout
+
+    def write(self, buf):
+        # emit on each newline
+        while buf:
+            try:
+                newline_index = buf.index("\n")
+            except ValueError:
+                # no newline, buffer for next call
+                self.buf += buf
+                break
+            # get data to next newline and combine with any buffered data
+            data = self.buf + buf[:newline_index + 1]
+            self.buf = ""
+            buf = buf[newline_index + 1:]
+            # perform complex calculations... or just print with a note.
+            self.real_stdout.write(self.prefix + data)
+

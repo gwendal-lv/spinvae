@@ -60,7 +60,7 @@ class ModelLoader:
 
 if __name__ == "__main__":
     _model_path = Path(__file__).resolve().parent.parent
-    _model_path = _model_path.joinpath('../Data_SSD/Logs/preset-vae/dev/presetAE_tfm_ff_00')
+    _model_path = _model_path.joinpath('../Data_SSD/Logs/preset-vae/pAE/combin_CEsmooth0.00_beta1.6e-04')
     loader = ModelLoader(_model_path)
     print("OK")
 

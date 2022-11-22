@@ -78,6 +78,10 @@ class InterpBase(ABC):
             print("[{}] Results will be stored in '{}'".format(type(self).__name__, self.storage_path))
 
     @staticmethod
+    def contains_eval_data(storage_path):
+        return os.path.exists(storage_path)
+
+    @staticmethod
     def get_sequence_name(start_UID: int, end_UID: int, dataset: PresetDataset):
         start_name = dataset.get_name_from_preset_UID(start_UID)
         end_name = dataset.get_name_from_preset_UID(end_UID)
