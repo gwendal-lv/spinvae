@@ -24,9 +24,6 @@ class PresetEncoder(nn.Module):
 
         self.tfm, self.lstm = None, None
         if self.arch['name'] in ['tfm', 'lstm']:
-            max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None
-            self.embedding = PresetEmbedding(hidden_size, preset_helper, max_norm)
-
             if self.arch['name'] == 'tfm':
                 # The Transformer encoder is much simpler than the decoder: pure parallel, feedforward, single pass
                 n_head = 4
@@ -49,6 +46,10 @@ class PresetEncoder(nn.Module):
                     get_act(self.arch_args),
                     nn.Linear(4 * self.hidden_size, 2 * self.hidden_size),
                 )
+
+            # Declared after the transformer - allows perfect reproducibility of results from oct. 2022
+            max_norm = np.sqrt(self.hidden_size) if self.arch_args['embednorm'] else None
+            self.embedding = PresetEmbedding(hidden_size, preset_helper, max_norm)
 
         elif self.arch['name'] == 'mlp':
             self.mlp = nn.Sequential()
