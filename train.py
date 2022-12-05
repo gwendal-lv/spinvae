@@ -7,10 +7,11 @@ with small modifications to the config (enqueued train runs).
 
 See train_queue.py for enqueued training runs
 """
-import copy
 
 import comet_ml  # Required first for auto-logging
 
+import copy
+import os
 import gc
 from pathlib import Path
 from typing import Optional, Dict, List, Union
@@ -21,6 +22,7 @@ import torch
 import torch.nn as nn
 import torch.optim
 import torch.profiler
+import torch.backends.cudnn
 
 import config
 import evalinterp
@@ -44,7 +46,17 @@ def train_model(model_config: config.ModelConfig, train_config: config.TrainConf
     Some attributes from config.py might be dynamically changed by train_queue.py (or this script,
     after loading the datasets) - so they can be different from what's currently written in config.py. """
 
+    # https://pytorch.org/docs/stable/notes/randomness.html
     torch.manual_seed(0)
+    # deterministically selects a (possibly suboptimal) convolution algorithm - negligible perf loss on an RTX 3090
+    torch.backends.cudnn.benchmark = False
+    # Deterministic algorithms also require to set an env var w/ CUDA version >= 10.2
+    # https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
+    # os.environ['CUBLAS_WORKSPACE_CONFIG'] = ":4096:8"
+    # The next line breaks some masked assignations w/ pytorch 1.10... pytorch bug? solved in future versions?
+    #      --> reactivate after pytorch has been updated >= 1.13
+    # torch.use_deterministic_algorithms(True)
+
 
     # ========== Logger init (required for comet.ml console logs, load from checkpoint, ...) and Config check ==========
     root_path = Path(__file__).resolve().parent
