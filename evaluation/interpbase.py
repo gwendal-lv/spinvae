@@ -1,6 +1,7 @@
 """
 Base class to compute metrics about an abstract interpolation method
 """
+import json
 import os.path
 import pathlib
 import pickle
@@ -29,7 +30,8 @@ import utils.math
 class InterpBase(ABC):
     def __init__(self, num_steps=7, u_curve='linear', verbose=True,
                  reference_storage_path: Optional[pathlib.Path] = None,
-                 verbose_postproc=True):
+                 verbose_postproc=True,
+                 **kwargs):
         """
         Base attributes and methods of any interpolation engine.
 
@@ -40,8 +42,19 @@ class InterpBase(ABC):
         self.u_curve = u_curve
         self.verbose = verbose
         self.verbose_postproc = verbose_postproc
-        self.use_reduced_dataset = False  # faster debugging
         self._reference_storage_path = reference_storage_path
+        # keyword arguments
+        self.use_reduced_dataset = False  # faster debugging
+        self.generated_note_duration = None  # None corresponds to dataset's default note duration. For interp gen only
+        for k, v in kwargs.items():
+            if k == 'use_reduced_dataset':
+                assert isinstance(v, bool)
+                self.use_reduced_dataset = v
+            elif k == 'generated_note_duration':
+                assert v is None or (isinstance(v, tuple) and len(v) == 2)
+                self.generated_note_duration = v
+            else:
+                raise KeyError(f"Unexpected kwarg name '{k}'")
 
     def get_u_interpolated(self, extrapolate_left=0, extrapolate_right=0):
         """ Returns the interpolation 'time steps', usually in [0.0, 1.0];
@@ -130,6 +143,12 @@ class InterpBase(ABC):
         return False
 
     def on_render_audio_ends(self, num_interp_sequences: int):
+        with open(self.storage_path.joinpath('audio_renders_info.json'), 'w') as f:
+            json.dump(
+                {'num_sequences': num_interp_sequences, 'num_steps_per_sequence': self.num_steps,
+                 'custom_note_duration': self.generated_note_duration},
+                f
+            )
         if self.verbose:
             delta_t = (datetime.now() - self._audio_render_t_start).total_seconds()
             print("[{}] Finished rendering audio for {} interpolations in {:.1f}min total ({:.1f}s / interpolation)"
@@ -279,8 +298,10 @@ class InterpBase(ABC):
 class NaivePresetInterpolation(InterpBase):
     def __init__(self, dataset, dataset_type, dataloader, storage_path: Union[str, pathlib.Path],
                  num_steps=7, u_curve='linear', verbose=True, verbose_postproc=True,
-                 reference_storage_path: Optional[pathlib.Path] = None):
-        super().__init__(num_steps, u_curve, verbose, reference_storage_path, verbose_postproc=verbose_postproc)
+                 reference_storage_path: Optional[pathlib.Path] = None,
+                 **kwargs):
+        super().__init__(num_steps, u_curve, verbose, reference_storage_path, verbose_postproc=verbose_postproc,
+                         **kwargs)
         self.dataset = dataset
         self.dataset_type = dataset_type
         self.dataloader = dataloader
@@ -292,7 +313,7 @@ class NaivePresetInterpolation(InterpBase):
 
     def render_audio(self):
         """ Generates interpolated sounds using the 'naïve' linear interpolation between VST preset parameters. """
-        self.on_render_audio_begins()
+        self.on_render_audio_begins()  # Creates the storage directory
 
         current_sequence_index = 0
         # Retrieve all latent vectors that will be used for interpolation
@@ -335,8 +356,11 @@ class NaivePresetInterpolation(InterpBase):
 
     def generate_audio_and_spectrograms(self, vst_presets: np.ndarray):
         midi_pitch, midi_vel = self.dataset.default_midi_note
-        audio_renders = [self.dataset._render_audio(vst_presets[i, :], midi_pitch, midi_vel)
-                         for i in range(vst_presets.shape[0])]
+        # FIXME custom note length
+        audio_renders = [
+            self.dataset._render_audio(vst_presets[i, :], midi_pitch, midi_vel, self.generated_note_duration)
+            for i in range(vst_presets.shape[0])
+        ]
         spectrograms = [self.dataset.compute_spectrogram(a[0]) for a in audio_renders]
         return audio_renders, spectrograms
 
@@ -346,7 +370,8 @@ class ModelBasedInterpolation(InterpBase):
             self, model_loader: Optional[evaluation.load.ModelLoader] = None, device='cpu', num_steps=7,
             u_curve='linear', latent_interp_kind='linear', verbose=True,
             storage_path: Optional[pathlib.Path] = None, reference_storage_path: Optional[pathlib.Path] = None,
-            verbose_postproc=True
+            verbose_postproc=True,
+            **kwargs
     ):
         """
         A class for performing interpolations using a neural network model whose inputs are latent vectors.
@@ -355,7 +380,8 @@ class ModelBasedInterpolation(InterpBase):
          dataset) will be ignored.
         """
         super().__init__(num_steps=num_steps, verbose=verbose, u_curve=u_curve,
-                         reference_storage_path=reference_storage_path, verbose_postproc=verbose_postproc)
+                         reference_storage_path=reference_storage_path, verbose_postproc=verbose_postproc,
+                         **kwargs)
         self.latent_interp_kind = latent_interp_kind
         self._storage_path = storage_path
         if model_loader is not None:

@@ -11,7 +11,7 @@ import pickle
 import shutil
 import warnings
 from abc import ABC, abstractmethod  # Abstract Base Class
-from typing import Sequence, Optional, List, Dict
+from typing import Sequence, Optional, List, Dict, Tuple
 
 import pandas as pd
 import json
@@ -652,11 +652,13 @@ class PresetDataset(AudioDataset):
         pass
 
     @abstractmethod
-    def _render_audio(self, preset_params: Sequence, midi_note: int, midi_velocity: int):
+    def _render_audio(self, preset_params: Sequence, midi_note: int, midi_velocity: int,
+                      custom_note_duration: Tuple[int, int] = None):
         """ Renders audio on-the-fly and returns the computed audio waveform and sampling rate.
 
         :param preset_params: List of preset VST parameters, constrained (constraints from this class ctor
             args must have been applied before passing preset_params).
+        :param custom_note_duration: We can ask for a custom note duration, possibly different from this dataset's
         """
         pass
 

@@ -24,7 +24,8 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
     def __init__(self, model_loader: Optional[evaluation.load.ModelLoader] = None,
                  num_steps=7, device='cpu',
                  latent_interp='linear',
-                 generator=None, init_generator=True):
+                 generator=None, init_generator=True,
+                 **kwargs):
         """
         Generic class for interpolating latent vectors (between two reference latent vectors), and for generating
         samples (spectrograms and/or audio) from those interpolated latent vectors using a generator model.
@@ -41,7 +42,8 @@ class LatentInterpolation(evaluation.interpbase.ModelBasedInterpolation):
         """
         # different init if generator is None or not
         if generator is not None:
-            super().__init__(model_loader=None, device=device, num_steps=num_steps, latent_interp_kind=latent_interp)
+            super().__init__(model_loader=None, device=device, num_steps=num_steps, latent_interp_kind=latent_interp,
+                             **kwargs)
             self._gen = generator
             if not init_generator:
                 raise ValueError("init_generator is False but a generator ctor arg was given.")
@@ -82,7 +84,8 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
     def __init__(self, model_loader: evaluation.load.ModelLoader, num_steps=7,
                  u_curve='linear', latent_interp='linear', refine_level=0,
                  storage_path: Optional[pathlib.Path] = None, reference_storage_path: Optional[pathlib.Path] = None,
-                 verbose=True, verbose_postproc=True):
+                 verbose=True, verbose_postproc=True,
+                 **kwargs):
         """
 
         :param refine_level: The amount of refinement applied to the original inferred latent codes, in order
@@ -91,7 +94,7 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
         super().__init__(
             model_loader=model_loader, num_steps=num_steps, u_curve=u_curve, latent_interp_kind=latent_interp,
             storage_path=storage_path, reference_storage_path=reference_storage_path,
-            verbose=verbose, verbose_postproc=verbose_postproc
+            verbose=verbose, verbose_postproc=verbose_postproc, **kwargs
         )
         self.refine_level = refine_level
         if not isinstance(self.dataset, data.abstractbasedataset.PresetDataset):
@@ -185,11 +188,16 @@ class SynthPresetLatentInterpolation(evaluation.interpbase.ModelBasedInterpolati
         v_out = decoder_out[0]
         # Convert learnable presets to VST presets - non-batched code (processes individual presets)
         vst_presets = list()
+        # FIXME duplicated code here, from interpbase.py NaiVePresetInterpolation
+        #    (not exactly duplicated (list vs ndarray)... but can be improved)
         for i in range(v_out.shape[0]):
             preset2d = Preset2d(self.dataset, learnable_tensor_preset=v_out[i])
             vst_presets.append(preset2d.to_raw())
         midi_pitch, midi_vel = self.dataset.default_midi_note
-        audio_renders = [self.dataset._render_audio(raw_preset, midi_pitch, midi_vel) for raw_preset in vst_presets]
+        audio_renders = [
+            self.dataset._render_audio(raw_preset, midi_pitch, midi_vel, self.generated_note_duration)
+            for raw_preset in vst_presets
+        ]
         spectrograms = [self.dataset.compute_spectrogram(audio_wav[0]) for audio_wav in audio_renders]
         return audio_renders, spectrograms
 

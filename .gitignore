@@ -27,3 +27,4 @@ debug_tests.py
 # Others
 /utils/TimbreToolbox_Full_Config_Example.m
 /evalrealtime.py
+/geninterp.py

@@ -33,7 +33,7 @@ def run(eval_config: InterpEvalConfig):
         )
     else:
         raise NotImplementedError()
-    ref_preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset
+    ref_preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset  # FIXME now available as kwarg
     was_processed = ref_preset_interpolator.try_process_dataset(
         (eval_config.ref_model_force_re_eval or eval_config.force_re_eval_all), eval_config.skip_audio_render)
     n_actually_processed += was_processed
@@ -69,7 +69,7 @@ def get_preset_interpolator(m_config, eval_config: InterpEvalConfig):
         reference_storage_path=eval_config.ref_model_interp_path, refine_level=m_config['refine_level'],
         verbose=eval_config.verbose, verbose_postproc=eval_config.verbose_postproc
     )
-    preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset
+    preset_interpolator.use_reduced_dataset = eval_config.use_reduced_dataset  # FIXME now available as kwarg
     return preset_interpolator
 
 

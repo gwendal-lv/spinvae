@@ -8,7 +8,7 @@ import os
 import shutil
 import sys
 import warnings
-from typing import Optional, Iterable, List, Dict
+from typing import Optional, Iterable, List, Dict, Tuple
 import multiprocessing
 from datetime import datetime
 
@@ -364,13 +364,15 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         soundfile.write(self._get_wav_file_path(preset_UID, midi_pitch, midi_velocity, variation),
                         x_wav, Fs, subtype='FLOAT')
 
-    def _render_audio(self, preset_params: Iterable, midi_note, midi_velocity):
+    def _render_audio(self, preset_params: Iterable, midi_note, midi_velocity,
+                      custom_note_duration: Tuple[int, int] = None):
         """ Does not require a 'variation' (preset_params must have been modified accordingly, before calling
         this method) """
+        note_duration = custom_note_duration if custom_note_duration is not None else self.note_duration
         # We always have to reload the VST to prevent hanging notes/sounds
         dexed_renderer = dexed.Dexed(output_Fs=self.Fs,
-                                     midi_note_duration_s=self.note_duration[0],
-                                     render_duration_s=self.note_duration[0] + self.note_duration[1])
+                                     midi_note_duration_s=note_duration[0],
+                                     render_duration_s=note_duration[0] + note_duration[1])
         dexed_renderer.assign_preset(dexed.PresetDatabase.get_params_in_plugin_format(preset_params))
         x_wav, Fs = dexed_renderer.render_note(midi_note, midi_velocity, normalize=self.normalize_audio)
         return x_wav, Fs
