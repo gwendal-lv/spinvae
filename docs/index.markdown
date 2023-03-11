@@ -631,7 +631,7 @@ Then, a linear interpolation is performed on latent vectors TODO describe transf
 
 ### Timbre audio features
 
-As indicated in the paper, the Timbre Toolbox [^1] is used to compute audio features for each rendered audio files. 
+As indicated in the paper, the Timbre Toolbox [^1] is used to compute audio features for each rendered audio file. 
 These features have been engineered by experts and span a wide range of timbre characteristics. They can be categorized into three main groups as shown in the table below.
 
 | | Temporal | | Spectral | | Harmonic |
@@ -647,10 +647,10 @@ E.g., *SpecCent_med* and *SpecSpread_med* are highly correlated (0.72) but are d
 
 | Figure A. Absolute value of the correlation between timbre features. | Figure B. Features with a very high (> 0.9) correlation. | 
 |---|---|
-| <img src="assets/figures/timbre_features_correlation.svg"> | <img src="assets/figures/timbre_features_high_correlation.svg">  |
+| <img src="assets/figures/timbre_features_corr.svg"> | <img src="assets/figures/timbre_features_high_corr.svg">  |
 
 However, we observe from Figure B that a few pairs of features present a very high correlation and might be redundant. 
-In order to keep only non-highly-correlated features, eight features could be removed from the analysis: *SpecRollOff_med, SpecKurt_med, SpecKurt_IQR, HarmErg_IQR, NoiseErg_med, NoiseErg_IQR, OddEvenRatio_IQR, Rel*. This is discussed in the sub-section below.
+In order to keep only non-highly-correlated features, eight features could be removed from the analysis: *SpecRollOff_med, SpecKurt_med, SpecKurt_IQR, HarmErg_IQR, NoiseErg_med, NoiseErg_IQR, OddEvenRatio_IQR* and *Rel*. This is discussed in the next sub-section.
 
 
 ### Detailed interpolation results
@@ -660,8 +660,8 @@ Interpolation quality is evaluated using the smoothness and non-linearity of aud
 Results from Table 1 from the paper are reproduced on the left-hand side of the table below.
 They use the full set of 46 audio features, and include the number of improved features and average performance variation.
 
-Additional results are presented on the right-hand side of the table below. They include the median performance variation for 46 features (not presented in the paper due to space constraints).
-They also show complete results (number of improved features, average and median performance variaton) obtained using the reduced set of 46 - 8 = 38 features.
+Additional results are presented on the right-hand side of the table below. They show the median performance variation for 46 features (not presented in the paper due to space constraints).
+They also include complete results (number of improved features, average and median performance variaton) obtained using the reduced set of 46-8 = 38 features.
 
 SPINVAE remains the best overall model, with no significant difference in results between using the full or reduced set of audio features.
 
