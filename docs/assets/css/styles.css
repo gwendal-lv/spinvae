@@ -1,8 +1,17 @@
 
+p, li {
+    font-size: medium !important;
+}
+
 .small_control {
-    width: 100px
+    width: 100px;
 }
 
 .centered_th {
     text-align: center;
+}
+
+.bestresult {
+    background-color:rgb(241, 241, 241);
+    font-weight: bold;
 }
