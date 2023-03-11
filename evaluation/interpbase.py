@@ -8,7 +8,7 @@ import pickle
 import shutil
 import warnings
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Union, Dict, List, Any
+from typing import Optional, Tuple, Union, Dict, List, Any, Sequence
 from datetime import datetime
 
 import numpy as np
@@ -250,7 +250,16 @@ class InterpBase(ABC):
         return interp_metrics
 
     @staticmethod
-    def compute_interp_improvement_vs_ref(eval_config: InterpEvalConfig):
+    def compute_interp_improvement_vs_ref(
+            eval_config: InterpEvalConfig,
+            excluded_audio_features: Optional[Sequence[str]]=None
+    ):
+        """
+        :param eval_config: An InterpEvalConfig instance, which indicates the reference model and the ones
+            that should be evaluated.
+        :param excluded_audio_features: List of audio features to be further excluded from the analysis, e.g.
+            'NoiseErg_med', 'NoiseErg_IQR' etc.
+        """
         ref_interp_results = InterpBase.get_interp_results(eval_config.ref_model_interp_path, eval_config)
         models_interp_results = [
             InterpBase.get_interp_results(m_config['interp_storage_path'], eval_config)
@@ -268,10 +277,16 @@ class InterpBase(ABC):
             # also 'manually' add interp hparams
             interp_config_dict = {'u_curve': interp_config['u_curve'], 'z_curve': interp_config['latent_interp'],
                                   'refine_level': interp_config['refine_level']}
-            # Then process all interpolation metrics (e.g. smoothness, ....) for all audio features
+            # Then process all interpolation metrics (e.g. smoothness, non-linearity....) for all audio features
             for metric_name in ref_interp_results.keys():
                 ref_interp_df = ref_interp_results[metric_name]
                 model_interp_df = interp_results[metric_name]
+                # TODO drop cols (excluded audio features) from these two dfs
+                if excluded_audio_features is not None:
+                    cols = list(ref_interp_df.columns)
+                    for feature_name in excluded_audio_features:
+                        cols.remove(feature_name)
+                    ref_interp_df, model_interp_df = ref_interp_df[cols], model_interp_df[cols]
                 # Average variation (vs. reference) of the median and mean of features
                 #    Average is not weighted: all features are considered to be as equally important
                 median_variation_vs_ref = (model_interp_df.median() - ref_interp_df.median()) / ref_interp_df.median()
