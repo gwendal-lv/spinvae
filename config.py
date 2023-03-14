@@ -16,8 +16,10 @@ parameters, please only use simple types such as string, ints, floats, tuples (n
 import datetime
 import pathlib
 
-# The config_confidential.py file must be created by the user in the ./utils folder. It must contain
-# a few global attributes which are described later in this file (see ModelConfig ctor)
+# The config_confidential.py file must be created by the user in the ./utils folder.
+# It must contain the following fields:
+#     data_root_path, logs_root_dir,
+#     comet_api_key, comet_project_name, comet_workspace
 from utils import config_confidential
 
 

@@ -375,7 +375,7 @@ class Dexed(synth.dexedbase.DexedCharacteristics):
     """ A Dexed (DX7) synth that can be used through RenderMan for offline wav rendering. """
 
     def __init__(self, output_Fs, render_Fs=48000,
-                 plugin_path="/home/gwendal/Jupyter/AudioPlugins/Dexed.so",
+                 plugin_relative_path="Dexed.so",
                  midi_note_duration_s=3.0, render_duration_s=4.0,
                  buffer_size=512, fft_size=512,
                  fadeout_duration_s=0.0,  # Default: disabled,
@@ -386,7 +386,7 @@ class Dexed(synth.dexedbase.DexedCharacteristics):
         self.midi_note_duration_s = midi_note_duration_s
         self.render_duration_s = render_duration_s
 
-        self.plugin_path = plugin_path
+        self.plugin_path = str(pathlib.Path(__file__).parent.joinpath(plugin_relative_path))
         self.render_Fs = render_Fs
         self.reduced_Fs = output_Fs
         self.buffer_size = buffer_size
