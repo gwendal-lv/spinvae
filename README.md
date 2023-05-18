@@ -3,8 +3,8 @@
 ## Introduction
 
 Official implementation of *Synthesizer Preset Interpolation using 
-Transformer Auto-Encoders*, accepted to ICASSP 2023.
-The [preprint](https://arxiv.org/abs/2210.16984) is available on arXiv, and the [supplemental material](https://gwendal-lv.github.io/spinvae/) provides examples of interpolations and extrapolations.
+Transformer Auto-Encoders*, accepted to ICASSP 2023: [https://doi.org/10.1109/ICASSP49357.2023.10096397](https://doi.org/10.1109/ICASSP49357.2023.10096397).
+The [supplemental material](https://gwendal-lv.github.io/spinvae/) provides examples of interpolations and extrapolations.
 
 <img src="docs/assets/figures/ICASSP23_arch_interp.png" width="600"/>
 
@@ -84,16 +84,18 @@ or a custom path can be provided in ```evaluation/interpbase.py```.
 
 ## Citing
 
-If you use our work, please cite the arXiv preprint:
+If you use our work, please cite the ICASSP 2023 paper:
 
 ```
-@misc{https://doi.org/10.48550/arxiv.2210.16984,
-  doi = {10.48550/ARXIV.2210.16984},
-  url = {https://arxiv.org/abs/2210.16984},
-  author = {Le Vaillant, Gwendal and Dutoit, Thierry},
-  title = {Synthesizer Preset Interpolation using Transformer Auto-Encoders},
-  publisher = {arXiv},
-  year = {2022}
-}
+@INPROCEEDINGS{10096397,
+  author={Le Vaillant, Gwendal and Dutoit, Thierry},
+  booktitle={ICASSP 2023 - 2023 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)}, 
+  title={Synthesizer Preset Interpolation Using Transformer Auto-Encoders}, 
+  year={2023},
+  volume={},
+  number={},
+  pages={1-5},
+  doi={10.1109/ICASSP49357.2023.10096397}}
+
 ```
 
