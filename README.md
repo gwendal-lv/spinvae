@@ -4,6 +4,7 @@
 
 Official implementation of *Synthesizer Preset Interpolation using 
 Transformer Auto-Encoders*, accepted to ICASSP 2023: [https://doi.org/10.1109/ICASSP49357.2023.10096397](https://doi.org/10.1109/ICASSP49357.2023.10096397).
+
 The [supplemental material](https://gwendal-lv.github.io/spinvae/) provides examples of interpolations and extrapolations.
 
 <img src="docs/assets/figures/ICASSP23_arch_interp.png" width="600"/>
